@@ -1338,35 +1338,43 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
 
 
 async def self_work_and_notify(session: WorkSession, prompt: str, ws):
-    """Run claude -p in background and notify via voice when done."""
-    try:
-        full_response = await session.send(prompt)
-        log.info(f"Background work complete ({len(full_response)} chars)")
+    """Run claude -p in background and notify via voice when done.
 
-        # Summarize and speak
-        if anthropic_client and full_response:
-            try:
-                summary = await anthropic_client.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=100,
-                    system="You are JARVIS. Summarize what you just completed in 1 sentence. First person — 'I built', 'I set up'. No markdown. Never say 'Claude Code'.",
-                    messages=[{"role": "user", "content": f"Claude Code completed:\n{full_response[:2000]}"}],
-                )
-                msg = summary.content[0].text
-            except Exception:
-                msg = "Work is complete, sir."
+    Used by the [ACTION:RESEARCH] dispatch path (and the legacy "fix yourself"
+    work-mode prompt). Wrapped in a process-panel task so users see live
+    stdout streaming from the claude -p subprocess.
+    """
+    async with process_bus.task_context(f"Researching: {prompt[:60]}") as task_id:
+        try:
+            await emit_step(task_id, "Claude Code working…", status="active")
+            full_response = await session.send(prompt, task_id=task_id)
+            log.info(f"Background work complete ({len(full_response)} chars)")
 
-            try:
-                audio = await synthesize_speech(msg)
-                if audio:
-                    await ws.send_json({"type": "status", "state": "speaking"})
-                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
-                    await ws.send_json({"type": "status", "state": "idle"})
-                    log.info(f"JARVIS: {msg}")
-            except Exception:
-                pass
-    except Exception as e:
-        log.error(f"Background work failed: {e}")
+            # Summarize and speak
+            if anthropic_client and full_response:
+                try:
+                    summary = await anthropic_client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=100,
+                        system="You are JARVIS. Summarize what you just completed in 1 sentence. First person — 'I built', 'I set up'. No markdown. Never say 'Claude Code'.",
+                        messages=[{"role": "user", "content": f"Claude Code completed:\n{full_response[:2000]}"}],
+                    )
+                    msg = summary.content[0].text
+                except Exception:
+                    msg = "Work is complete, sir."
+
+                try:
+                    audio = await synthesize_speech(msg)
+                    if audio:
+                        await ws.send_json({"type": "status", "state": "speaking"})
+                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+                        await ws.send_json({"type": "status", "state": "idle"})
+                        log.info(f"JARVIS: {msg}")
+                except Exception:
+                    pass
+        except Exception as e:
+            log.error(f"Background work failed: {e}")
+            await emit_error(task_id, "Background work failed", detail=str(e)[:200])
 
 
 # Smart greeting — track last greeting to avoid re-greeting on reconnect
@@ -1762,6 +1770,44 @@ app.mount("/screenshots", StaticFiles(directory=str(SCREENSHOTS_DIR)), name="scr
 @app.get("/api/health")
 async def health():
     return {"status": "online", "name": "JARVIS", "version": "0.1.0"}
+
+
+@app.post("/api/_debug/emit-demo")
+async def debug_emit_demo():
+    """Fire one event of each type into an open-ended task. The panel stays
+    visible until the user dismisses it ("close it" / X button) because
+    no task_done is emitted.
+
+    Dev-only — handy for smoke-testing the panel without spinning up a
+    real claude -p run. Safe to leave in: requires POST and only emits
+    process_event broadcasts (no side effects).
+    """
+    from process_events import Event, EventStatus
+    task_id = uuid.uuid4().hex[:8]
+
+    await process_bus.emit(Event(
+        type="task_start",
+        task_id=task_id,
+        title="DEMO: process panel walkthrough",
+        detail="Stays open until you say 'close it' or click ×",
+        status=EventStatus.ACTIVE.value,
+    ))
+    await emit_step(task_id, "Phase one running", detail="this is a step event", status="active")
+    await emit_browser_action(task_id, "Visit page", url="https://example.com/demo")
+    await emit_app_launch(task_id, "Slack", status="done", detail="(simulated)")
+    await emit_text_write(task_id, "Chrome", "the quick brown fox jumps over the lazy dog", sent=False)
+    for line in (
+        "$ claude -p --output-format text",
+        "Analyzing project structure...",
+        "Found 32 source files",
+        "Drafting response...",
+        "Done.",
+    ):
+        await emit_code_task(task_id, line)
+    await emit_task_queued(task_id, "Next: deploy step", detail="queued for later")
+    await emit_error(task_id, "Simulated error", detail="this is what an error event looks like")
+    # Deliberately do NOT emit task_done so the panel stays open.
+    return {"task_id": task_id, "status": "emitted; panel will stay open"}
 
 
 @app.get("/api/tts-test")
