@@ -1,0 +1,427 @@
+/* ===========================================================================
+   JARVIS Process Panel — live activity stream beside the orb.
+
+   Sits to the right of the orb when JARVIS is doing something non-trivial.
+   Auto-dismisses 2s after the active task finishes. Draggable within the
+   window via the top handle.
+   =========================================================================== */
+
+#process-panel-root {
+  /* Holographic palette — tweak these to retheme the panel without touching
+     individual rules. */
+  --pp-bg: rgba(8, 14, 22, 0.78);
+  --pp-bg-strong: rgba(8, 14, 22, 0.92);
+  --pp-border: rgba(70, 220, 255, 0.22);
+  --pp-border-strong: rgba(70, 220, 255, 0.45);
+  --pp-glow: 0 0 24px rgba(70, 220, 255, 0.18);
+  --pp-glow-strong: 0 0 36px rgba(70, 220, 255, 0.32);
+  --pp-text: rgba(220, 240, 255, 0.92);
+  --pp-text-dim: rgba(150, 190, 220, 0.6);
+  --pp-text-faint: rgba(130, 170, 200, 0.35);
+  --pp-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  --pp-accent: #46dcff;
+  --pp-active: #7cffb0;
+  --pp-error: #ff5670;
+  --pp-error-glow: rgba(255, 86, 112, 0.4);
+  --pp-pending: rgba(180, 200, 230, 0.45);
+
+  position: fixed;
+  top: 80px;
+  right: 24px;
+  width: 380px;
+  max-height: min(70vh, 640px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none; /* container is invisible until .visible */
+  opacity: 0;
+  transform: translateX(24px);
+  transition: opacity 0.25s ease-out, transform 0.25s ease-out;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--pp-text);
+}
+
+#process-panel-root.visible {
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateX(0);
+}
+
+#process-panel-root.dragging {
+  transition: none;
+  cursor: grabbing;
+}
+
+/* Narrow viewport — become a full-width overlay rather than side-anchored. */
+@media (max-width: 600px) {
+  #process-panel-root {
+    top: auto;
+    bottom: 0;
+    right: 0;
+    left: 0;
+    width: 100%;
+    max-height: 60vh;
+    border-radius: 0;
+  }
+}
+
+/* --- Frame -------------------------------------------------------------- */
+
+.pp-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--pp-bg);
+  border: 1px solid var(--pp-border);
+  border-radius: 8px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: var(--pp-glow), 0 8px 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+/* Faint scanline texture — pure CSS, no image asset needed. */
+.pp-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0,
+    transparent 2px,
+    rgba(70, 220, 255, 0.025) 2px,
+    rgba(70, 220, 255, 0.025) 3px
+  );
+  opacity: 0.6;
+}
+
+/* --- Header / drag handle ---------------------------------------------- */
+
+.pp-handle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--pp-border);
+  cursor: grab;
+  user-select: none;
+  background: linear-gradient(
+    180deg,
+    rgba(70, 220, 255, 0.08) 0,
+    rgba(70, 220, 255, 0.02) 100%
+  );
+}
+.pp-handle:active { cursor: grabbing; }
+
+.pp-handle-grip {
+  width: 18px;
+  height: 10px;
+  background-image: radial-gradient(
+    circle at center,
+    var(--pp-text-faint) 0.8px,
+    transparent 1.2px
+  );
+  background-size: 5px 5px;
+  background-position: 0 0;
+  background-repeat: repeat;
+  opacity: 0.6;
+}
+
+.pp-title {
+  flex: 1;
+  font-size: 10px;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: rgba(70, 220, 255, 0.7);
+}
+
+.pp-close {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--pp-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--pp-text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.pp-close:hover {
+  background: rgba(70, 220, 255, 0.1);
+  color: var(--pp-text);
+  border-color: var(--pp-border-strong);
+}
+
+/* --- Event stream ------------------------------------------------------- */
+
+.pp-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--pp-border) transparent;
+}
+.pp-stream::-webkit-scrollbar { width: 6px; }
+.pp-stream::-webkit-scrollbar-thumb {
+  background: var(--pp-border);
+  border-radius: 3px;
+}
+
+.pp-event {
+  display: flex;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  animation: pp-event-in 0.22s ease-out;
+}
+
+@keyframes pp-event-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.pp-event-icon {
+  flex-shrink: 0;
+  width: 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 3px;
+}
+
+.pp-event-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.pp-event-title {
+  color: var(--pp-text);
+  font-weight: 500;
+}
+
+.pp-event-detail {
+  color: var(--pp-text-dim);
+  font-size: 11px;
+  margin-top: 2px;
+  word-break: break-word;
+}
+
+.pp-event-url {
+  color: var(--pp-accent);
+  font-family: var(--pp-mono);
+  font-size: 11px;
+  margin-top: 2px;
+  word-break: break-all;
+  opacity: 0.85;
+}
+
+/* --- Per-type styling -------------------------------------------------- */
+
+/* Task header — section divider. */
+.pp-event-task_start .pp-event-icon::before,
+.pp-event-task_done .pp-event-icon::before {
+  content: "▸";
+  color: var(--pp-accent);
+  font-size: 11px;
+}
+.pp-event-task_start .pp-event-title,
+.pp-event-task_done .pp-event-title {
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-size: 10px;
+  color: var(--pp-accent);
+}
+.pp-event-task_done.pp-status-done .pp-event-icon::before { content: "✓"; color: var(--pp-active); }
+.pp-event-task_done.pp-status-error .pp-event-icon::before { content: "✗"; color: var(--pp-error); }
+
+/* Step — glowing dot, spinner when active */
+.pp-event-step .pp-event-icon::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pp-accent);
+  box-shadow: 0 0 6px var(--pp-accent);
+  margin-top: 4px;
+}
+.pp-event-step.pp-status-active .pp-event-icon {
+  position: relative;
+}
+.pp-event-step.pp-status-active .pp-event-icon::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--pp-accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: pp-spin 0.9s linear infinite;
+  opacity: 0.7;
+}
+@keyframes pp-spin {
+  to { transform: rotate(360deg); }
+}
+.pp-event-step.pp-status-done .pp-event-icon::before { background: var(--pp-active); box-shadow: 0 0 6px var(--pp-active); }
+
+/* Browser action */
+.pp-event-browser_action .pp-event-icon::before {
+  content: "⌖";
+  color: var(--pp-accent);
+  font-size: 12px;
+}
+
+/* App launch */
+.pp-event-app_launch .pp-event-icon::before {
+  content: "▢";
+  color: var(--pp-accent);
+  font-size: 12px;
+}
+
+/* Text write — typewriter caret */
+.pp-event-text_write .pp-event-icon::before {
+  content: "▌";
+  color: var(--pp-active);
+  font-size: 11px;
+  animation: pp-caret 1.1s steps(2) infinite;
+}
+@keyframes pp-caret {
+  50% { opacity: 0.3; }
+}
+.pp-event-text_write .pp-event-detail {
+  font-family: var(--pp-mono);
+  color: var(--pp-text);
+  background: rgba(124, 255, 176, 0.05);
+  border-left: 2px solid var(--pp-active);
+  padding: 4px 8px;
+  margin-top: 4px;
+}
+
+/* Task queued */
+.pp-event-task_queued .pp-event-icon::before {
+  content: "»";
+  color: var(--pp-pending);
+  font-size: 13px;
+}
+.pp-event-task_queued .pp-event-title { color: var(--pp-pending); }
+.pp-event-task_queued { opacity: 0.7; }
+
+/* Error */
+.pp-event-error {
+  background: rgba(255, 86, 112, 0.06);
+  border-left: 2px solid var(--pp-error);
+  box-shadow: 0 0 14px var(--pp-error-glow);
+}
+.pp-event-error .pp-event-icon::before {
+  content: "!";
+  color: var(--pp-error);
+  font-weight: 700;
+  font-size: 13px;
+}
+.pp-event-error .pp-event-title { color: var(--pp-error); }
+
+/* Screenshot */
+.pp-event-screenshot .pp-event-icon::before {
+  content: "▥";
+  color: var(--pp-accent);
+  font-size: 12px;
+}
+.pp-screenshot-thumb {
+  display: block;
+  margin-top: 6px;
+  max-width: 100%;
+  max-height: 120px;
+  border: 1px solid var(--pp-border);
+  border-radius: 4px;
+  cursor: zoom-in;
+  transition: box-shadow 0.2s;
+}
+.pp-screenshot-thumb:hover {
+  box-shadow: var(--pp-glow-strong);
+}
+
+/* Code task — terminal-style block. We group consecutive code_task events
+   per task_id into a single .pp-code-block by ID. */
+.pp-code-block {
+  margin: 4px 0;
+  border: 1px solid var(--pp-border);
+  border-radius: 4px;
+  background: rgba(0, 8, 14, 0.6);
+  font-family: var(--pp-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(180, 220, 245, 0.85);
+  overflow: hidden;
+  animation: pp-event-in 0.22s ease-out;
+}
+.pp-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: rgba(70, 220, 255, 0.06);
+  border-bottom: 1px solid var(--pp-border);
+  font-family: var(--pp-mono);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--pp-accent);
+}
+.pp-code-expand {
+  background: transparent;
+  border: none;
+  color: var(--pp-text-dim);
+  font-family: var(--pp-mono);
+  font-size: 9px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.pp-code-expand:hover { color: var(--pp-accent); }
+.pp-code-lines {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  scrollbar-width: thin;
+  scrollbar-color: var(--pp-border) transparent;
+}
+.pp-code-lines.collapsed {
+  max-height: 110px;
+}
+.pp-code-line {
+  display: block;
+}
+
+/* Lightbox for expanded screenshot */
+.pp-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  cursor: zoom-out;
+}
+.pp-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border: 1px solid var(--pp-border);
+  border-radius: 6px;
+  box-shadow: var(--pp-glow-strong);
+}
