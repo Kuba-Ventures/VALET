@@ -37,7 +37,20 @@ import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from process_events import (
+    bus as process_bus,
+    emit_step,
+    emit_browser_action,
+    emit_screenshot,
+    emit_app_launch,
+    emit_text_write,
+    emit_code_task,
+    emit_error,
+    emit_task_queued,
+)
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal
 from work_mode import WorkSession, is_casual_question
@@ -836,43 +849,57 @@ async def _execute_create_event(target: str, ws):
     parts = [p.strip() for p in target.split("|||")]
     if len(parts) < 2:
         msg = "I need at least a title and a start time, sir."
-    else:
-        title = parts[0]
-        start = parts[1]
-        end_or_dur = parts[2] if len(parts) > 2 else "30"
-        description = parts[3] if len(parts) > 3 else None
-        location = parts[4] if len(parts) > 4 else None
-        end_str = None
-        duration_min = 30
-        if end_or_dur:
+        audio = await synthesize_speech(msg)
+        if audio and ws:
             try:
-                duration_min = int(end_or_dur)
-            except ValueError:
-                end_str = end_or_dur
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
+        return
+
+    title = parts[0]
+    start = parts[1]
+    end_or_dur = parts[2] if len(parts) > 2 else "30"
+    description = parts[3] if len(parts) > 3 else None
+    location = parts[4] if len(parts) > 4 else None
+    end_str = None
+    duration_min = 30
+    if end_or_dur:
         try:
+            duration_min = int(end_or_dur)
+        except ValueError:
+            end_str = end_or_dur
+    async with process_bus.task_context(f"Scheduling: {title}", detail=start) as task_id:
+        try:
+            await emit_step(task_id, f"Creating event at {start}…", status="active")
             event = await calendar_create_event(
                 title=title, start_str=start, end_str=end_str,
                 duration_minutes=duration_min, description=description, location=location,
             )
             if event:
                 msg = f"Scheduled '{title}' for {start}, sir."
+                await emit_step(task_id, "Event created on Google Calendar", detail=title, status="done")
                 # Reload any open Google Calendar tab so the new event appears immediately.
                 asyncio.create_task(refresh_calendar_tabs())
             else:
                 msg = "I couldn't create that event, sir — calendar may need re-authentication for write access."
+                await emit_error(task_id, "Calendar create failed", detail="Google returned no result; reauth may be needed.")
         except ValueError as e:
+            await emit_error(task_id, "Couldn't parse time", detail=str(e)[:200])
             msg = f"I couldn't parse the time, sir: {e}"
         except Exception as e:
             log.error(f"create_event failed: {e}")
+            await emit_error(task_id, "Calendar create failed", detail=str(e)[:200])
             msg = "Something went wrong creating that event, sir."
 
-    audio = await synthesize_speech(msg)
-    if audio and ws:
-        try:
-            await ws.send_json({"type": "status", "state": "speaking"})
-            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
-        except Exception:
-            pass
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
 
 
 async def _execute_cancel_event(target: str, ws):
@@ -886,22 +913,28 @@ async def _execute_cancel_event(target: str, ws):
     parts = [p.strip() for p in target.split("|||")]
     query = parts[0] if parts else ""
     on_date = parts[1] if len(parts) > 1 else None
-    try:
-        result = await calendar_delete_event(query=query, on_date_str=on_date)
-        msg = result.get("confirmation", "Done, sir.")
-        if result.get("success"):
-            asyncio.create_task(refresh_calendar_tabs())
-    except Exception as e:
-        log.error(f"cancel_event failed: {e}")
-        msg = "Something went wrong cancelling that event, sir."
-
-    audio = await synthesize_speech(msg)
-    if audio and ws:
+    async with process_bus.task_context(f"Cancelling: {query}", detail=on_date or "") as task_id:
         try:
-            await ws.send_json({"type": "status", "state": "speaking"})
-            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
-        except Exception:
-            pass
+            await emit_step(task_id, "Finding event…", status="active")
+            result = await calendar_delete_event(query=query, on_date_str=on_date)
+            msg = result.get("confirmation", "Done, sir.")
+            if result.get("success"):
+                await emit_step(task_id, "Event cancelled", detail=query, status="done")
+                asyncio.create_task(refresh_calendar_tabs())
+            else:
+                await emit_error(task_id, "No matching event", detail=msg[:200])
+        except Exception as e:
+            log.error(f"cancel_event failed: {e}")
+            await emit_error(task_id, "Cancel failed", detail=str(e)[:200])
+            msg = "Something went wrong cancelling that event, sir."
+
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
 
 
 async def _execute_new_project(target: str, ws):
@@ -912,20 +945,25 @@ async def _execute_new_project(target: str, ws):
     parts = [p.strip() for p in target.split("|||")]
     name = parts[0] if parts else ""
     base_dir = parts[1] if len(parts) > 1 and parts[1] else None
-    try:
-        result = await new_cursor_project(name=name, base_dir=base_dir)
-        msg = result.get("confirmation", "Done, sir.")
-    except Exception as e:
-        log.error(f"new_project failed: {e}")
-        msg = "Something went wrong starting that project, sir."
-
-    audio = await synthesize_speech(msg)
-    if audio and ws:
+    async with process_bus.task_context(f"New project: {name}") as task_id:
         try:
-            await ws.send_json({"type": "status", "state": "speaking"})
-            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
-        except Exception:
-            pass
+            await emit_step(task_id, f"Spinning up '{name}'…", status="active")
+            result = await new_cursor_project(name=name, base_dir=base_dir, task_id=task_id)
+            msg = result.get("confirmation", "Done, sir.")
+            if result.get("success") and result.get("path"):
+                await emit_step(task_id, "Cursor session opened", detail=result["path"], status="done")
+        except Exception as e:
+            log.error(f"new_project failed: {e}")
+            await emit_error(task_id, "New project failed", detail=str(e)[:200])
+            msg = "Something went wrong starting that project, sir."
+
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
 
 
 async def _execute_draft_email(target: str, ws):
@@ -936,28 +974,42 @@ async def _execute_draft_email(target: str, ws):
     """
     parts = [p.strip() for p in target.split("|||")]
     if len(parts) < 3:
+        # Validation failure — short-circuit, no task event.
         msg = "I need a recipient, subject, and body, sir."
-    else:
-        to, subject, body = parts[0], parts[1], parts[2]
-        cc = parts[3] if len(parts) > 3 else ""
-        bcc = parts[4] if len(parts) > 4 else ""
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
+        return
+
+    to, subject, body = parts[0], parts[1], parts[2]
+    cc = parts[3] if len(parts) > 3 else ""
+    bcc = parts[4] if len(parts) > 4 else ""
+    async with process_bus.task_context(f"Drafting email to {to}", detail=subject[:80]) as task_id:
         try:
+            await emit_step(task_id, "Creating Gmail draft…", status="active")
             draft = await mail_create_draft(to=to, subject=subject, body=body, cc=cc, bcc=bcc)
             if draft:
                 msg = f"Draft saved to {to}, sir — check your Drafts folder to review and send."
+                await emit_step(task_id, "Draft saved", detail=subject[:120], status="done")
             else:
                 msg = "I couldn't save that draft, sir — Gmail may need re-authentication for draft access."
+                await emit_error(task_id, "Draft not saved", detail="Gmail returned no result; reauth may be needed.")
         except Exception as e:
             log.error(f"draft_email failed: {e}")
+            await emit_error(task_id, "Draft email failed", detail=str(e)[:200])
             msg = "Something went wrong saving that draft, sir."
 
-    audio = await synthesize_speech(msg)
-    if audio and ws:
-        try:
-            await ws.send_json({"type": "status", "state": "speaking"})
-            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
-        except Exception:
-            pass
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
 
 
 async def _execute_check_date(target: str, ws):
@@ -996,87 +1048,98 @@ async def _execute_check_date(target: str, ws):
 
 async def _execute_browse(target: str):
     """Execute a browse action from an LLM-embedded [ACTION:BROWSE] tag."""
-    try:
-        if target.startswith("http") or "." in target.split()[0]:
-            await open_browser(target)
-        else:
-            from urllib.parse import quote
-            await open_browser(f"https://www.google.com/search?q={quote(target)}")
-    except Exception as e:
-        log.error(f"Browse execution failed: {e}")
+    async with process_bus.task_context(f"Opening {target[:60]}") as task_id:
+        try:
+            if target.startswith("http") or "." in target.split()[0]:
+                url = target
+            else:
+                from urllib.parse import quote
+                url = f"https://www.google.com/search?q={quote(target)}"
+            await emit_browser_action(task_id, "open in browser", url=url)
+            await open_browser(url)
+        except Exception as e:
+            log.error(f"Browse execution failed: {e}")
+            await emit_error(task_id, "Browse failed", detail=str(e)[:200])
 
 
 async def _execute_research(target: str, ws=None):
     """Execute research via claude -p in background. Opens report and speaks when done."""
-    try:
-        name = _generate_project_name(target)
-        path = str(Path.home() / "Desktop" / name)
-        os.makedirs(path, exist_ok=True)
+    async with process_bus.task_context(f"Researching: {target[:60]}") as task_id:
+        try:
+            name = _generate_project_name(target)
+            path = str(Path.home() / "Desktop" / name)
+            os.makedirs(path, exist_ok=True)
+            await emit_step(task_id, "Project folder ready", detail=path)
 
-        prompt = (
-            f"{target}\n\n"
-            f"Research this thoroughly. Find REAL data — not made-up examples.\n"
-            f"Create a well-designed HTML file called `report.html` in the current directory.\n"
-            f"Dark theme, clean typography, organized sections, real links and sources.\n"
-            f"The working directory is: {path}"
-        )
+            prompt = (
+                f"{target}\n\n"
+                f"Research this thoroughly. Find REAL data — not made-up examples.\n"
+                f"Create a well-designed HTML file called `report.html` in the current directory.\n"
+                f"Dark theme, clean typography, organized sections, real links and sources.\n"
+                f"The working directory is: {path}"
+            )
 
-        log.info(f"Research started via claude -p in {path}")
+            log.info(f"Research started via claude -p in {path}")
+            await emit_step(task_id, "Claude Code researching…", status="active")
 
-        process = await asyncio.create_subprocess_exec(
-            "claude", "-p", "--output-format", "text", "--dangerously-skip-permissions",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=path,
-        )
+            process = await asyncio.create_subprocess_exec(
+                "claude", "-p", "--output-format", "text", "--dangerously-skip-permissions",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=path,
+            )
 
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(input=prompt.encode()),
-            timeout=300,
-        )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(input=prompt.encode()),
+                timeout=300,
+            )
 
-        result = stdout.decode().strip()
-        log.info(f"Research complete ({len(result)} chars)")
+            result = stdout.decode().strip()
+            log.info(f"Research complete ({len(result)} chars)")
+            await emit_step(task_id, f"Research returned {len(result)} chars", status="done")
 
-        recently_built.append({"name": name, "path": path, "time": time.time()})
+            recently_built.append({"name": name, "path": path, "time": time.time()})
 
-        # Find and open any HTML report
-        report = Path(path) / "report.html"
-        if not report.exists():
-            # Check for any HTML file
-            html_files = list(Path(path).glob("*.html"))
-            if html_files:
-                report = html_files[0]
+            # Find and open any HTML report
+            report = Path(path) / "report.html"
+            if not report.exists():
+                # Check for any HTML file
+                html_files = list(Path(path).glob("*.html"))
+                if html_files:
+                    report = html_files[0]
 
-        if report.exists():
-            await open_browser(f"file://{report}")
-            log.info(f"Opened {report.name} in browser")
+            if report.exists():
+                await emit_browser_action(task_id, "open report", url=f"file://{report}")
+                await open_browser(f"file://{report}")
+                log.info(f"Opened {report.name} in browser")
 
-        # Notify via voice if WebSocket still connected
-        if ws:
-            try:
-                notify_text = f"Research is complete, sir. Report is open in your browser."
-                audio = await synthesize_speech(notify_text)
-                if audio:
-                    await ws.send_json({"type": "status", "state": "speaking"})
-                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": notify_text})
-                    await ws.send_json({"type": "status", "state": "idle"})
-                    log.info(f"JARVIS: {notify_text}")
-            except Exception:
-                pass  # WebSocket might be gone
+            # Notify via voice if WebSocket still connected
+            if ws:
+                try:
+                    notify_text = f"Research is complete, sir. Report is open in your browser."
+                    audio = await synthesize_speech(notify_text)
+                    if audio:
+                        await ws.send_json({"type": "status", "state": "speaking"})
+                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": notify_text})
+                        await ws.send_json({"type": "status", "state": "idle"})
+                        log.info(f"JARVIS: {notify_text}")
+                except Exception:
+                    pass  # WebSocket might be gone
 
-    except asyncio.TimeoutError:
-        log.error("Research timed out after 5 minutes")
-        if ws:
-            try:
-                audio = await synthesize_speech("Research timed out, sir. It was taking too long.")
-                if audio:
-                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": "Research timed out, sir."})
-            except Exception:
-                pass
-    except Exception as e:
-        log.error(f"Research execution failed: {e}")
+        except asyncio.TimeoutError:
+            log.error("Research timed out after 5 minutes")
+            await emit_error(task_id, "Research timed out", detail="claude -p exceeded 5 minute budget")
+            if ws:
+                try:
+                    audio = await synthesize_speech("Research timed out, sir. It was taking too long.")
+                    if audio:
+                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": "Research timed out, sir."})
+                except Exception:
+                    pass
+        except Exception as e:
+            log.error(f"Research execution failed: {e}")
+            await emit_error(task_id, "Research failed", detail=str(e)[:200])
 
 
 async def _focus_terminal_window(project_name: str):
@@ -1130,117 +1193,124 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
     Runs entirely in the background. JARVIS returns to conversation mode
     immediately. When Claude Code finishes, JARVIS interrupts to report.
     """
-    try:
-        project_dir = _find_project_dir(project_name)
+    async with process_bus.task_context(f"Dispatching to {project_name}", detail=prompt[:120]) as task_id:
+        try:
+            project_dir = _find_project_dir(project_name)
 
-        # Register dispatch if not already registered
-        if dispatch_id is None:
-            dispatch_id = dispatch_registry.register(project_name, project_dir or "", prompt)
+            # Register dispatch if not already registered
+            if dispatch_id is None:
+                dispatch_id = dispatch_registry.register(project_name, project_dir or "", prompt)
 
-        if not project_dir:
-            msg = f"Couldn't find the {project_name} project directory, sir."
-            audio = await synthesize_speech(msg)
-            if audio and ws:
-                try:
+            if not project_dir:
+                await emit_error(task_id, f"Project '{project_name}' not found")
+                msg = f"Couldn't find the {project_name} project directory, sir."
+                audio = await synthesize_speech(msg)
+                if audio and ws:
+                    try:
+                        await ws.send_json({"type": "status", "state": "speaking"})
+                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+                    except Exception:
+                        pass
+                return
+            await emit_step(task_id, f"Found project: {project_name}", detail=project_dir)
+
+            # Use a SEPARATE session so we don't trap the main conversation
+            dispatch = WorkSession()
+            await dispatch.start(project_dir, project_name)
+
+            # Bring matching Terminal window to front so user can watch
+            asyncio.create_task(_focus_terminal_window(project_name))
+
+            log.info(f"Dispatching to {project_name} in {project_dir}: {prompt[:80]}")
+            dispatch_registry.update_status(dispatch_id, "building")
+            await emit_step(task_id, "Claude Code working…", status="active")
+
+            # Run claude -p in background. WorkSession.send() emits code_task
+            # events as it streams stdout (see work_mode.py).
+            full_response = await dispatch.send(prompt, task_id=task_id)
+            await dispatch.stop()
+
+            # Auto-open any localhost URLs from response
+            import re as _re
+            # Check for the explicit RUNNING_AT marker first
+            running_match = _re.search(r'RUNNING_AT=(https?://localhost:\d+)', full_response or "")
+            if not running_match:
+                running_match = _re.search(r'https?://localhost:\d+', full_response or "")
+            if running_match:
+                url = running_match.group(1) if running_match.lastindex else running_match.group(0)
+                asyncio.create_task(_execute_browse(url))
+                log.info(f"Auto-opening {url}")
+                # Store URL in dispatch
+                if dispatch_id:
+                    dispatch_registry.update_status(dispatch_id, "completed",
+                        response=full_response[:2000], summary=f"Running at {url}")
+
+            if not full_response or full_response.startswith("Hit a problem") or full_response.startswith("That's taking"):
+                dispatch_registry.update_status(dispatch_id, "failed" if full_response else "timeout", response=full_response or "")
+                msg = f"Sir, I ran into an issue with {project_name}. {full_response[:150] if full_response else 'No response received.'}"
+                await emit_error(task_id, "Dispatch failed", detail=msg[:200])
+            else:
+                # Summarize via Haiku — don't read word for word
+                if anthropic_client:
+                    try:
+                        summary = await anthropic_client.messages.create(
+                            model="claude-haiku-4-5-20251001",
+                            max_tokens=150,
+                            system=(
+                                "You are JARVIS reporting back on what you found or built in a project. "
+                                "Speak in first person — 'I found', 'I built', 'I reviewed'. "
+                                "Start with 'Sir, ' to get the user's attention. "
+                                "Be specific but concise — highlight the key findings or actions taken. "
+                                "If there are multiple items, give the count and top 2-3 briefly. "
+                                "End by asking how the user wants to proceed. "
+                                "NEVER read out URLs or localhost addresses. NEVER say 'Claude Code'. "
+                                "2-3 sentences max. No markdown. Natural spoken voice."
+                            ),
+                            messages=[{"role": "user", "content": f"Project: {project_name}\nClaude Code reported:\n{full_response[:3000]}"}],
+                        )
+                        msg = summary.content[0].text
+                    except Exception:
+                        msg = f"Sir, {project_name} finished. Here's the gist: {full_response[:200]}"
+                else:
+                    msg = f"Sir, {project_name} is done. {full_response[:200]}"
+
+            # Speak the result — skip if user has spoken recently to avoid audio collision
+            log.info(f"Dispatch summary for {project_name}: {msg[:100]}")
+            if voice_state and time.time() - voice_state["last_user_time"] < 3:
+                log.info(f"Skipping dispatch audio for {project_name} — user spoke recently")
+                # Result is still stored in history below so JARVIS can reference it
+            else:
+                audio = await synthesize_speech(strip_markdown_for_tts(msg))
+                if ws:
+                    try:
+                        await ws.send_json({"type": "status", "state": "speaking"})
+                        if audio:
+                            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+                            log.info(f"Dispatch audio sent for {project_name}")
+                        else:
+                            await ws.send_json({"type": "text", "text": msg})
+                            log.info(f"Dispatch text fallback sent for {project_name}")
+                    except Exception as e:
+                        log.error(f"Dispatch audio send failed: {e}")
+
+            # Store dispatch result in conversation history so JARVIS remembers it
+            if history is not None:
+                history.append({"role": "assistant", "content": f"[Dispatch result for {project_name}]: {msg}"})
+
+            dispatch_registry.update_status(dispatch_id, "completed", response=full_response[:2000], summary=msg[:200])
+            log.info(f"Project {project_name} dispatch complete ({len(full_response)} chars)")
+
+        except Exception as e:
+            log.error(f"Prompt project failed: {e}", exc_info=True)
+            await emit_error(task_id, "Dispatch crashed", detail=str(e)[:200])
+            try:
+                msg = f"Had trouble connecting to {project_name}, sir."
+                audio = await synthesize_speech(msg)
+                if audio and ws:
                     await ws.send_json({"type": "status", "state": "speaking"})
                     await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
-                except Exception:
-                    pass
-            return
-
-        # Use a SEPARATE session so we don't trap the main conversation
-        dispatch = WorkSession()
-        await dispatch.start(project_dir, project_name)
-
-        # Bring matching Terminal window to front so user can watch
-        asyncio.create_task(_focus_terminal_window(project_name))
-
-        log.info(f"Dispatching to {project_name} in {project_dir}: {prompt[:80]}")
-        dispatch_registry.update_status(dispatch_id, "building")
-
-        # Run claude -p in background
-        full_response = await dispatch.send(prompt)
-        await dispatch.stop()
-
-        # Auto-open any localhost URLs from response
-        import re as _re
-        # Check for the explicit RUNNING_AT marker first
-        running_match = _re.search(r'RUNNING_AT=(https?://localhost:\d+)', full_response or "")
-        if not running_match:
-            running_match = _re.search(r'https?://localhost:\d+', full_response or "")
-        if running_match:
-            url = running_match.group(1) if running_match.lastindex else running_match.group(0)
-            asyncio.create_task(_execute_browse(url))
-            log.info(f"Auto-opening {url}")
-            # Store URL in dispatch
-            if dispatch_id:
-                dispatch_registry.update_status(dispatch_id, "completed",
-                    response=full_response[:2000], summary=f"Running at {url}")
-
-        if not full_response or full_response.startswith("Hit a problem") or full_response.startswith("That's taking"):
-            dispatch_registry.update_status(dispatch_id, "failed" if full_response else "timeout", response=full_response or "")
-            msg = f"Sir, I ran into an issue with {project_name}. {full_response[:150] if full_response else 'No response received.'}"
-        else:
-            # Summarize via Haiku — don't read word for word
-            if anthropic_client:
-                try:
-                    summary = await anthropic_client.messages.create(
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=150,
-                        system=(
-                            "You are JARVIS reporting back on what you found or built in a project. "
-                            "Speak in first person — 'I found', 'I built', 'I reviewed'. "
-                            "Start with 'Sir, ' to get the user's attention. "
-                            "Be specific but concise — highlight the key findings or actions taken. "
-                            "If there are multiple items, give the count and top 2-3 briefly. "
-                            "End by asking how the user wants to proceed. "
-                            "NEVER read out URLs or localhost addresses. NEVER say 'Claude Code'. "
-                            "2-3 sentences max. No markdown. Natural spoken voice."
-                        ),
-                        messages=[{"role": "user", "content": f"Project: {project_name}\nClaude Code reported:\n{full_response[:3000]}"}],
-                    )
-                    msg = summary.content[0].text
-                except Exception:
-                    msg = f"Sir, {project_name} finished. Here's the gist: {full_response[:200]}"
-            else:
-                msg = f"Sir, {project_name} is done. {full_response[:200]}"
-
-        # Speak the result — skip if user has spoken recently to avoid audio collision
-        log.info(f"Dispatch summary for {project_name}: {msg[:100]}")
-        if voice_state and time.time() - voice_state["last_user_time"] < 3:
-            log.info(f"Skipping dispatch audio for {project_name} — user spoke recently")
-            # Result is still stored in history below so JARVIS can reference it
-        else:
-            audio = await synthesize_speech(strip_markdown_for_tts(msg))
-            if ws:
-                try:
-                    await ws.send_json({"type": "status", "state": "speaking"})
-                    if audio:
-                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
-                        log.info(f"Dispatch audio sent for {project_name}")
-                    else:
-                        await ws.send_json({"type": "text", "text": msg})
-                        log.info(f"Dispatch text fallback sent for {project_name}")
-                except Exception as e:
-                    log.error(f"Dispatch audio send failed: {e}")
-
-        # Store dispatch result in conversation history so JARVIS remembers it
-        if history is not None:
-            history.append({"role": "assistant", "content": f"[Dispatch result for {project_name}]: {msg}"})
-
-        dispatch_registry.update_status(dispatch_id, "completed", response=full_response[:2000], summary=msg[:200])
-        log.info(f"Project {project_name} dispatch complete ({len(full_response)} chars)")
-
-    except Exception as e:
-        log.error(f"Prompt project failed: {e}", exc_info=True)
-        try:
-            msg = f"Had trouble connecting to {project_name}, sir."
-            audio = await synthesize_speech(msg)
-            if audio and ws:
-                await ws.send_json({"type": "status", "state": "speaking"})
-                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
-        except Exception:
-            pass
+            except Exception:
+                pass
 
 
 async def self_work_and_notify(session: WorkSession, prompt: str, ws):
@@ -1656,6 +1726,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Process-panel screenshot store. ProcessEventBus emits screenshot events with
+# a path relative to this dir; the frontend fetches the file from /screenshots/.
+SCREENSHOTS_DIR = Path(__file__).parent / "data" / "screenshots"
+SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/screenshots", StaticFiles(directory=str(SCREENSHOTS_DIR)), name="screenshots")
+
 
 # -- REST Endpoints --------------------------------------------------------
 
@@ -1822,33 +1898,37 @@ async def handle_open_terminal() -> str:
 
 
 async def handle_build(target: str) -> str:
-    name = _generate_project_name(target)
-    path = str(Path.home() / "Desktop" / name)
-    os.makedirs(path, exist_ok=True)
+    async with process_bus.task_context(f"Building: {target[:60]}") as task_id:
+        name = _generate_project_name(target)
+        path = str(Path.home() / "Desktop" / name)
+        os.makedirs(path, exist_ok=True)
+        await emit_step(task_id, f"Created project folder: {name}", detail=path)
 
-    # Write CLAUDE.md with clear instructions
-    claude_md = Path(path) / "CLAUDE.md"
-    claude_md.write_text(f"# Task\n\n{target}\n\nBuild this completely. If web app, make index.html work standalone.\n")
+        # Write CLAUDE.md with clear instructions
+        claude_md = Path(path) / "CLAUDE.md"
+        claude_md.write_text(f"# Task\n\n{target}\n\nBuild this completely. If web app, make index.html work standalone.\n")
 
-    # Write prompt to a file, then pipe it to claude -p
-    # This avoids all shell escaping issues
-    prompt_file = Path(path) / ".jarvis_prompt.txt"
-    prompt_file.write_text(target)
+        # Write prompt to a file, then pipe it to claude -p
+        # This avoids all shell escaping issues
+        prompt_file = Path(path) / ".jarvis_prompt.txt"
+        prompt_file.write_text(target)
+        await emit_step(task_id, "Prompt staged for Claude Code")
 
-    script = (
-        'tell application "Terminal"\n'
-        "    activate\n"
-        f'    do script "cd {path} && cat .jarvis_prompt.txt | claude -p --dangerously-skip-permissions"\n'
-        "end tell"
-    )
-    await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+        script = (
+            'tell application "Terminal"\n'
+            "    activate\n"
+            f'    do script "cd {path} && cat .jarvis_prompt.txt | claude -p --dangerously-skip-permissions"\n'
+            "end tell"
+        )
+        await asyncio.create_subprocess_exec(
+            "osascript", "-e", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await emit_step(task_id, "Claude Code spawned in Terminal", status="done")
 
-    recently_built.append({"name": name, "path": path, "time": time.time()})
-    return f"On it, sir. Claude Code is working in {name}."
+        recently_built.append({"name": name, "path": path, "time": time.time()})
+        return f"On it, sir. Claude Code is working in {name}."
 
 
 async def handle_show_recent() -> str:
@@ -2170,6 +2250,7 @@ async def voice_handler(ws: WebSocket):
     """
     await ws.accept()
     task_manager.register_websocket(ws)
+    await process_bus.subscribe(ws)
     history: list[dict] = []
     work_session = WorkSession()
     planner = TaskPlanner()
@@ -2668,6 +2749,7 @@ async def voice_handler(ws: WebSocket):
         log.error(f"WebSocket error: {e}", exc_info=True)
     finally:
         task_manager.unregister_websocket(ws)
+        await process_bus.unsubscribe(ws)
 
 
 # ---------------------------------------------------------------------------

@@ -55,12 +55,16 @@ class WorkSession:
         self._status = "idle"
         log.info(f"Work mode started: {self._project_name} ({working_dir})")
 
-    async def send(self, user_text: str) -> str:
+    async def send(self, user_text: str, task_id: str | None = None) -> str:
         """Send a message to claude -p and get the full response.
 
         First message in a session: fresh claude -p
         Subsequent messages: claude -p --continue (resumes last session in dir)
+
+        If `task_id` is given, stdout is streamed line-by-line as code_task
+        events on the process bus (wired in a follow-up commit).
         """
+        _ = task_id  # accepted for forward compatibility; used in a later commit
         claude_path = shutil.which("claude")
         if not claude_path:
             return "Claude CLI not found on this system."

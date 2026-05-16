@@ -234,12 +234,14 @@ async def run_applescript(script: str) -> dict:
     }
 
 
-async def new_cursor_project(name: str, base_dir: str | None = None) -> dict:
+async def new_cursor_project(name: str, base_dir: str | None = None, task_id: str | None = None) -> dict:
     """Create a fresh project directory and open it in Cursor as a new session.
 
     name: project folder name (kebab-cased internally if necessary)
     base_dir: optional parent (default: ~/Code, falling back to ~/Desktop)
+    task_id: optional process-panel task_id; events emitted in a follow-up commit.
     """
+    _ = task_id  # accepted for forward compatibility
     raw_name = name.strip()
     if not raw_name:
         return {"success": False, "confirmation": "I need a project name, sir."}
