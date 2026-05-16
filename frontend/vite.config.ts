@@ -13,6 +13,10 @@ export default defineConfig({
         target: "https://localhost:8340",
         secure: false,
       },
+      "/screenshots": {
+        target: "https://localhost:8340",
+        secure: false,
+      },
     },
   },
   build: {
