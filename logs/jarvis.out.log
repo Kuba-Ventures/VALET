@@ -1,0 +1,51 @@
+
+  J.A.R.V.I.S. Server v0.1.0
+  WebSocket: wss://0.0.0.0:8340/ws/voice
+  REST API:  https://0.0.0.0:8340/api/
+  Tasks:     https://0.0.0.0:8340/api/tasks
+
+
+  J.A.R.V.I.S. Server v0.1.0
+  WebSocket: wss://0.0.0.0:8340/ws/voice
+  REST API:  https://0.0.0.0:8340/api/
+  Tasks:     https://0.0.0.0:8340/api/tasks
+
+INFO:     127.0.0.1:54604 - "GET /api/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54606 - "GET /api/settings/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54701 - "GET /api/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54705 - "GET /api/settings/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54736 - "GET /api/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54741 - "GET /api/settings/status HTTP/1.1" 200 OK
+
+  J.A.R.V.I.S. Server v0.1.0
+  WebSocket: wss://0.0.0.0:8340/ws/voice
+  REST API:  https://0.0.0.0:8340/api/
+  Tasks:     https://0.0.0.0:8340/api/tasks
+
+INFO:     127.0.0.1:55104 - "GET /api/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55110 - "GET /api/settings/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55147 - "GET /api/settings/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55150 - "GET /api/settings/preferences HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55154 - "POST /api/google/disconnect HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55157 - "GET /api/settings/status HTTP/1.1" 200 OK
+JARVIS is opening your browser to connect your Google account...
+INFO:     127.0.0.1:55161 - "POST /api/google/connect HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55178 - "GET /api/settings/status HTTP/1.1" 200 OK
+
+  J.A.R.V.I.S. Server v0.1.0
+  WebSocket: wss://0.0.0.0:8340/ws/voice
+  REST API:  https://0.0.0.0:8340/api/
+  Tasks:     https://0.0.0.0:8340/api/tasks
+
+INFO:     127.0.0.1:62675 - "GET /api/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62681 - "GET /api/settings/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62806 - "GET /api/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62809 - "GET /api/settings/status HTTP/1.1" 200 OK
+
+  J.A.R.V.I.S. Server v0.1.0
+  WebSocket: wss://0.0.0.0:8340/ws/voice
+  REST API:  https://0.0.0.0:8340/api/
+  Tasks:     https://0.0.0.0:8340/api/tasks
+
+INFO:     127.0.0.1:63046 - "GET /api/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63049 - "GET /api/settings/status HTTP/1.1" 200 OK

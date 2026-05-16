@@ -1,0 +1,446 @@
+INFO:     Started server process [10588]
+INFO:     Waiting for application startup.
+2026-05-15 18:11:50,082 [jarvis] Context refresh thread started
+2026-05-15 18:11:50,084 [jarvis] JARVIS server starting
+INFO:     Application startup complete.
+ERROR:    [Errno 48] error while attempting to bind on address ('0.0.0.0', 8340): address already in use
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+2026-05-15 18:17:22,066 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+INFO:     127.0.0.1:54610 - "WebSocket /ws/voice" [accepted]
+2026-05-15 18:17:22,873 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 18:17:23,296 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:17:23,473 [jarvis] JARVIS: Good evening, sir.
+2026-05-15 18:18:59,678 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:54702 - "WebSocket /ws/voice" [accepted]
+2026-05-15 18:19:07,072 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 18:19:07,517 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:19:07,738 [jarvis] JARVIS: Good evening, sir.
+2026-05-15 18:19:09,257 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 18:19:25,296 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:54721 - "WebSocket /ws/voice" [accepted]
+2026-05-15 18:19:26,302 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 18:19:26,428 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:54735 - "WebSocket /ws/voice" [accepted]
+2026-05-15 18:19:26,509 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 18:19:28,695 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 18:20:25,344 [jarvis] User: can you open my personal Drive
+2026-05-15 18:20:25,357 [jarvis] Scanned 7 projects
+2026-05-15 18:20:26,295 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:20:26,320 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://drive.google.com/drive/my-drive'}
+2026-05-15 18:20:26,672 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:20:26,842 [jarvis] JARVIS: Right away, sir.
+2026-05-15 18:20:27,370 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:20:33,366 [jarvis] User: that was my work drive can you open my personal Drive Mister from the Underwood
+2026-05-15 18:20:34,822 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:20:35,337 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:20:37,160 [jarvis] JARVIS: I'm afraid I need a bit more specificity, sir — Google Drive, Dropbox, iCloud Drive, or something else entirely?
+2026-05-15 18:20:37,391 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:20:47,507 [jarvis] User: Google Drive please
+2026-05-15 18:20:48,856 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:20:48,859 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://drive.google.com/drive/u/1'}
+2026-05-15 18:20:49,072 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:20:49,073 [anthropic._base_client] Retrying request to /v1/messages in 19.000000 seconds
+2026-05-15 18:20:49,419 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:20:50,143 [jarvis] JARVIS: Pulling up your personal Google Drive now, sir.
+2026-05-15 18:21:02,425 [jarvis] User: can you open up my email and start a draft to my boss Nick at qsbs rollover.com
+2026-05-15 18:21:02,741 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:21:02,742 [anthropic._base_client] Retrying request to /v1/messages in 24.000000 seconds
+2026-05-15 18:21:09,151 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:21:27,975 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:21:27,978 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com\n[ACTION:TYPE] Google Chrome ||| nick@qsbsrollover.com'}
+2026-05-15 18:21:28,167 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:21:28,168 [anthropic._base_client] Retrying request to /v1/messages in 15.000000 seconds
+2026-05-15 18:21:28,442 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:21:28,532 [jarvis] JARVIS: Will do, sir.
+2026-05-15 18:21:44,382 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+INFO:     Shutting down
+2026-05-15 18:23:49,420 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [10581]
+INFO:     Started server process [11108]
+INFO:     Waiting for application startup.
+2026-05-15 18:23:50,233 [jarvis] Context refresh thread started
+2026-05-15 18:23:50,236 [jarvis] JARVIS server starting
+INFO:     Application startup complete.
+INFO:     Uvicorn running on https://0.0.0.0:8340 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54959 - "WebSocket /ws/voice" [accepted]
+2026-05-15 18:23:50,430 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 18:23:50,863 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:23:51,166 [jarvis] JARVIS: Good evening, sir.
+2026-05-15 18:23:53,287 [jarvis] User: good evening sir
+2026-05-15 18:23:53,301 [jarvis] Scanned 7 projects
+2026-05-15 18:23:55,091 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:23:55,635 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:23:55,911 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:23:57,088 [jarvis] JARVIS: A pleasant surprise — you're up rather late for a Friday evening. What can I do for you?
+INFO:     127.0.0.1:55102 - "WebSocket /ws/voice" [accepted]
+2026-05-15 18:27:21,529 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 18:27:21,988 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:27:22,157 [jarvis] JARVIS: Good evening, sir.
+2026-05-15 18:27:23,888 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 18:27:37,291 [jarvis] User: okay Jarvis
+2026-05-15 18:27:38,252 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:27:38,611 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:27:38,776 [jarvis] JARVIS: I'm listening, sir.
+2026-05-15 18:27:43,045 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+2026-05-15 18:27:52,985 [jarvis] User: to my boss Nick at USPS rollover.com that says I'll be late for our meeting tomorrow
+2026-05-15 18:27:54,232 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:27:54,589 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:27:55,236 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:27:56,430 [jarvis] JARVIS: I'll need a bit more detail, sir. Which meeting tomorrow — do you have a specific time and subject line in mind?
+2026-05-15 18:28:08,096 [jarvis] User: I don't just you can even put test if you'd like
+2026-05-15 18:28:09,438 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:28:09,440 [jarvis] LLM embedded action: {'action': 'draft_email', 'target': "nick@qsbsrollover.com ||| test ||| Hi Nick,\n\nI wanted to let you know I'll be running a bit late for our meeting tomorrow. I appreciate your understanding.\n\nThanks,\nFinley"}
+2026-05-15 18:28:09,614 [googleapiclient.http] Encountered 403 Forbidden with reason "insufficientPermissions"
+2026-05-15 18:28:09,614 [jarvis.mail] drafts.create failed: <HttpError 403 when requesting https://gmail.googleapis.com/gmail/v1/users/me/drafts?alt=json returned "Request had insufficient authentication scopes.". Details: "[{'message': 'Insufficient Permission', 'domain': 'global', 'reason': 'insufficientPermissions'}]">
+2026-05-15 18:28:09,633 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:28:09,635 [anthropic._base_client] Retrying request to /v1/messages in 15.000000 seconds
+2026-05-15 18:28:09,863 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:28:09,998 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:28:10,070 [jarvis] JARVIS: Right away, sir.
+2026-05-15 18:28:17,875 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 18:28:20,763 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 18:28:21,642 [google_auth_oauthlib.flow] JARVIS is opening your browser to connect your Google account...
+2026-05-15 18:28:25,927 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:28:26,938 [google_auth_oauthlib.flow] "GET /?state=QBIEbB26Wcu8D5hCgTWjKd1LDX2cw4&iss=https://accounts.google.com&code=4/0AeoWuM9uME7RDoOwDcymNWUKU285ZKFR-2BjE8-LYFrw_mm9xLxWGknf7l7CbpqR-J1zaA&scope=email%20https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/gmail.compose%20https://www.googleapis.com/auth/calendar%20https://www.googleapis.com/auth/calendar.events%20openid%20https://www.googleapis.com/auth/userinfo.email&authuser=0&hd=qsbsrollover.com&prompt=consent HTTP/1.1" 200 41
+2026-05-15 18:28:27,516 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 18:28:48,640 [jarvis] User: can you draft an email to my boss Nick at qsbs rollover.com in the subject and in the actual header put just test
+2026-05-15 18:28:50,010 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:28:50,012 [jarvis] LLM embedded action: {'action': 'draft_email', 'target': "nick@qsbsrollover.com ||| test ||| Hi Nick,\n\nI wanted to let you know I'll be running late for our meeting tomorrow.\n\nThanks,\nFinley"}
+2026-05-15 18:28:50,269 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:28:50,270 [anthropic._base_client] Retrying request to /v1/messages in 11.000000 seconds
+2026-05-15 18:28:50,396 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:28:50,604 [jarvis] JARVIS: Right away, sir.
+2026-05-15 18:28:50,696 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:29:02,433 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:29:13,482 [jarvis] User: can you open up my email and show me
+2026-05-15 18:29:14,659 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:29:14,662 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com'}
+2026-05-15 18:29:14,848 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:29:14,857 [anthropic._base_client] Retrying request to /v1/messages in 22.000000 seconds
+2026-05-15 18:29:15,050 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:29:15,341 [jarvis] JARVIS: Right away, sir.
+2026-05-15 18:29:38,148 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:31:48,199 [jarvis] User: can you open the draft that you sent for Nick
+2026-05-15 18:31:49,442 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:31:49,445 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com'}
+2026-05-15 18:31:49,893 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:31:50,311 [jarvis] JARVIS: Pulled that up in Chrome, sir.
+2026-05-15 18:31:50,513 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:31:55,641 [jarvis] User: that's just my inbox can you open the draft
+2026-05-15 18:31:56,814 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:31:56,817 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com/#drafts'}
+2026-05-15 18:31:57,000 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:31:57,000 [anthropic._base_client] Retrying request to /v1/messages in 5.000000 seconds
+2026-05-15 18:31:57,172 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:31:58,054 [jarvis] JARVIS: The draft should be in your Drafts folder — let me pull that up for you.
+2026-05-15 18:32:03,149 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:32:34,508 [jarvis] User: okay Jarvis
+2026-05-15 18:32:35,368 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:32:35,863 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:32:36,076 [jarvis] JARVIS: I'm listening, sir.
+2026-05-15 18:32:40,777 [jarvis] User: can you open a new Chrome tab
+2026-05-15 18:32:41,494 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:32:41,676 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:32:41,677 [anthropic._base_client] Retrying request to /v1/messages in 36.000000 seconds
+2026-05-15 18:32:41,774 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:32:41,775 [anthropic._base_client] Retrying request to /v1/messages in 35.000000 seconds
+2026-05-15 18:32:41,872 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:32:41,960 [jarvis] JARVIS: Done, sir.
+2026-05-15 18:33:10,361 [jarvis] User: can you open a new Chrome window
+2026-05-15 18:33:10,675 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:33:10,676 [anthropic._base_client] Retrying request to /v1/messages in 23.000000 seconds
+2026-05-15 18:33:17,835 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:33:19,044 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:33:34,656 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:33:34,834 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:33:34,835 [anthropic._base_client] Retrying request to /v1/messages in 18.000000 seconds
+2026-05-15 18:33:35,019 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:33:35,129 [jarvis] JARVIS: Done, sir.
+2026-05-15 18:33:49,857 [jarvis] User: can you open a new Chrome session
+2026-05-15 18:33:50,176 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:33:50,177 [anthropic._base_client] Retrying request to /v1/messages in 22.000000 seconds
+2026-05-15 18:33:53,958 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:34:13,418 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:34:13,599 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:34:13,600 [anthropic._base_client] Retrying request to /v1/messages in 17.000000 seconds
+2026-05-15 18:34:13,974 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:34:14,089 [jarvis] JARVIS: Done, sir.
+2026-05-15 18:34:31,858 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:34:33,072 [jarvis] User: can you open my personal email
+2026-05-15 18:34:33,294 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:34:33,296 [anthropic._base_client] Retrying request to /v1/messages in 4.000000 seconds
+2026-05-15 18:34:38,300 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:34:38,302 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=mrfinleyunderwood@gmail.com'}
+2026-05-15 18:34:38,491 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:34:38,492 [anthropic._base_client] Retrying request to /v1/messages in 30.000000 seconds
+2026-05-15 18:34:38,713 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:34:38,994 [jarvis] JARVIS: Right away, sir.
+2026-05-15 18:35:03,134 [jarvis] User: Jarvis can you open my personal email
+2026-05-15 18:35:03,480 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:35:03,482 [anthropic._base_client] Retrying request to /v1/messages in 23.000000 seconds
+2026-05-15 18:35:09,906 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:35:27,568 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:35:27,570 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=mrfinleyunderwood@gmail.com'}
+2026-05-15 18:35:27,763 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:35:27,763 [anthropic._base_client] Retrying request to /v1/messages in 17.000000 seconds
+2026-05-15 18:35:27,965 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:35:28,277 [jarvis] JARVIS: Pulled that up in Chrome, sir.
+2026-05-15 18:35:41,724 [jarvis] User: Jarvis can you open my work email
+2026-05-15 18:35:42,559 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:35:42,561 [anthropic._base_client] Retrying request to /v1/messages in 21.000000 seconds
+2026-05-15 18:35:44,936 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:35:44,937 [anthropic._base_client] Retrying request to /v1/messages in 4.000000 seconds
+2026-05-15 18:35:50,023 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:36:04,827 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 18:36:05,069 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:36:05,070 [anthropic._base_client] Retrying request to /v1/messages in 19.000000 seconds
+2026-05-15 18:36:05,202 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:36:05,203 [anthropic._base_client] Retrying request to /v1/messages in 8.000000 seconds
+2026-05-15 18:36:05,404 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 18:36:05,672 [jarvis] JARVIS: Pulled that up in Chrome, sir.
+2026-05-15 18:36:13,708 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:36:13,709 [anthropic._base_client] Retrying request to /v1/messages in 8.000000 seconds
+2026-05-15 18:36:21,967 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:36:24,359 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 18:36:24,360 [anthropic._base_client] Retrying request to /v1/messages in 1.000000 seconds
+2026-05-15 18:36:26,825 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:54:04,668 [jarvis] User: okay Jarvis
+2026-05-15 20:54:06,256 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:54:08,759 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 20:54:08,825 [jarvis] JARVIS: I'm listening, sir.
+2026-05-15 20:54:17,190 [jarvis] User: can you open my personal email
+2026-05-15 20:54:18,486 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:54:18,488 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=mrfinleyunderwood@gmail.com'}
+2026-05-15 20:54:18,894 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 20:54:19,242 [jarvis] JARVIS: Pulled that up in Chrome, sir.
+2026-05-15 20:54:19,511 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:54:27,563 [jarvis] User: can you open my work email
+2026-05-15 20:54:28,727 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:54:29,207 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 20:54:29,460 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 20:54:29,461 [anthropic._base_client] Retrying request to /v1/messages in 28.000000 seconds
+2026-05-15 20:54:29,470 [jarvis] JARVIS: Pulled that up in Chrome, sir.
+2026-05-15 20:54:37,572 [jarvis] User: hey Jarvis can you pull up my work email
+2026-05-15 20:54:38,407 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 20:54:38,409 [anthropic._base_client] Retrying request to /v1/messages in 38.000000 seconds
+2026-05-15 20:54:58,597 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:55:17,407 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:55:17,409 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com'}
+2026-05-15 20:55:17,616 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 20:55:17,619 [anthropic._base_client] Retrying request to /v1/messages in 16.000000 seconds
+2026-05-15 20:55:17,812 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 20:55:18,105 [jarvis] JARVIS: Pulled that up in Chrome, sir.
+2026-05-15 20:55:35,180 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:58:12,438 [jarvis] User: so instead of some of the like behind the scenes work I would really like it if the like Jarvis agent itself would like in the pop-up window almost pop up its research or pop up like it's process like show where it's actively clicking clicking through to find the information and if I ask it to pull up a map of London it shows that it's going into Google that it goes to images click some apple of London and expands you know I kind of want
+2026-05-15 20:58:15,318 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:58:16,269 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 20:58:16,618 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:58:17,300 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 20:58:23,089 [jarvis] JARVIS: Got it, sir — you want transparency into my process. When I'm researching or pulling something up, instead of just handing you the result, show the actual journey: which sites I'm visiting, what I'm clicking, how I'm finding it. Makes sense for building trust and understanding how I work.
+
+That's a visibility layer on top of what I'm already doing. Should be straightforward to wire in — screen capture the browser actions as they happen, display them in real-time in the pop-up. More of a UI feature than a backend change.
+INFO:     Shutting down
+2026-05-15 20:59:45,232 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [11108]
+INFO:     Started server process [14162]
+INFO:     Waiting for application startup.
+2026-05-15 20:59:46,112 [jarvis] Context refresh thread started
+2026-05-15 20:59:46,112 [jarvis] JARVIS server starting
+INFO:     Application startup complete.
+INFO:     Uvicorn running on https://0.0.0.0:8340 (Press CTRL+C to quit)
+INFO:     127.0.0.1:60248 - "WebSocket /ws/voice" [accepted]
+2026-05-15 20:59:46,247 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 20:59:46,775 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 20:59:46,938 [jarvis] JARVIS: Good evening, sir.
+2026-05-15 21:25:51,316 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:62673 - "WebSocket /ws/voice" [accepted]
+2026-05-15 21:25:56,074 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 21:25:56,484 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:25:56,645 [jarvis] JARVIS: Good evening, sir.
+2026-05-15 21:25:58,385 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 21:26:18,497 [jarvis] User: can you open my work email
+2026-05-15 21:26:18,512 [jarvis] Scanned 7 projects
+2026-05-15 21:26:19,598 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:26:19,624 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com'}
+2026-05-15 21:26:20,095 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:26:20,270 [jarvis] JARVIS: Right away, sir.
+2026-05-15 21:26:20,792 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:26:25,098 [jarvis] User: can you open now my personal email
+2026-05-15 21:26:26,005 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:26:26,007 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=mrfinleyunderwood@gmail.com'}
+2026-05-15 21:26:26,361 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:26:26,510 [jarvis] JARVIS: Done, sir.
+2026-05-15 21:26:27,035 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:26:35,344 [jarvis] User: can you type a message to Brady and slack that says I will be 5 minutes late to the meeting
+2026-05-15 21:26:36,293 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:26:36,296 [jarvis] LLM embedded action: {'action': 'send', 'target': 'Slack ||| I will be 5 minutes late to the meeting'}
+2026-05-15 21:26:36,645 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:26:36,874 [jarvis] JARVIS: Right away, sir.
+2026-05-15 21:26:37,404 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:26:49,009 [jarvis] User: open my work email
+2026-05-15 21:26:50,350 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:26:50,352 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com'}
+2026-05-15 21:26:50,679 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:26:50,811 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:26:50,811 [anthropic._base_client] Retrying request to /v1/messages in 5.000000 seconds
+2026-05-15 21:26:50,966 [jarvis] JARVIS: Pulled that up in Chrome, sir.
+2026-05-15 21:26:57,080 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:27:12,918 [jarvis] User: bitch ass nigga
+2026-05-15 21:27:13,854 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:27:14,200 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:27:15,216 [jarvis] JARVIS: I'm not going to engage with that, sir. Is there something I can actually help you with?
+2026-05-15 21:27:34,700 [jarvis] User: Jarvis can you hear me now
+2026-05-15 21:27:35,518 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:27:35,899 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:27:36,191 [jarvis] JARVIS: Loud and clear, sir.
+2026-05-15 21:27:36,401 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:27:42,792 [jarvis] User: Jarvis open my personal email
+2026-05-15 21:27:43,940 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:27:43,942 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=mrfinleyunderwood@gmail.com'}
+2026-05-15 21:27:44,108 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:27:44,109 [anthropic._base_client] Retrying request to /v1/messages in 11.000000 seconds
+2026-05-15 21:27:44,310 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:27:44,393 [jarvis] JARVIS: Done, sir.
+2026-05-15 21:27:48,657 [jarvis] User: now open my work email
+2026-05-15 21:27:49,138 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:27:49,139 [anthropic._base_client] Retrying request to /v1/messages in 6.000000 seconds
+2026-05-15 21:27:55,479 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:27:55,481 [anthropic._base_client] Retrying request to /v1/messages in 12.000000 seconds
+2026-05-15 21:27:56,314 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:28:08,285 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:28:08,462 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:28:08,463 [anthropic._base_client] Retrying request to /v1/messages in 12.000000 seconds
+2026-05-15 21:28:08,710 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:28:09,023 [jarvis] JARVIS: Pulled that up in Chrome, sir.
+INFO:     127.0.0.1:62804 - "WebSocket /ws/voice" [accepted]
+2026-05-15 21:28:17,508 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 21:28:17,881 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:28:18,042 [jarvis] JARVIS: Good evening, sir.
+2026-05-15 21:28:19,720 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 21:28:20,269 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+2026-05-15 21:28:21,498 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:28:34,734 [jarvis] User: can you open my personal email
+2026-05-15 21:28:35,751 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:28:35,754 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=mrfinleyunderwood@gmail.com'}
+2026-05-15 21:28:35,954 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:28:35,954 [anthropic._base_client] Retrying request to /v1/messages in 7.000000 seconds
+2026-05-15 21:28:36,106 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:28:36,332 [jarvis] JARVIS: Right away, sir.
+2026-05-15 21:28:41,217 [jarvis] User: can you now open my work email
+2026-05-15 21:28:41,841 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:28:41,842 [anthropic._base_client] Retrying request to /v1/messages in 2.000000 seconds
+2026-05-15 21:28:43,958 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:28:44,164 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:28:44,165 [anthropic._base_client] Retrying request to /v1/messages in 11.000000 seconds
+2026-05-15 21:28:56,184 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:28:56,187 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com'}
+2026-05-15 21:28:56,392 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:28:56,394 [anthropic._base_client] Retrying request to /v1/messages in 11.000000 seconds
+2026-05-15 21:28:56,550 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:28:56,664 [jarvis] JARVIS: Done, sir.
+2026-05-15 21:29:08,579 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:29:09,952 [jarvis] User: can you open my work email
+2026-05-15 21:29:10,163 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:29:10,164 [anthropic._base_client] Retrying request to /v1/messages in 9.000000 seconds
+2026-05-15 21:29:20,170 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:29:20,173 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com'}
+2026-05-15 21:29:20,353 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 429 Too Many Requests"
+2026-05-15 21:29:20,354 [anthropic._base_client] Retrying request to /v1/messages in 11.000000 seconds
+2026-05-15 21:29:20,526 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:29:20,735 [jarvis] JARVIS: Right away, sir.
+2026-05-15 21:29:33,209 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:30:18,748 [jarvis] User: nice nice yeah he's going to love that he's going to fucking love that
+2026-05-15 21:30:19,680 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:30:20,055 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:30:20,472 [jarvis] JARVIS: Sounds like something's landed well, sir.
+2026-05-15 21:30:20,694 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+INFO:     Shutting down
+2026-05-15 21:32:22,752 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [14162]
+INFO:     Started server process [15148]
+INFO:     Waiting for application startup.
+2026-05-15 21:32:23,548 [jarvis] Context refresh thread started
+2026-05-15 21:32:23,550 [jarvis] JARVIS server starting
+INFO:     Application startup complete.
+INFO:     Uvicorn running on https://0.0.0.0:8340 (Press CTRL+C to quit)
+INFO:     127.0.0.1:63007 - "WebSocket /ws/voice" [accepted]
+2026-05-15 21:32:23,771 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 21:32:24,174 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:32:24,314 [jarvis] JARVIS: Good evening, sir.
+2026-05-15 21:32:24,544 [jarvis] User: call my phone
+2026-05-15 21:32:24,557 [jarvis] Scanned 7 projects
+2026-05-15 21:32:26,036 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:32:26,516 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:32:29,539 [jarvis] JARVIS: I'm afraid that's beyond my current reach, sir — I can't initiate phone calls directly. However, I can open your phone's dialer via Siri, send a message instead, or help you find a contact number if you'd like.
+2026-05-15 21:33:18,156 [jarvis] Voice WebSocket disconnected
+INFO:     connection closed
+INFO:     127.0.0.1:63044 - "WebSocket /ws/voice" [accepted]
+2026-05-15 21:33:21,836 [jarvis] Voice WebSocket connected
+INFO:     connection open
+2026-05-15 21:33:24,154 [jarvis.notes] Notes script failed: 324:328: execution error: Notes got an error: Can’t get name of container of note id "x-coredata://F7A1FEE1-913D-4D6E-8DAA-BBFBAA4C9BFD/ICNote/p209". (-1728)
+
+2026-05-15 21:33:48,746 [jarvis] User: open my work email
+2026-05-15 21:33:49,791 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:33:49,795 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=finley@qsbsrollover.com'}
+2026-05-15 21:33:50,521 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:33:50,718 [jarvis] JARVIS: Right away, sir.
+2026-05-15 21:33:50,974 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:33:56,251 [jarvis] User: great now can you open my personal email
+2026-05-15 21:34:00,003 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:34:00,007 [jarvis] LLM embedded action: {'action': 'browse', 'target': 'https://mail.google.com/mail/?authuser=mrfinleyunderwood@gmail.com'}
+2026-05-15 21:34:00,593 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:34:00,658 [jarvis] JARVIS: Done, sir.
+2026-05-15 21:34:07,582 [jarvis] User: awesome can you open a new session in cursor
+2026-05-15 21:34:08,452 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:34:08,455 [jarvis] LLM embedded action: {'action': 'open_app', 'target': 'Cursor'}
+2026-05-15 21:34:08,806 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:34:09,136 [jarvis] JARVIS: Right away, sir.
+2026-05-15 21:34:16,549 [jarvis] User: and then can you send a message to Nick that says Jarvis test
+2026-05-15 21:34:17,439 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:34:17,441 [jarvis] LLM embedded action: {'action': 'send', 'target': 'Slack ||| Jarvis test'}
+2026-05-15 21:34:17,791 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:34:17,970 [jarvis] JARVIS: Right away, sir.
+2026-05-15 21:34:33,533 [jarvis] User: open my work email
+2026-05-15 21:34:34,525 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:34:34,952 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:34:35,754 [jarvis] JARVIS: Already have it open in Chrome, sir — it's one of your active tabs.
+2026-05-15 21:34:35,876 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:35:15,187 [jarvis] User: okay Jarvis
+2026-05-15 21:35:15,979 [httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-05-15 21:35:16,340 [httpx] HTTP Request: POST https://api.fish.audio/v1/tts "HTTP/1.1 200 OK"
+2026-05-15 21:35:16,607 [jarvis] JARVIS: Standing by, sir.

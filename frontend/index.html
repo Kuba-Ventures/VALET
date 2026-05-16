@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JARVIS</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#06061a" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="orb-canvas"></canvas>
+
+    <!-- Minimal controls — top right -->
+    <div id="controls">
+      <button id="btn-wake-toggle" class="wake-toggle" title="Click to toggle wake-word listening">
+        <span class="wake-dot"></span>
+        <span class="wake-label">Active</span>
+      </button>
+      <button id="btn-menu" title="Menu">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Dropdown menu -->
+    <div id="menu-dropdown" style="display:none">
+      <button id="btn-settings">Settings</button>
+      <button id="btn-restart">Restart Server</button>
+      <button id="btn-fix-self">Fix Yourself</button>
+    </div>
+
+    <div id="status-text"></div>
+    <div id="jarvis-label">JARVIS</div>
+    <div id="error-text"></div>
+    <div id="diag-panel" class="diag-panel">
+      <canvas id="diag-mic-canvas" width="140" height="32"></canvas>
+      <div id="diag-transcript"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
