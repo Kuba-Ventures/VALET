@@ -3,14 +3,24 @@ JARVIS Browser — Playwright-based web browsing capabilities.
 
 Provides search, page visits, screenshots, and multi-step research.
 Runs headless Chromium with realistic user agent to avoid blocking.
+
+When called with a `task_id`, each navigation and screenshot is announced
+on the process event bus so the panel shows live progress.
 """
 
 import asyncio
 import logging
 import tempfile
+import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
+
+from process_events import (
+    emit_browser_action,
+    emit_screenshot,
+    emit_step,
+)
 
 log = logging.getLogger("jarvis.browser")
 
@@ -24,6 +34,30 @@ TIMEOUT_MS = 30_000
 # ---------------------------------------------------------------------------
 # Data Models
 # ---------------------------------------------------------------------------
+
+SCREENSHOTS_DIR = Path(__file__).parent / "data" / "screenshots"
+
+
+async def _capture_panel_screenshot(page, task_id: str, label: str) -> str | None:
+    """Save a screenshot of `page` to data/screenshots/<task_id>/<label>-<ts>.png.
+
+    Returns the path RELATIVE to data/screenshots/ (e.g. "abc12345/results-...png")
+    so the frontend can fetch it via /screenshots/<rel>. Returns None on failure
+    or when no task_id is supplied.
+    """
+    if not task_id:
+        return None
+    try:
+        base = SCREENSHOTS_DIR / task_id
+        base.mkdir(parents=True, exist_ok=True)
+        filename = f"{label}-{int(time.time() * 1000)}.png"
+        full_path = base / filename
+        await page.screenshot(path=str(full_path), full_page=False)
+        return f"{task_id}/{filename}"
+    except Exception as e:
+        log.warning(f"panel screenshot capture failed: {e}")
+        return None
+
 
 @dataclass
 class SearchResult:
@@ -92,14 +126,17 @@ class JarvisBrowser:
 
     # -- Search ----------------------------------------------------------------
 
-    async def search(self, query: str) -> list[SearchResult]:
+    async def search(self, query: str, task_id: str | None = None) -> list[SearchResult]:
         """Search DuckDuckGo and return top results."""
         page = await self._new_page()
         results = []
 
         try:
+            search_url = f"https://html.duckduckgo.com/html/?q={query}"
+            if task_id:
+                await emit_browser_action(task_id, f"Search: {query}", url=search_url)
             await page.goto(
-                f"https://html.duckduckgo.com/html/?q={query}",
+                search_url,
                 timeout=TIMEOUT_MS,
                 wait_until="domcontentloaded",
             )
@@ -125,6 +162,16 @@ class JarvisBrowser:
                     ))
 
             log.info(f"Search '{query}' returned {len(results)} results")
+            if task_id:
+                await emit_step(
+                    task_id,
+                    f"Got {len(results)} results",
+                    detail=", ".join(r.title[:60] for r in results[:3]),
+                    status="done",
+                )
+                rel = await _capture_panel_screenshot(page, task_id, "search-results")
+                if rel:
+                    await emit_screenshot(task_id, rel, caption=f"Results for '{query}'")
             # Let user see the search results for a moment
             await asyncio.sleep(2)
         except Exception as e:
@@ -137,11 +184,13 @@ class JarvisBrowser:
 
     # -- Visit URL -------------------------------------------------------------
 
-    async def visit(self, url: str) -> PageContent:
+    async def visit(self, url: str, task_id: str | None = None) -> PageContent:
         """Visit a URL and extract main text content."""
         page = await self._new_page()
 
         try:
+            if task_id:
+                await emit_browser_action(task_id, "Visit page", url=url)
             await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
 
             data = await page.evaluate("""
@@ -173,6 +222,16 @@ class JarvisBrowser:
             """)
 
             text = data.get("text", "")
+            if task_id:
+                await emit_step(
+                    task_id,
+                    f"Loaded {data.get('title', '')[:60] or url}",
+                    detail=f"{len(text.split())} words extracted",
+                    status="done",
+                )
+                rel = await _capture_panel_screenshot(page, task_id, "page-load")
+                if rel:
+                    await emit_screenshot(task_id, rel, caption=data.get("title", "")[:80])
             return PageContent(
                 title=data.get("title", ""),
                 url=url,
@@ -194,11 +253,13 @@ class JarvisBrowser:
 
     # -- Screenshot ------------------------------------------------------------
 
-    async def screenshot(self, url: str, path: str = None) -> str:
+    async def screenshot(self, url: str, path: str = None, task_id: str | None = None) -> str:
         """Take screenshot of a page. Returns file path to PNG."""
         page = await self._new_page()
 
         try:
+            if task_id:
+                await emit_browser_action(task_id, "Screenshot", url=url)
             await page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
             await page.wait_for_timeout(1000)  # let rendering settle
 
@@ -208,6 +269,11 @@ class JarvisBrowser:
 
             await page.screenshot(path=path, full_page=True)
             log.info(f"Screenshot saved: {path}")
+            if task_id:
+                # Also save to the panel-served dir so the frontend can show it.
+                rel = await _capture_panel_screenshot(page, task_id, "explicit")
+                if rel:
+                    await emit_screenshot(task_id, rel, caption=url)
             return path
 
         except Exception as e:
@@ -218,15 +284,15 @@ class JarvisBrowser:
 
     # -- Research (multi-step) -------------------------------------------------
 
-    async def research(self, topic: str) -> ResearchResult:
+    async def research(self, topic: str, task_id: str | None = None) -> ResearchResult:
         """Multi-step research: search -> visit top results -> compile findings."""
-        results = await self.search(topic)
+        results = await self.search(topic, task_id=task_id)
         sources = []
         contents = []
 
         for r in results[:3]:
             try:
-                page_content = await self.visit(r.url)
+                page_content = await self.visit(r.url, task_id=task_id)
                 sources.append(r.url)
                 contents.append(
                     f"## {r.title}\nURL: {r.url}\n\n{page_content.text_content[:1500]}"
@@ -235,6 +301,13 @@ class JarvisBrowser:
                 continue
 
         summary = "\n\n---\n\n".join(contents) if contents else "No results found."
+        if task_id:
+            await emit_step(
+                task_id,
+                f"Synthesized {len(sources)} sources",
+                detail=topic[:120],
+                status="done",
+            )
 
         return ResearchResult(
             topic=topic,
