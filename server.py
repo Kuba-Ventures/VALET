@@ -1834,6 +1834,15 @@ def detect_action_fast(text: str) -> dict | None:
     if len(words) > 12:
         return None  # Long messages are conversation, not commands
 
+    # Close / dismiss the process panel. Fast-path so JARVIS responds
+    # instantly without round-tripping through the LLM.
+    if any(p in t for p in [
+        "close it", "close that", "close the panel", "close panel",
+        "dismiss it", "dismiss that", "dismiss the panel", "dismiss",
+        "hide it", "hide that", "hide the panel",
+    ]):
+        return {"action": "close_panel"}
+
     # Screen requests — checked BEFORE project matching to prevent misrouting
     if any(p in t for p in ["look at my screen", "what's on my screen", "whats on my screen",
                              "what am i looking at", "what do you see", "see my screen",
@@ -2484,6 +2493,18 @@ async def voice_handler(ws: WebSocket):
                 # ── CHAT MODE: fast keyword detection + Haiku ──
                 else:
                     action = detect_action_fast(user_text)
+
+                    # close_panel is handled silently before any TTS — JARVIS
+                    # just dismisses the panel without speaking.
+                    if action and action["action"] == "close_panel":
+                        try:
+                            await ws.send_json({"type": "close_panel"})
+                            await ws.send_json({"type": "status", "state": "idle"})
+                        except Exception:
+                            pass
+                        history.append({"role": "user", "content": user_text})
+                        history.append({"role": "assistant", "content": "(panel dismissed)"})
+                        continue
 
                     if action:
                         if action["action"] == "open_terminal":
