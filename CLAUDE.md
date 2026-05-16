@@ -51,3 +51,83 @@ When a user clones this repo and starts Claude Code, help them:
 - AppleScript for all macOS integrations (no OAuth needed)
 - Read-only for Mail (safety by design)
 - SQLite for all local data storage
+
+## Process Event System
+
+A real-time activity feed that drives the frontend "process panel" beside
+the orb. When JARVIS does anything non-trivial (browses, builds, researches,
+opens an app, types into a chat, dispatches to Claude Code, schedules a
+calendar event), structured events flow over the WebSocket and render as a
+live, MCU-styled list. The panel auto-appears on the first event of a task
+and auto-dismisses 2 seconds after the last active task finishes.
+
+### Files
+- `process_events.py` — `Event` dataclass, `ProcessEventBus` (async pub/sub),
+  `task_context()` async CM, plus `emit_*` helpers.
+- `frontend/src/processPanel.ts` — vanilla-TS draggable panel with per-event
+  rendering and grouped `code_task` terminal blocks.
+- `frontend/src/processPanel.css` — holographic palette in CSS custom props.
+
+### Event types
+| type             | when to emit                                                 |
+| ---------------- | ------------------------------------------------------------ |
+| `task_start`     | auto-emitted by `task_context()` on enter                    |
+| `task_done`      | auto-emitted by `task_context()` on exit (status done/error) |
+| `step`           | generic progress beat ("Resolving URL…", "Got 5 results")    |
+| `browser_action` | each Playwright nav/click; payload includes `url`            |
+| `screenshot`     | image captured; payload `path` is relative to `data/screenshots/` |
+| `app_launch`     | macOS app or Finder folder opened                            |
+| `text_write`     | text typed/sent into an app via System Events                |
+| `code_task`      | one stdout line from a `claude -p` subprocess (streamed)     |
+| `task_queued`    | something added to a future queue                            |
+| `error`          | recoverable failure inside a task                            |
+
+Each event has `task_id`, `id`, `timestamp`, `status` (`pending` / `active`
+/ `done` / `error`), `title`, `detail`, and a free-form `payload` dict.
+
+### The bus
+`process_events.bus` is a module-level `ProcessEventBus` singleton. `server.py`
+subscribes each WebSocket on accept (and unsubscribes on disconnect), so
+events are broadcast only to currently-connected frontends.
+
+Events go out as `{"type": "process_event", "event": {...}}` JSON frames.
+`close_panel` is a separate message type sent when the user says "close it",
+"dismiss", "hide that", etc. — recognized in `detect_action_fast`.
+
+### Emitting from new code
+Wrap user-visible work in `task_context` and emit child events tied to its
+`task_id`:
+
+```python
+from process_events import bus as process_bus, emit_step, emit_browser_action
+
+async def my_new_action(target: str):
+    async with process_bus.task_context(f"Doing thing with {target}") as task_id:
+        await emit_step(task_id, "Phase one…", status="active")
+        # ... real work ...
+        await emit_step(task_id, "Phase one done", status="done")
+```
+
+For long-running subprocesses, stream stdout line-by-line and emit
+`code_task` per line (see `work_mode.WorkSession.send()` for the pattern).
+
+If you write a new action handler that calls `actions.py` functions
+(`open_app_or_path`, `type_into_app`, `new_cursor_project`), open a
+`task_context` at the dispatch site and pass `task_id=` through — those
+functions emit `app_launch` / `text_write` / `step` events when given a
+task_id, no-op otherwise.
+
+### Screenshots
+Saved under `data/screenshots/<task_id>/<label>-<ts>.png` (gitignored).
+The dir is served at `/screenshots/` via FastAPI `StaticFiles`. Event
+`payload.path` is the path **relative** to `data/screenshots/`, so the
+frontend fetches `/screenshots/<task_id>/<file>.png`.
+
+### Panel behavior recap
+- Hidden until first event arrives; slides in from the right of the orb.
+- Auto-dismisses 2s after the last `task_done` if no new events have
+  arrived in the meantime. Cancelled on any new event.
+- Closes immediately on (a) the X button, (b) a `close_panel` server
+  message, or (c) `processPanel.close()` called by another module.
+- Draggable via the top handle; position persists in localStorage.
+- Becomes a full-width bottom overlay below 600px viewport.
