@@ -15,6 +15,8 @@ import logging
 import shutil
 from pathlib import Path
 
+from process_events import emit_code_task
+
 log = logging.getLogger("jarvis.work_mode")
 
 SESSION_FILE = Path(__file__).parent / "data" / "active_session.json"
@@ -62,9 +64,9 @@ class WorkSession:
         Subsequent messages: claude -p --continue (resumes last session in dir)
 
         If `task_id` is given, stdout is streamed line-by-line as code_task
-        events on the process bus (wired in a follow-up commit).
+        events on the process bus so the process panel can render a live
+        terminal block while claude runs.
         """
-        _ = task_id  # accepted for forward compatibility; used in a later commit
         claude_path = shutil.which("claude")
         if not claude_path:
             return "Claude CLI not found on this system."
@@ -90,17 +92,55 @@ class WorkSession:
                 cwd=self._working_dir,
             )
 
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=user_text.encode()),
-                timeout=300,
-            )
+            collected_lines: list[str] = []
 
-            response = stdout.decode().strip()
+            async def _drain_stdout():
+                """Read stdout line-by-line. Each non-empty line becomes a
+                code_task event so the panel can show live progress."""
+                assert process.stdout is not None
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    decoded = line.decode(errors="replace").rstrip("\n")
+                    collected_lines.append(decoded)
+                    if task_id and decoded:
+                        try:
+                            await emit_code_task(task_id, decoded)
+                        except Exception:
+                            # Never let an emit failure crash the read loop;
+                            # the panel is best-effort, the claude run is not.
+                            pass
+
+            async def _write_stdin():
+                assert process.stdin is not None
+                try:
+                    process.stdin.write(user_text.encode())
+                    await process.stdin.drain()
+                finally:
+                    process.stdin.close()
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(_write_stdin(), _drain_stdout(), process.wait()),
+                    timeout=300,
+                )
+            except asyncio.TimeoutError:
+                log.error("claude -p timed out after 300s")
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                self._status = "timeout"
+                return "That's taking longer than expected, sir. The operation timed out."
+
+            response = "\n".join(collected_lines).strip()
             self._message_count += 1
             self._status = "done"
 
             if process.returncode != 0:
-                error = stderr.decode().strip()[:200]
+                stderr_bytes = (await process.stderr.read()) if process.stderr else b""
+                error = stderr_bytes.decode().strip()[:200]
                 log.error(f"claude -p error: {error}")
                 self._status = "error"
                 return f"Hit a problem, sir: {error}"
@@ -108,10 +148,6 @@ class WorkSession:
             log.info(f"Claude Code response for {self._project_name} ({len(response)} chars)")
             return response
 
-        except asyncio.TimeoutError:
-            log.error("claude -p timed out after 300s")
-            self._status = "timeout"
-            return "That's taking longer than expected, sir. The operation timed out."
         except Exception as e:
             log.error(f"Work mode error: {e}")
             self._status = "error"
