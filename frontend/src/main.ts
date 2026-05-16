@@ -10,6 +10,7 @@ import { createAudioPlayer } from "./voice";
 import { createWakeWord } from "./wakeWord";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
+import { createProcessPanel, type ProcessEvent } from "./processPanel";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,9 @@ const socket = createSocket(WS_URL);
 
 const audioPlayer = createAudioPlayer();
 orb.setAnalyser(audioPlayer.getAnalyser());
+
+// Live "what JARVIS is doing" panel. Hidden until the first event arrives.
+const processPanel = createProcessPanel();
 
 // Reflect WS connection health in the central ERROR badge.
 socket.onConnectionChange((isConnected) => {
@@ -198,6 +202,13 @@ socket.onMessage((msg) => {
     console.log("[task]", "spawned:", msg.task_id, msg.prompt);
   } else if (type === "task_complete") {
     console.log("[task]", "complete:", msg.task_id, msg.status, msg.summary);
+  } else if (type === "process_event") {
+    // ProcessEventBus broadcasts — drive the live activity panel.
+    const event = msg.event as ProcessEvent | undefined;
+    if (event) processPanel.handleEvent(event);
+  } else if (type === "close_panel") {
+    // Server-side voice intent ("close it", "dismiss", etc.) closes the panel.
+    processPanel.close();
   }
 });
 
