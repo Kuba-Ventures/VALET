@@ -1175,6 +1175,30 @@ async def _execute_open_terminal():
         log.error(f"Open terminal failed: {e}")
 
 
+async def _execute_open_app(target: str):
+    """Wrap an [ACTION:OPEN_APP] call in a panel task_context so the launch
+    shows up as a row in the process panel."""
+    async with process_bus.task_context(f"Opening {target[:60]}") as task_id:
+        try:
+            await open_app_or_path(target, task_id=task_id)
+        except Exception as e:
+            log.error(f"open_app failed: {e}")
+            await emit_error(task_id, "Open app failed", detail=str(e)[:200])
+
+
+async def _execute_type(target: str, press_enter: bool):
+    """Wrap an [ACTION:TYPE] / [ACTION:SEND] call in a task_context so the
+    typed text shows up in the process panel."""
+    app = target.partition("|||")[0].strip() if "|||" in target else ""
+    title = f"{'Sending' if press_enter else 'Typing'} in {app or 'active app'}"
+    async with process_bus.task_context(title) as task_id:
+        try:
+            await type_into_app(target, press_enter=press_enter, task_id=task_id)
+        except Exception as e:
+            log.error(f"type_into_app failed: {e}")
+            await emit_error(task_id, "Type failed", detail=str(e)[:200])
+
+
 def _find_project_dir(project_name: str) -> str | None:
     """Find a project directory by name from cached projects or Desktop."""
     for p in cached_projects:
@@ -2614,7 +2638,7 @@ async def voice_handler(ws: WebSocket):
                                 elif embedded_action["action"] == "open_terminal":
                                     asyncio.create_task(_execute_open_terminal())
                                 elif embedded_action["action"] == "open_app":
-                                    asyncio.create_task(open_app_or_path(embedded_action["target"]))
+                                    asyncio.create_task(_execute_open_app(embedded_action["target"]))
                                 elif embedded_action["action"] == "new_project":
                                     asyncio.create_task(_execute_new_project(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "delete_file":
@@ -2622,9 +2646,9 @@ async def voice_handler(ws: WebSocket):
                                 elif embedded_action["action"] == "applescript":
                                     asyncio.create_task(run_applescript(embedded_action["target"]))
                                 elif embedded_action["action"] == "type":
-                                    asyncio.create_task(type_into_app(embedded_action["target"], press_enter=False))
+                                    asyncio.create_task(_execute_type(embedded_action["target"], press_enter=False))
                                 elif embedded_action["action"] == "send":
-                                    asyncio.create_task(type_into_app(embedded_action["target"], press_enter=True))
+                                    asyncio.create_task(_execute_type(embedded_action["target"], press_enter=True))
                                 elif embedded_action["action"] == "create_event":
                                     asyncio.create_task(_execute_create_event(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "cancel_event":

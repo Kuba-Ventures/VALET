@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
+from process_events import emit_app_launch, emit_error, emit_step, emit_text_write
+
 log = logging.getLogger("jarvis.actions")
 
 DESKTOP_PATH = Path.home() / "Desktop"
@@ -142,11 +144,13 @@ async def delete_file(path: str) -> dict:
     }
 
 
-async def type_into_app(target: str, press_enter: bool = False) -> dict:
+async def type_into_app(target: str, press_enter: bool = False, task_id: str | None = None) -> dict:
     """Activate an app (if specified) and type text into it via System Events.
 
     Target format: "AppName ||| text to type"  or  "text to type" (uses current app).
     If press_enter is True, presses Return after typing (sends the message / runs the command).
+    If `task_id` is given, a text_write event is emitted to the process panel
+    reflecting the typed (or sent) text.
     """
     raw = target.strip()
     if "|||" in raw:
@@ -158,6 +162,8 @@ async def type_into_app(target: str, press_enter: bool = False) -> dict:
         text = raw
 
     if not text:
+        if task_id:
+            await emit_error(task_id, "Type: missing text")
         return {"success": False, "confirmation": "I didn't catch what to type, sir."}
 
     # Activate the target app first so keystrokes land in the right place.
@@ -208,6 +214,8 @@ async def type_into_app(target: str, press_enter: bool = False) -> dict:
 
     where = app if app else "the active app"
     verb = "Sent" if press_enter else "Typed"
+    if task_id:
+        await emit_text_write(task_id, app, text, sent=press_enter)
     return {"success": True, "confirmation": f"{verb} in {where}, sir."}
 
 
@@ -239,9 +247,9 @@ async def new_cursor_project(name: str, base_dir: str | None = None, task_id: st
 
     name: project folder name (kebab-cased internally if necessary)
     base_dir: optional parent (default: ~/Code, falling back to ~/Desktop)
-    task_id: optional process-panel task_id; events emitted in a follow-up commit.
+    task_id: optional process-panel task_id; step and app_launch events
+        are emitted to the panel when supplied.
     """
-    _ = task_id  # accepted for forward compatibility
     raw_name = name.strip()
     if not raw_name:
         return {"success": False, "confirmation": "I need a project name, sir."}
@@ -264,10 +272,14 @@ async def new_cursor_project(name: str, base_dir: str | None = None, task_id: st
     if project_path.exists():
         # If the dir already exists, just open it (don't error — user may be resuming).
         log.info(f"new_cursor_project: '{project_path}' already exists, opening as-is")
+        if task_id:
+            await emit_step(task_id, f"Reusing existing folder", detail=str(project_path))
     else:
         project_path.mkdir(parents=True)
         # Drop a minimal README so the folder isn't empty (Cursor file tree feels alive).
         (project_path / "README.md").write_text(f"# {raw_name}\n")
+        if task_id:
+            await emit_step(task_id, "Created project folder", detail=str(project_path))
 
     proc = await asyncio.create_subprocess_exec(
         "open", "-na", "Cursor", "--args", str(project_path),
@@ -285,10 +297,14 @@ async def new_cursor_project(name: str, base_dir: str | None = None, task_id: st
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             log.error(f"new_cursor_project open failed: {stderr.decode()}")
+            if task_id:
+                await emit_error(task_id, "Cursor failed to open", detail=stderr.decode()[:200])
             return {
                 "success": False,
                 "confirmation": f"I created {project_path} but couldn't open it in Cursor, sir.",
             }
+    if task_id:
+        await emit_app_launch(task_id, "Cursor", status="done", detail=str(project_path))
 
     # After Cursor finishes loading the workspace, open the integrated terminal
     # and split it so the user sees two terminal panes side by side.
@@ -364,16 +380,21 @@ async def refresh_calendar_tabs() -> dict:
     return {"success": proc.returncode == 0, "tabs_reloaded": n}
 
 
-async def open_app_or_path(target: str) -> dict:
+async def open_app_or_path(target: str, task_id: str | None = None) -> dict:
     """Open a macOS app by name or a filesystem path in Finder.
 
     Routes:
       - "Finder" / "Slack" / "Notes" / "Spotify" → `open -a <App Name>`
       - "/Users/foo/Desktop" / "~/Documents" → expanded then `open <path>`
       - "Desktop" (bare folder name) → opens that subfolder of $HOME if it exists
+
+    If `task_id` is given, an app_launch (or error) event is emitted to the
+    process panel reflecting the outcome.
     """
     raw = target.strip()
     if not raw:
+        if task_id:
+            await emit_error(task_id, "Open: missing target")
         return {"success": False, "confirmation": "I didn't catch what to open, sir."}
 
     # Path-like → open in Finder
@@ -388,6 +409,11 @@ async def open_app_or_path(target: str) -> dict:
         success = proc.returncode == 0
         if not success:
             log.error(f"open path '{path}' failed: {stderr.decode()}")
+        if task_id:
+            if success:
+                await emit_app_launch(task_id, path, status="done", detail="Opened in Finder")
+            else:
+                await emit_error(task_id, f"Couldn't open {path}", detail=stderr.decode()[:200])
         return {
             "success": success,
             "confirmation": f"Opened {path} in Finder, sir." if success else f"I couldn't open {path}, sir.",
@@ -404,6 +430,8 @@ async def open_app_or_path(target: str) -> dict:
         )
         _, _ = await proc.communicate()
         if proc.returncode == 0:
+            if task_id:
+                await emit_app_launch(task_id, raw, status="done", detail=f"Folder: {candidate}")
             return {"success": True, "confirmation": f"Opened your {raw} folder, sir."}
 
     # Otherwise treat as an app name
@@ -416,6 +444,11 @@ async def open_app_or_path(target: str) -> dict:
     success = proc.returncode == 0
     if not success:
         log.error(f"open -a '{raw}' failed: {stderr.decode()}")
+    if task_id:
+        if success:
+            await emit_app_launch(task_id, raw, status="done")
+        else:
+            await emit_error(task_id, f"No app called {raw}", detail=stderr.decode()[:200])
     return {
         "success": success,
         "confirmation": f"{raw} is up, sir." if success else f"I couldn't find an app called {raw}, sir.",
