@@ -1908,6 +1908,125 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
                 pass
 
 
+_PAGE_PREVIEW_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 JARVIS-Preview/0.1"
+)
+
+
+async def _fetch_page_preview(url: str, timeout: float = 1.5) -> dict:
+    """Best-effort metadata fetch for a research source URL.
+
+    Returns a dict with `url`, `hostname`, `title`, and `og_image_url` keys.
+    Every field is populated on success; only `url` and `hostname` are
+    guaranteed on failure — title and og_image_url default to None when
+    the fetch times out, errors out, or the page lacks the relevant tags.
+
+    Hard 1.5s cap on the whole exchange (configurable) so a flaky source
+    can't block research progress. Never raises.
+    """
+    from urllib.parse import urlparse, urljoin
+
+    parsed = urlparse(url)
+    out = {
+        "url": url,
+        "hostname": parsed.hostname or "",
+        "title": None,
+        "og_image_url": None,
+    }
+    if not parsed.scheme.startswith("http"):
+        return out
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": _PAGE_PREVIEW_UA, "Accept": "text/html"},
+        ) as http_client:
+            r = await http_client.get(url)
+            r.raise_for_status()
+            # Only need the <head>. Reading the whole body wastes bandwidth
+            # on sites that serve megabyte-sized HTML pages.
+            head = r.text[:65536]
+
+        t = re.search(r"<title[^>]*>([^<]+)</title>", head, re.IGNORECASE | re.DOTALL)
+        if t:
+            out["title"] = re.sub(r"\s+", " ", t.group(1)).strip()[:200]
+
+        og = re.search(
+            r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
+            head, re.IGNORECASE,
+        )
+        if not og:
+            og = re.search(
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image(?::secure_url)?["\']',
+                head, re.IGNORECASE,
+            )
+        if not og:
+            # Twitter card fallback — common on sites without OG tags.
+            og = re.search(
+                r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+                head, re.IGNORECASE,
+            )
+        if og:
+            img = og.group(1)
+            if img.startswith("//"):
+                img = f"{parsed.scheme}:{img}"
+            elif img.startswith("/"):
+                img = urljoin(f"{parsed.scheme}://{parsed.hostname}", img)
+            out["og_image_url"] = img
+    except Exception as e:
+        log.debug(f"page_preview fetch failed for {url}: {e}")
+    return out
+
+
+async def _emit_research_source_card(task_id: str, url: str, snippet: str) -> None:
+    """Fire-and-forget: fetch preview metadata, emit result.research_source.
+
+    Never raises. If the preview fetch fails, the card still renders with
+    hostname-only metadata and the snippet text.
+    """
+    try:
+        preview = await _fetch_page_preview(url)
+        title = preview.get("title") or preview.get("hostname") or url
+        await emit_tool_event(
+            task_id,
+            "result.research_source",
+            title[:120],
+            detail=(snippet or "")[:300],
+            status="done",
+            payload={
+                "url": url,
+                "title": preview.get("title"),
+                "hostname": preview.get("hostname"),
+                "og_image_url": preview.get("og_image_url"),
+                "snippet": (snippet or "")[:500],
+            },
+        )
+    except Exception as e:
+        log.debug(f"emit_research_source_card failed for {url}: {e}")
+
+
+def _extract_fetch_snippet(content) -> str:
+    """Pull a short snippet from a web_fetch_tool_result.content list.
+
+    The result content is typically a list of structured items; we look
+    for any item with a `.text` attribute (or `text` key) and return the
+    first ~300 chars of the first non-empty one.
+    """
+    if not isinstance(content, list):
+        return ""
+    for item in content:
+        txt = getattr(item, "text", None)
+        if txt is None and isinstance(item, dict):
+            txt = item.get("text")
+        if txt:
+            s = str(txt).strip()
+            # Take the first paragraph; collapse internal whitespace.
+            first = re.split(r"\n\s*\n", s, maxsplit=1)[0]
+            return re.sub(r"\s+", " ", first)[:500]
+    return ""
+
+
 async def _execute_native_research(target: str, ws=None):
     """Native research path — Opus 4.7 with server-side web_search + web_fetch.
 
@@ -1954,6 +2073,10 @@ async def _execute_native_research(target: str, ws=None):
         tool_result_snippets: list[str] = []
         seen_search_ids: set[str] = set()
         seen_fetch_ids: set[str] = set()
+        # tool_use_id → URL — populated when a web_fetch server_tool_use
+        # block closes; consumed when its matching web_fetch_tool_result
+        # arrives so the source-preview card can be emitted with the right URL.
+        fetch_url_by_id: dict[str, str] = {}
         searches = 0
         fetches = 0
 
@@ -2011,6 +2134,17 @@ async def _execute_native_research(target: str, ws=None):
                                         txt = getattr(r, "text", None)
                                         if txt:
                                             tool_result_snippets.append(str(txt)[:2000])
+                                # Emit a source-preview card for this URL.
+                                # Spawned as a task so the (capped 1.5s)
+                                # preview fetch doesn't slow the stream
+                                # consumer.
+                                tu_id = getattr(block, "tool_use_id", "") or ""
+                                fetched_url = fetch_url_by_id.get(tu_id, "")
+                                if fetched_url:
+                                    snippet = _extract_fetch_snippet(rc)
+                                    asyncio.create_task(
+                                        _emit_research_source_card(task_id, fetched_url, snippet)
+                                    )
 
                         elif et == "content_block_delta":
                             delta = getattr(event, "delta", None)
@@ -2047,6 +2181,8 @@ async def _execute_native_research(target: str, ws=None):
                                 seen_fetch_ids.add(bid)
                                 fetches += 1
                                 url = inp.get("url", "") if isinstance(inp, dict) else ""
+                                if url:
+                                    fetch_url_by_id[bid] = url
                                 await emit_tool_event(
                                     task_id, "tool.web_fetch", "WebFetch",
                                     detail=url[:120],

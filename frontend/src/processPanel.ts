@@ -46,7 +46,11 @@ export type EventType =
   | "result.product"
   | "result.location"
   | "result.image"
-  | "result.markdown";
+  | "result.markdown"
+  // Per-source preview card emitted during research (live), one per
+  // successful web_fetch. Distinct from `result.web` which is the
+  // model's final reading list summary.
+  | "result.research_source";
 
 export interface ProcessEvent {
   id: string;
@@ -352,11 +356,80 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   }
 
   function renderResultCard(event: ProcessEvent) {
-    const kind = String(event.type).replace(/^result\./, "");  // web|product|location|image|markdown
+    const kind = String(event.type).replace(/^result\./, "");  // web|product|location|image|markdown|research_source
     const card = document.createElement("div");
     card.className = `pp-card pp-card-${kind}`;
     card.dataset.taskId = event.task_id;
     card.dataset.eventId = event.id;
+
+    // Live per-source preview card emitted during research — compact
+    // horizontal layout: thumbnail left, title + snippet right, hostname
+    // chip on top. Renders separately from the final result.* card pipeline
+    // so it can use a different visual idiom.
+    if (kind === "research_source") {
+      const p = (event.payload || {}) as Record<string, unknown>;
+      const url = (p.url as string) || "";
+      const title = (p.title as string) || event.title || (p.hostname as string) || url;
+      const hostname = (p.hostname as string) || "";
+      const ogImage = (p.og_image_url as string) || "";
+      const snippet = (p.snippet as string) || event.detail || "";
+
+      const thumb = document.createElement("div");
+      thumb.className = "pp-source-thumb";
+      if (ogImage) {
+        const img = document.createElement("img");
+        img.src = ogImage;
+        img.alt = title;
+        img.referrerPolicy = "no-referrer";
+        img.loading = "lazy";
+        img.addEventListener("error", () => {
+          // Fall back to a hostname-initial monogram if the image 404s.
+          img.remove();
+          thumb.classList.add("pp-source-thumb-mono");
+          thumb.textContent = (hostname || "?").slice(0, 1).toUpperCase();
+        });
+        thumb.appendChild(img);
+      } else {
+        thumb.classList.add("pp-source-thumb-mono");
+        thumb.textContent = (hostname || "?").slice(0, 1).toUpperCase();
+      }
+      card.appendChild(thumb);
+
+      const body = document.createElement("div");
+      body.className = "pp-source-body";
+
+      if (hostname) {
+        const host = document.createElement("div");
+        host.className = "pp-source-host";
+        host.textContent = hostname;
+        body.appendChild(host);
+      }
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "pp-source-title";
+      if (url) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = title;
+        titleEl.appendChild(a);
+      } else {
+        titleEl.textContent = title;
+      }
+      body.appendChild(titleEl);
+
+      if (snippet) {
+        const snip = document.createElement("div");
+        snip.className = "pp-source-snippet";
+        snip.textContent = snippet;
+        body.appendChild(snip);
+      }
+
+      card.appendChild(body);
+      stream.insertBefore(card, stream.firstChild);
+      return;
+    }
 
     if (kind === "markdown") {
       // Full markdown response as a collapsible details block. Renders below
