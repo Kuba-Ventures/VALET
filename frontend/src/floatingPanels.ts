@@ -37,6 +37,20 @@ export interface FloatingPanelsLayer {
   /** Remove every floating panel, e.g. when the panel closeAndClear runs. */
   clearAll(): void;
 
+  /** Dismiss all `result.research_source` panels whose originating task_id
+   *  matches. Fires at `task_done` for a research task — source cards are
+   *  noise once the answer is in. Other card types are untouched, and
+   *  source cards from other (still-running) research tasks are untouched. */
+  dismissResearchSources(taskId: string): void;
+
+  /** Dismiss every floating panel NOT belonging to `currentTaskId`. Fires
+   *  at `task_start` for a fresh research run so the workspace is cleared
+   *  before the new run's cards land. All floating panels are
+   *  research-originated by construction, so a blanket "task_id != current"
+   *  predicate is safe — there are no non-research floating panels to
+   *  spare. */
+  dismissPriorResearchCards(currentTaskId: string): void;
+
   /** Active panel count — used by the Process Panel to defer its
    *  auto-dismiss while cards are still up. */
   cardCount(): number;
@@ -63,6 +77,8 @@ const ORB_BUFFER = 380;                // px reserved on the left for the orb
 interface PanelEntry {
   element: HTMLElement;
   slot: number | null;                 // null = user-dragged, no longer grid-bound
+  taskId: string;                      // originating task_id — used by lifecycle dismiss
+  eventType: string;                   // e.g. "result.product" — used by lifecycle dismiss
 }
 
 // ---------------------------------------------------------------------------
@@ -188,8 +204,37 @@ export function createFloatingPanelsLayer(
     });
 
     root.appendChild(panel);
-    panels.set(eventId, { element: panel, slot });
+    panels.set(eventId, {
+      element: panel,
+      slot,
+      taskId: event.task_id || "",
+      eventType: String(event.type || ""),
+    });
     emitChange();
+  }
+
+  function dismissPanelsMatching(predicate: (entry: PanelEntry) => boolean): void {
+    let removed = 0;
+    for (const [eventId, entry] of Array.from(panels.entries())) {
+      if (predicate(entry)) {
+        entry.element.remove();
+        panels.delete(eventId);
+        removed++;
+      }
+    }
+    if (removed > 0) emitChange();
+  }
+
+  function dismissResearchSources(taskId: string): void {
+    if (!taskId) return;
+    dismissPanelsMatching(
+      (e) => e.taskId === taskId && e.eventType === "result.research_source",
+    );
+  }
+
+  function dismissPriorResearchCards(currentTaskId: string): void {
+    if (!currentTaskId) return;
+    dismissPanelsMatching((e) => e.taskId !== currentTaskId);
   }
 
   function removePanel(eventId: string): void {
@@ -240,7 +285,16 @@ export function createFloatingPanelsLayer(
     root.remove();
   }
 
-  return { mountCard, resetLayout, clearAll, cardCount, onChange, destroy };
+  return {
+    mountCard,
+    resetLayout,
+    clearAll,
+    dismissResearchSources,
+    dismissPriorResearchCards,
+    cardCount,
+    onChange,
+    destroy,
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -291,10 +291,22 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     // are still up (gated below in the task_done branch).
 
     if (event.type === "task_start") {
+      // Increment BEFORE dismissing prior cards. The dismiss can drop the
+      // floating card count to 0, which triggers the onChange dismiss
+      // scheduler; keeping activeTaskCount > 0 prevents the panel from
+      // auto-dismissing during the same tick.
       activeTaskCount++;
-      // Fresh research run: prior-run cards (if not dismissed) keep their
-      // slots; the new run's cards land in the next free slots. Layout
-      // reset is a placeholder for now — see floatingPanels.ts.
+
+      // Rule 2 (chunk 18): on a fresh research task_start, instantly clear
+      // every floating panel from any previous research task. All floating
+      // panels are research-originated by construction, so a blanket
+      // "not this task" predicate is correct. Non-research task_starts
+      // (browse, build, project_lookup, …) leave existing cards alone.
+      const isResearchTask = (event.title || "").startsWith("Researching:");
+      if (isResearchTask) {
+        floatingLayer.dismissPriorResearchCards(event.task_id);
+      }
+
       floatingLayer.resetLayout();
       renderEventRow(event);
       return;
@@ -310,6 +322,14 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
         startRow.classList.remove("pp-status-active");
         startRow.classList.add(`pp-status-${event.status}`);
       }
+
+      // Rule 1 (chunk 18): on every task_done, dismiss source-preview
+      // cards belonging to the completing task. Source cards are only
+      // emitted by research, so on a non-research task_done this is a
+      // safe no-op. Task-ID scoped so a concurrent research task's
+      // sources survive.
+      floatingLayer.dismissResearchSources(event.task_id);
+
       // Clear the progress chip when all tasks finish so the next session
       // doesn't show stale counts.
       if (activeTaskCount === 0) {
