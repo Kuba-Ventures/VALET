@@ -328,7 +328,14 @@ class DesignSession:
 
         try:
             response = await anthropic_client.messages.create(
-                model="claude-opus-4-7",
+                # Temporary: Sonnet 4.6 while Opus 4.7 is returning 529
+                # Overloaded (2026-05-18 Anthropic-side incident, see logs
+                # around 18:00-18:04). Flip back to claude-opus-4-7 once
+                # Opus recovers; Sonnet is fine as the design-partner
+                # model — same skill family, slightly lower capability
+                # for nuanced product reasoning but more than adequate
+                # for the question/draft loop.
+                model="claude-sonnet-4-6",
                 max_tokens=2000,
                 system=system,
                 tools=[_DESIGN_TOOL],
