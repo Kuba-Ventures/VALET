@@ -6,10 +6,13 @@
  * the Process Panel. The Process Panel is still the live event log; this
  * layer holds the cards that come *out* of it.
  *
- * Layout: cards cascade in from the top-right with a ~30px offset per
- * card so a fresh batch is fully visible (no piled-up un-clickable stack).
- * The cascade index resets at task_start so each new research run starts
- * its own staircase rather than continuing the previous one.
+ * Layout: cards auto-tile into a right-side grid. Initial placement uses
+ * a monotonic slot counter — slot 0 lands at top-right, subsequent slots
+ * fill row-by-row to the left, then wrap to a new row. The grid sits to
+ * the right of the orb area; orb width is reserved at the left of the
+ * viewport. New cards land in the next free slot — they never reshuffle
+ * existing cards. Once the user drags a panel, its slot is released and
+ * the next new card lands in that vacated slot.
  *
  * No persistence — positions live in component state for the session and
  * vanish on reload. The user explicitly opted out of localStorage here.
@@ -27,9 +30,9 @@ export interface FloatingPanelsLayer {
    *  Process Panel already builds today). */
   mountCard(event: ProcessEvent, buildContent: () => HTMLElement): void;
 
-  /** Start a fresh cascade — called on each task_start so a new run's
-   *  cards don't stack onto the previous run's staircase. */
-  resetCascade(): void;
+  /** Reset the grid slot counter so a new task starts with slot 0 at the
+   *  top-right corner again. Called on each task_start. */
+  resetLayout(): void;
 
   /** Remove every floating panel, e.g. when the panel closeAndClear runs. */
   clearAll(): void;
@@ -50,11 +53,17 @@ export interface FloatingPanelsLayer {
 // Layout constants
 // ---------------------------------------------------------------------------
 
-const CARD_WIDTH = 340;                // matches .fp-panel max-width
-const CASCADE_STEP = 30;               // horizontal+vertical offset per card
-const INITIAL_RIGHT_MARGIN = 24;       // gap from the right edge
-const INITIAL_TOP = 80;                // below any top nav
-const CASCADE_WRAP_AFTER = 8;          // restart staircase from origin after N
+const CARD_WIDTH = 340;                // matches .fp-panel width
+const GUTTER = 16;                     // gap between cards horizontally + vertically
+const RIGHT_MARGIN = 24;               // gap from the right edge of viewport
+const TOP_MARGIN = 80;                 // below any top nav
+const ROW_STRIDE = 290;                // approximate card height for row spacing
+const ORB_BUFFER = 380;                // px reserved on the left for the orb
+
+interface PanelEntry {
+  element: HTMLElement;
+  slot: number | null;                 // null = user-dragged, no longer grid-bound
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -64,10 +73,42 @@ export function createFloatingPanelsLayer(
   rootId: string = "floating-panels-root",
 ): FloatingPanelsLayer {
   const root = ensureRoot(rootId);
-  const panels = new Map<string, HTMLElement>();   // eventId → panel root
+  const panels = new Map<string, PanelEntry>();    // eventId → entry
   const changeListeners = new Set<(count: number) => void>();
-  let cascadeIndex = 0;
   let zCounter = 1000;
+
+  function computeColumns(): number {
+    const usable = window.innerWidth - ORB_BUFFER - RIGHT_MARGIN;
+    return Math.max(1, Math.floor((usable + GUTTER) / (CARD_WIDTH + GUTTER)));
+  }
+
+  function slotPosition(slot: number): { left: number; top: number } {
+    const cols = computeColumns();
+    const row = Math.floor(slot / cols);
+    const col = slot % cols;                       // 0 = rightmost
+    const rightAnchorLeft = window.innerWidth - RIGHT_MARGIN - CARD_WIDTH;
+    const left = clamp(
+      rightAnchorLeft - col * (CARD_WIDTH + GUTTER),
+      8,
+      window.innerWidth - CARD_WIDTH - 8,
+    );
+    const top = clamp(
+      TOP_MARGIN + row * ROW_STRIDE,
+      8,
+      window.innerHeight - 120,
+    );
+    return { left, top };
+  }
+
+  function nextFreeSlot(): number {
+    const used = new Set<number>();
+    for (const e of panels.values()) {
+      if (e.slot !== null) used.add(e.slot);
+    }
+    let i = 0;
+    while (used.has(i)) i++;
+    return i;
+  }
 
   function emitChange(): void {
     const c = panels.size;
@@ -85,20 +126,14 @@ export function createFloatingPanelsLayer(
     panel.dataset.eventId = eventId;
     panel.dataset.taskId = event.task_id;
 
-    // Position via cascade. Computed in pixels so the panel can be dragged
-    // freely afterward without fighting `right:`/percentage anchors.
-    const idx = cascadeIndex % CASCADE_WRAP_AFTER;
-    const offset = idx * CASCADE_STEP;
-    const left = clamp(
-      window.innerWidth - CARD_WIDTH - INITIAL_RIGHT_MARGIN - offset,
-      8,
-      window.innerWidth - CARD_WIDTH - 8,
-    );
-    const top = clamp(INITIAL_TOP + offset, 8, window.innerHeight - 100);
+    // Grid-slot placement. Next free slot fills any gap left by a
+    // user-dragged-away panel; otherwise the slot counter increments.
+    // Existing panels are never reshuffled when a new card arrives.
+    const slot = nextFreeSlot();
+    const { left, top } = slotPosition(slot);
     panel.style.left = `${left}px`;
     panel.style.top = `${top}px`;
     panel.style.zIndex = String(++zCounter);
-    cascadeIndex++;
 
     // Chrome: grab-handle + type label + close button.
     const handle = document.createElement("div");
@@ -145,30 +180,48 @@ export function createFloatingPanelsLayer(
 
     // Drag — mirrors the Process Panel's pattern (setPointerCapture so the
     // pointer is owned during the drag, even if it leaves the handle).
-    attachDrag(panel, handle);
+    // First drag releases the panel's grid slot so a new card can take it
+    // without overlapping the dragged panel's new manual position.
+    attachDrag(panel, handle, () => {
+      const entry = panels.get(eventId);
+      if (entry) entry.slot = null;
+    });
 
     root.appendChild(panel);
-    panels.set(eventId, panel);
+    panels.set(eventId, { element: panel, slot });
     emitChange();
   }
 
   function removePanel(eventId: string): void {
-    const panel = panels.get(eventId);
-    if (!panel) return;
-    panel.remove();
+    const entry = panels.get(eventId);
+    if (!entry) return;
+    entry.element.remove();
     panels.delete(eventId);
     emitChange();
   }
 
-  function resetCascade(): void {
-    cascadeIndex = 0;
+  function resetLayout(): void {
+    // Drop any user-dragged "anchored" panels' slot-release state so the
+    // next batch starts cleanly. Existing panels remain visible at their
+    // current pixel positions — the user can still see prior research's
+    // cards until they X them. nextFreeSlot() will pick slot 0 again
+    // because no panel in `panels` currently claims it (the new batch's
+    // cards haven't mounted yet, and previous-run cards from clearAll's
+    // perspective are gone — but if the user kept them, their slots are
+    // still tracked so the new run skips past them).
+    //
+    // Concretely: if a user kept 3 cards from run 1, those panels still
+    // claim slots 0/1/2. resetLayout doesn't reset anything per-panel; it's
+    // a no-op placeholder kept for symmetry with the cascade era so the
+    // call site can stay readable. If a future change wants to force the
+    // new batch onto slot 0 regardless of prior cards, this is where it
+    // would clear those slots.
   }
 
   function clearAll(): void {
     const had = panels.size > 0;
-    for (const panel of panels.values()) panel.remove();
+    for (const entry of panels.values()) entry.element.remove();
     panels.clear();
-    cascadeIndex = 0;
     if (had) emitChange();
   }
 
@@ -187,15 +240,20 @@ export function createFloatingPanelsLayer(
     root.remove();
   }
 
-  return { mountCard, resetCascade, clearAll, cardCount, onChange, destroy };
+  return { mountCard, resetLayout, clearAll, cardCount, onChange, destroy };
 }
 
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
 
-function attachDrag(panel: HTMLElement, handle: HTMLElement): void {
+function attachDrag(
+  panel: HTMLElement,
+  handle: HTMLElement,
+  onDragStart?: () => void,
+): void {
   let from: { x: number; y: number; panelLeft: number; panelTop: number } | null = null;
+  let firedStartHook = false;
 
   handle.addEventListener("pointerdown", (e) => {
     // Don't initiate drag if the close button (or any button) was hit —
@@ -205,6 +263,10 @@ function attachDrag(panel: HTMLElement, handle: HTMLElement): void {
     from = { x: e.clientX, y: e.clientY, panelLeft: r.left, panelTop: r.top };
     panel.classList.add("dragging");
     handle.setPointerCapture(e.pointerId);
+    if (!firedStartHook) {
+      firedStartHook = true;
+      try { onDragStart?.(); } catch (e) { console.warn("onDragStart threw", e); }
+    }
   });
 
   handle.addEventListener("pointermove", (e) => {

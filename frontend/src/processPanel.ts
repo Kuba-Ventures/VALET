@@ -292,9 +292,10 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
 
     if (event.type === "task_start") {
       activeTaskCount++;
-      // Fresh research run: start a new cascade so this batch's cards
-      // don't stack onto the previous run's staircase.
-      floatingLayer.resetCascade();
+      // Fresh research run: prior-run cards (if not dismissed) keep their
+      // slots; the new run's cards land in the next free slots. Layout
+      // reset is a placeholder for now — see floatingPanels.ts.
+      floatingLayer.resetLayout();
       renderEventRow(event);
       return;
     }
