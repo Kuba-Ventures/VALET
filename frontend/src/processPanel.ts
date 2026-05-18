@@ -50,7 +50,10 @@ export type EventType =
   // Per-source preview card emitted during research (live), one per
   // successful web_fetch. Distinct from `result.web` which is the
   // model's final reading list summary.
-  | "result.research_source";
+  | "result.research_source"
+  // Live counter — updates the panel header chip rather than appending
+  // a row. Payload carries {fetched, searched}.
+  | "research.progress";
 
 export interface ProcessEvent {
   id: string;
@@ -105,6 +108,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       <div class="pp-handle" data-pp-handle>
         <div class="pp-handle-grip"></div>
         <div class="pp-title">Process</div>
+        <div class="pp-progress" data-pp-progress hidden></div>
         <button class="pp-pin" data-pp-pin title="Pin (disable auto-dismiss)" aria-pressed="${pinned}">${pinned ? "◉" : "◌"}</button>
         <button class="pp-close" data-pp-close title="Close">×</button>
       </div>
@@ -116,6 +120,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   const stream = root.querySelector<HTMLElement>("[data-pp-stream]")!;
   const closeBtn = root.querySelector<HTMLElement>("[data-pp-close]")!;
   const pinBtn = root.querySelector<HTMLButtonElement>("[data-pp-pin]")!;
+  const progressChip = root.querySelector<HTMLElement>("[data-pp-progress]")!;
 
   pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(); });
 
@@ -271,7 +276,18 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
         startRow.classList.remove("pp-status-active");
         startRow.classList.add(`pp-status-${event.status}`);
       }
-      if (activeTaskCount === 0) scheduleDismiss();
+      // Clear the progress chip when all tasks finish so the next session
+      // doesn't show stale counts.
+      if (activeTaskCount === 0) {
+        hideProgressChip();
+        scheduleDismiss();
+      }
+      return;
+    }
+
+    if (event.type === "research.progress") {
+      // Header chip update — no row insertion.
+      updateProgressChip(event);
       return;
     }
 
@@ -281,6 +297,26 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     }
 
     renderEventRow(event);
+  }
+
+  function updateProgressChip(event: ProcessEvent) {
+    const p = (event.payload || {}) as Record<string, unknown>;
+    const fetched = Number(p.fetched ?? 0);
+    const searched = Number(p.searched ?? 0);
+    if (fetched === 0 && searched === 0) {
+      hideProgressChip();
+      return;
+    }
+    const parts: string[] = [];
+    if (fetched > 0) parts.push(`${fetched} source${fetched === 1 ? "" : "s"}`);
+    if (searched > 0) parts.push(`${searched} search${searched === 1 ? "" : "es"}`);
+    progressChip.textContent = parts.join(" · ");
+    progressChip.hidden = false;
+  }
+
+  function hideProgressChip() {
+    progressChip.hidden = true;
+    progressChip.textContent = "";
   }
 
   function renderEventRow(event: ProcessEvent) {

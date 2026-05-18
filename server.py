@@ -2080,6 +2080,46 @@ async def _execute_native_research(target: str, ws=None):
         searches = 0
         fetches = 0
 
+        # Mid-research voice interjection — fires once if research hasn't
+        # finished within 25s. Done-event signals an early return so the
+        # interjection task can no-op cleanly.
+        done_event = asyncio.Event()
+
+        async def _maybe_interject() -> None:
+            try:
+                await asyncio.wait_for(done_event.wait(), timeout=25.0)
+                # Finished before the timer — no interjection needed.
+                return
+            except asyncio.TimeoutError:
+                pass
+            if not ws:
+                return
+            try:
+                msg = "Still gathering, sir."
+                audio = await synthesize_speech(msg)
+                if audio:
+                    await ws.send_json({"type": "status", "state": "speaking"})
+                    await ws.send_json({
+                        "type": "audio",
+                        "data": base64.b64encode(audio).decode(),
+                        "text": msg,
+                    })
+                    await ws.send_json({"type": "status", "state": "idle"})
+                    log.info(f"JARVIS: {msg}")
+            except Exception as e:
+                log.debug(f"mid-research interjection failed: {e}")
+
+        interjection_task = asyncio.create_task(_maybe_interject())
+
+        async def _emit_progress() -> None:
+            await emit_tool_event(
+                task_id, "research.progress", "Research progress",
+                detail=f"read {fetches} source{'s' if fetches != 1 else ''}, "
+                       f"{searches} search{'es' if searches != 1 else ''}",
+                status="active",
+                payload={"fetched": fetches, "searched": searches},
+            )
+
         await emit_step(task_id, "Searching the web…", status="active")
 
         try:
@@ -2177,6 +2217,7 @@ async def _execute_native_research(target: str, ws=None):
                                     detail=query[:120],
                                     payload={"query": query},
                                 )
+                                await _emit_progress()
                             elif name == "web_fetch" and bid not in seen_fetch_ids:
                                 seen_fetch_ids.add(bid)
                                 fetches += 1
@@ -2188,6 +2229,7 @@ async def _execute_native_research(target: str, ws=None):
                                     detail=url[:120],
                                     payload={"url": url},
                                 )
+                                await _emit_progress()
 
                     final_message = await stream.get_final_message()
 
@@ -2201,6 +2243,10 @@ async def _execute_native_research(target: str, ws=None):
                 break
 
             response_text = "".join(assistant_text_parts).strip()
+            # Signal the mid-research interjection task to cancel; emit a
+            # final progress update so the panel chip reads the final count.
+            done_event.set()
+            await _emit_progress()
             await emit_step(
                 task_id,
                 f"Research complete — {searches} search(es), {fetches} fetch(es)",
@@ -2252,6 +2298,11 @@ async def _execute_native_research(target: str, ws=None):
         except Exception as e:
             log.error(f"Native research failed: {e}", exc_info=True)
             await emit_error(task_id, "Research failed", detail=str(e)[:200])
+        finally:
+            # Always signal so the interjection task exits even on error.
+            done_event.set()
+            if not interjection_task.done():
+                interjection_task.cancel()
 
 
 # Smart greeting — track last greeting to avoid re-greeting on reconnect

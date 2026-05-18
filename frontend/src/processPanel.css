@@ -129,12 +129,31 @@
 }
 
 .pp-title {
-  flex: 1;
+  flex: 0 0 auto;
   font-size: 10px;
   letter-spacing: 2.5px;
   text-transform: uppercase;
   font-weight: 500;
   color: rgba(70, 220, 255, 0.7);
+}
+
+.pp-progress {
+  flex: 1 1 auto;
+  font-family: var(--pp-mono);
+  font-size: 10px;
+  color: var(--pp-active);
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border: 1px solid rgba(124, 255, 176, 0.25);
+  border-radius: 10px;
+  background: rgba(124, 255, 176, 0.04);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pp-progress[hidden] {
+  display: none;
 }
 
 .pp-pin {
