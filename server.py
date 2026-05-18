@@ -97,8 +97,18 @@ def _log_startup_banner() -> None:
 
     commit = _git(["rev-parse", "--short=7", "HEAD"])
     branch = _git(["rev-parse", "--abbrev-ref", "HEAD"])
-    dirty = _git(["status", "--porcelain"])
-    dirty_flag = "+dirty" if dirty and dirty != "?" else ""
+    # Ignore runtime log files in the dirty check — they're tracked but
+    # constantly being written by the server itself, so they would always
+    # trigger +dirty and turn the flag into noise. We only want code drift.
+    dirty_raw = _git(["status", "--porcelain"])
+    if dirty_raw and dirty_raw != "?":
+        code_drift = [
+            ln for ln in dirty_raw.splitlines()
+            if not ln[3:].startswith(("logs/", "data/logs/"))
+        ]
+        dirty_flag = "+dirty" if code_drift else ""
+    else:
+        dirty_flag = ""
     started_at = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     log.info(
         "[STARTUP] commit=%s%s branch=%s started_at=%s pid=%d",
