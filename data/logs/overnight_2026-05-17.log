@@ -22,3 +22,10 @@
 [2026-05-17T23:51:21-0400]   decision: scrap from BUILDING is a no-op + clarifying message — once shipped, inbox file is user's.
 [2026-05-17T23:51:21-0400]   decision: schema v3 adds ship_method + inbox_path columns to design_sessions for audit.
 [2026-05-17T23:54:16-0400] chunk 4 unit OK (6 cases incl. compose + ship_via_file + persist v3 cols)
+[2026-05-17T23:56:09-0400] ── CHUNK 5: phase 5 self-mod machinery (build only) ──
+[2026-05-17T23:56:09-0400]   decision: smoke fires from 'merge it' voice command (not on claude completion — JARVIS doesn't own that lifecycle in file-method ship).
+[2026-05-17T23:56:09-0400]   decision: approval gate uses existing pending_offer pattern (kind='self_mod_confirm'). 'confirmed' is the only word that ships.
+[2026-05-17T23:56:09-0400]   decision: restart.sh uses launchctl when available, falls back to nohup; detached via setsid.
+[2026-05-18T00:00:25-0400] chunk 5 unit FAIL
+[2026-05-18T00:01:19-0400]   bugfix: imported re-as-_conf_re inside _handle_self_mod_confirm (NameError caught by smoke)
+[2026-05-18T00:01:19-0400] chunk 5 unit re-smoke OK after bugfix

@@ -235,6 +235,10 @@ class DesignSession:
     ready_to_ship: bool = False
     self_mod: bool = False
     started_at: float = field(default_factory=time.time)
+    # Phase 5 self-mod metadata — populated after the approval gate creates
+    # the feature branch. None on non-self-mod sessions.
+    feature_branch: Optional[str] = None
+    pre_build_sha: Optional[str] = None
 
     @property
     def project_name(self) -> str:

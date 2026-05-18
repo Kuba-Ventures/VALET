@@ -235,6 +235,8 @@ DESIGN-PARTNER MODE (Phase 3):
 - [ACTION:SHIP_DESIGN] — finalize the active design and hand it to Claude Code (Phase 4). ONLY emit when a design session is active. Use for "ship it", "send it", "build it".
 - [ACTION:SCRAP_DESIGN] — discard the active design. Returns state to IDLE. ONLY emit when a session is active. Use for "scrap this", "start over".
 - [ACTION:SHOW_DRAFT] — speak the assembled draft so far. ONLY emit when a session is active.
+- [ACTION:MERGE_BRANCH] — run smoke_test.sh then merge the current feature/* branch into main. ONLY emit when the user explicitly says "merge it" or similar and we're on a feature branch. Never auto-emit.
+- [ACTION:RESTART_SELF] — spawn the detached restarter (scripts/restart.sh). Use ONLY for "restart yourself" / "restart jarvis" / "kick yourself". Acknowledge before restart kills the current process.
 - [ACTION:LIST_PROJECTS] — read the authoritative list of projects from ~/Code/, ~/projects/, and the alias table. Emit this tag (no target) whenever the user asks what projects exist and you didn't fast-path it. Output gets spoken to the user.
 
 PROJECTS ARE AUTHORITATIVE — DO NOT FABRICATE:
@@ -840,7 +842,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1083,6 +1085,12 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
     if offer["kind"] == "ship_confirm":
         return await _handle_ship_confirm(transcript, ws)
 
+    # Phase 5: self-mod approval gate. ONLY "confirmed" proceeds. Anything
+    # else (including 'yes' / 'do it' / 'ship it') is treated as decline
+    # — this is the most-restrictive confirmation in the codebase.
+    if offer["kind"] == "self_mod_confirm":
+        return await _handle_self_mod_confirm(transcript, ws)
+
     if offer["kind"] == "alias_remove":
         if (t in confirm_words or any(t.startswith(w + " ") for w in confirm_words)
                 or "remove" in t or "delete" in t or "drop" in t):
@@ -1183,10 +1191,12 @@ async def _execute_ship_design(ws):
                     whatever pane has focus. Brittle — confirmation gate is
                     NOT optional.
 
-    Self-mod ships (target == jarvis repo) get an additional approval gate
-    handled in Phase 5's machinery — for now, recognized but unblocked.
+    Phase 5 self-mod approval gate: when session.self_mod is True, we DON'T
+    ship immediately. Instead we stage a "self_mod_confirm" pending offer
+    and require the explicit voice word "confirmed" before any composition
+    or dispatch happens. NOT optional per the plan.
     """
-    import design_partner
+    import design_partner, self_mod
 
     session = design_partner.get_for_ws(ws)
     if session is None:
@@ -1199,6 +1209,21 @@ async def _execute_ship_design(ws):
 
     if not session.has_target:
         await _speak(ws, "No project to ship to, sir — open one first, then say ship.")
+        return
+
+    # ── Phase 5 approval gate for self-modifications ──
+    # Belt-and-suspenders: check both the session's self_mod flag AND the
+    # path identity (in case the flag got out of sync somehow).
+    if session.self_mod or self_mod.is_jarvis_repo(session.project_path):
+        ws.pending_offer = {
+            "kind": "self_mod_confirm",
+            "session_id": session.id,
+        }
+        await _speak(
+            ws,
+            "I'm about to modify myself, sir. Say 'confirmed' to proceed, "
+            "anything else to cancel."
+        )
         return
 
     final_prompt = design_partner.compose_final_prompt(session)
@@ -1251,6 +1276,80 @@ async def _execute_ship_design(ws):
         ws,
         f"Prompt staged at {rel}, sir. Paste it into Cursor's claude terminal to ship."
     )
+
+
+async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
+    """Pending-offer handler for the Phase 5 self-mod approval gate.
+
+    ONLY accepts the literal word "confirmed" (allowing surrounding filler
+    like "yes confirmed" or "confirmed please"). Anything else cancels —
+    'yes' alone is NOT enough, by design.
+    """
+    offer = getattr(ws, "pending_offer", None)
+    if not offer or offer.get("kind") != "self_mod_confirm":
+        return False
+
+    t = transcript.lower().strip()
+    import re as _conf_re
+    confirmed = bool(_conf_re.search(r"\bconfirmed\b", t))
+    if not confirmed:
+        await _speak(ws, "Cancelled, sir. Self-mod requires the word 'confirmed'.")
+        return True
+
+    import design_partner, self_mod
+
+    session = None
+    for s in design_partner._active.values():
+        if s.id == offer["session_id"]:
+            session = s
+            break
+    if session is None:
+        await _speak(ws, "I lost the session, sir — try again.")
+        return True
+
+    # Branch discipline: refuse if WT dirty (the design-partner conversation
+    # itself shouldn't have touched anything, but the user might have).
+    try:
+        self_mod.assert_clean_tree()
+    except RuntimeError as e:
+        await _speak(ws, f"Working tree is dirty, sir — commit or stash first. {str(e)[:200]}")
+        return True
+
+    try:
+        branch, pre_sha = self_mod.create_feature_branch(session.topic)
+    except RuntimeError as e:
+        await _speak(ws, f"Couldn't branch: {str(e)[:200]}")
+        return True
+
+    # Record branch info on the session so 'merge it' can find it later.
+    session.feature_branch = branch
+    session.pre_build_sha = pre_sha
+
+    # Compose + dispatch (file method only for self-mod — AppleScript paste
+    # into Cursor of the Jarvis repo is too easy to get wrong).
+    final_prompt = design_partner.compose_final_prompt(session)
+    try:
+        out = design_partner.ship_via_file(session, final_prompt)
+    except Exception as e:
+        await _speak(ws, f"Self-mod ship failed: {str(e)[:200]}")
+        return True
+
+    session.mark_building()
+    await session.emit_state()
+    design_partner.persist(
+        session, status="building",
+        final_prompt=final_prompt, ship_method="file-self-mod",
+        inbox_path=str(out),
+    )
+
+    rel = out.relative_to(session.project_path) if session.project_path else out
+    await _speak(
+        ws,
+        f"Branched to {branch}, sir. Prompt staged at {rel}. "
+        f"Watch claude work in Cursor; say 'merge it' when you're ready to fold into main, "
+        f"or 'scrap it' to abandon the branch."
+    )
+    return True
 
 
 async def _handle_ship_confirm(transcript: str, ws) -> bool:
@@ -1338,6 +1437,48 @@ async def _execute_scrap_design(ws):
     await session.emit_state()
     design_partner.stop_for_ws(ws)
     await _speak(ws, "Scrapped, sir. Clean slate.")
+
+
+async def _execute_merge_branch(ws):
+    """Phase 5 — run smoke_test.sh then merge the current feature/* branch into main.
+
+    Refuses if not on a feature/* branch. Refuses if smoke fails (without
+    auto-resetting — user decides what to do with a failed feature branch).
+    Never deletes the feature branch after merge.
+    """
+    import self_mod
+    cur = self_mod.current_branch()
+    if not cur.startswith("feature/"):
+        await _speak(ws, f"Not on a feature branch, sir — currently on {cur}. Nothing to merge.")
+        return
+
+    await _speak(ws, "Running smoke test, sir.")
+    result = await self_mod.run_smoke_test(timeout_sec=120)
+    if not result["success"]:
+        last = (result["stdout"] + result["stderr"]).splitlines()
+        tail = " ".join(last[-3:])[:300] if last else "no output"
+        await _speak(ws, f"Smoke failed, sir — staying on {cur}. Tail: {tail}")
+        log.warning(f"smoke fail on merge_branch:\nstdout:\n{result['stdout']}\nstderr:\n{result['stderr']}")
+        return
+
+    merge = self_mod.merge_to_main(cur)
+    if merge["success"]:
+        await _speak(ws, f"Smoke passed. {merge['message']} You may want to restart yourself.")
+    else:
+        await _speak(ws, f"Smoke passed but merge failed: {merge['message'][:200]}")
+
+
+async def _execute_restart_self(ws):
+    """Phase 5 — spawn the detached restarter. Speaks confirmation BEFORE the
+    restarter kills the current process (otherwise the speech doesn't make it
+    to the user)."""
+    import self_mod
+    await _speak(ws, "Restarting in a couple seconds, sir.")
+    # Give the TTS time to actually send before the restarter pkills us.
+    await asyncio.sleep(0.8)
+    result = self_mod.restart_self()
+    if not result["success"]:
+        await _speak(ws, f"Restart failed: {result['message'][:200]}")
 
 
 async def _execute_show_draft(ws):
@@ -2419,6 +2560,16 @@ _START_DESIGN_PATTERN = _action_re.compile(
     _action_re.IGNORECASE,
 )
 
+_MERGE_BRANCH_PHRASES = {
+    "merge it", "merge this", "merge the branch", "merge that branch",
+    "okay merge it", "ok merge it", "go ahead and merge", "let's merge it",
+    "lets merge it",
+}
+_RESTART_SELF_PHRASES = {
+    "restart yourself", "restart jarvis", "kick yourself", "reboot yourself",
+    "bounce yourself", "restart the server", "kick the server",
+}
+
 # In-design fast-action phrases — only matched when a session is active.
 _SHIP_DESIGN_PHRASES = {
     "ship it", "ship this", "send it", "ok build it", "okay build it",
@@ -2584,6 +2735,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if any(p in t for p in ["refresh context", "refresh the context", "reload context",
                              "reload the context", "re-read context", "rescan context"]):
         return {"action": "refresh_context"}
+
+    # Phase 5 self-mod ops — merge it / restart yourself. Both gated to
+    # exact-phrase matches (no LLM round-trip).
+    if t in _MERGE_BRANCH_PHRASES or any(t.startswith(p + " ") for p in _MERGE_BRANCH_PHRASES):
+        return {"action": "merge_branch"}
+    if t in _RESTART_SELF_PHRASES or any(t.startswith(p + " ") for p in _RESTART_SELF_PHRASES):
+        return {"action": "restart_self"}
 
     # Usage / cost check
     if any(p in t for p in ["usage", "how much have you cost", "how much am i spending",
@@ -3283,6 +3441,12 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "show_draft":
                             response_text = ""
                             asyncio.create_task(_execute_show_draft(ws))
+                        elif action["action"] == "merge_branch":
+                            response_text = ""
+                            asyncio.create_task(_execute_merge_branch(ws))
+                        elif action["action"] == "restart_self":
+                            response_text = ""
+                            asyncio.create_task(_execute_restart_self(ws))
                         elif action["action"] == "check_usage":
                             response_text = get_usage_summary()
                         else:
@@ -3392,6 +3556,10 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_scrap_design(ws))
                                 elif embedded_action["action"] == "show_draft":
                                     asyncio.create_task(_execute_show_draft(ws))
+                                elif embedded_action["action"] == "merge_branch":
+                                    asyncio.create_task(_execute_merge_branch(ws))
+                                elif embedded_action["action"] == "restart_self":
+                                    asyncio.create_task(_execute_restart_self(ws))
                                 elif embedded_action["action"] == "delete_file":
                                     asyncio.create_task(delete_file(embedded_action["target"]))
                                 elif embedded_action["action"] == "applescript":
