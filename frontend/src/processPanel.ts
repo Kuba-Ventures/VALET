@@ -84,7 +84,15 @@ const CODE_LINES_COLLAPSED = 20;
 // Factory
 // ---------------------------------------------------------------------------
 
+import { createFloatingPanelsLayer, type FloatingPanelsLayer } from "./floatingPanels";
+
 export function createProcessPanel(rootId: string = "process-panel-root"): ProcessPanel {
+  // Result cards (product/location/web/image/research_source) render as
+  // independent floating panels owned by this layer — not as rows inside
+  // the Process Panel. The Process Panel keeps only the live event log
+  // (searches, fetches, voice interjection breadcrumb, progress chip).
+  const floatingLayer: FloatingPanelsLayer = createFloatingPanelsLayer();
+
   // Per-task code-block elements so consecutive code_task events for the same
   // task append to a single terminal block rather than spawning new ones.
   const codeBlocks = new Map<string, { container: HTMLElement; lines: HTMLElement; expandBtn: HTMLButtonElement; collapsed: boolean; }>();
@@ -226,6 +234,29 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     }, DISMISS_AFTER_DONE_MS);
   }
 
+  /** Schedule auto-dismiss only if the user has no floating cards still
+   *  open. While cards float above the panel the Process Panel stays
+   *  visible (quiet) so the user can read what's there; once the last
+   *  card is dismissed the timer fires. */
+  function maybeScheduleDismiss() {
+    if (floatingLayer.cardCount() > 0) {
+      cancelDismiss();
+      return;
+    }
+    scheduleDismiss();
+  }
+
+  // Re-evaluate auto-dismiss whenever a floating card mounts or unmounts.
+  // Mounting cancels any pending dismiss (cards just arrived, user is
+  // reading); the last unmount, if tasks are done, schedules dismiss.
+  floatingLayer.onChange((count) => {
+    if (count > 0) {
+      cancelDismiss();
+    } else if (activeTaskCount === 0) {
+      scheduleDismiss();
+    }
+  });
+
   function cancelDismiss() {
     if (dismissTimer !== undefined) {
       clearTimeout(dismissTimer);
@@ -253,15 +284,17 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     // First event of any kind shows the panel.
     show();
 
-    // Auto-pin on first result.* card so the user has time to read what
-    // the middleware extracted (cards default to staying pinned until
-    // manually dismissed; user can unpin to re-enable auto-dismiss).
-    if (!pinned && String(event.type).startsWith("result.")) {
-      setPinned(true);
-    }
+    // Cards no longer live inside this panel — they spawn as independent
+    // floating panels (see floatingPanels.ts). The old auto-pin-on-result.*
+    // behavior was for the in-panel rendering path and is no longer
+    // relevant; auto-dismiss now defers on its own while floating cards
+    // are still up (gated below in the task_done branch).
 
     if (event.type === "task_start") {
       activeTaskCount++;
+      // Fresh research run: start a new cascade so this batch's cards
+      // don't stack onto the previous run's staircase.
+      floatingLayer.resetCascade();
       renderEventRow(event);
       return;
     }
@@ -280,7 +313,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       // doesn't show stale counts.
       if (activeTaskCount === 0) {
         hideProgressChip();
-        scheduleDismiss();
+        maybeScheduleDismiss();
       }
       return;
     }
@@ -391,13 +424,52 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     stream.insertBefore(row, stream.firstChild);
   }
 
-  function renderResultCard(event: ProcessEvent) {
-    const kind = String(event.type).replace(/^result\./, "");  // web|product|location|image|markdown|research_source
+  /** Build a card's content DOM (without outer chrome). Used by the
+   *  floating-panels layer to mount each card as an independent panel.
+   *  result.markdown is special-cased — it stays in the Process Panel
+   *  stream as a collapsible details block, not a floating card. */
+  function buildCardContent(event: ProcessEvent): HTMLElement {
+    const kind = String(event.type).replace(/^result\./, "");
     const card = document.createElement("div");
     card.className = `pp-card pp-card-${kind}`;
     card.dataset.taskId = event.task_id;
     card.dataset.eventId = event.id;
 
+    populateCardContent(card, event, kind);
+    return card;
+  }
+
+  function renderResultCard(event: ProcessEvent) {
+    const kind = String(event.type).replace(/^result\./, "");
+
+    // Non-markdown cards become independent floating panels — they're
+    // owned by the floating layer, not the Process Panel's stream.
+    if (kind !== "markdown") {
+      floatingLayer.mountCard(event, () => buildCardContent(event));
+      return;
+    }
+
+    // Markdown card: collapsible "Full response" block, stays in the
+    // Process Panel as the live log's tail summary. Not a floating panel.
+    const card = document.createElement("div");
+    card.className = `pp-card pp-card-${kind}`;
+    card.dataset.taskId = event.task_id;
+    card.dataset.eventId = event.id;
+    const md = (event.payload?.markdown as string) || event.detail || "";
+    const det = document.createElement("details");
+    det.className = "pp-card-md-details";
+    const sum = document.createElement("summary");
+    sum.textContent = "Full response";
+    det.appendChild(sum);
+    const pre = document.createElement("pre");
+    pre.className = "pp-card-md-pre";
+    pre.textContent = md;
+    det.appendChild(pre);
+    card.appendChild(det);
+    stream.appendChild(card);  // markdown appends (tail), not prepend
+  }
+
+  function populateCardContent(card: HTMLElement, event: ProcessEvent, kind: string) {
     // Live per-source preview card emitted during research — compact
     // horizontal layout: thumbnail left, title + snippet right, hostname
     // chip on top. Renders separately from the final result.* card pipeline
@@ -463,27 +535,10 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       }
 
       card.appendChild(body);
-      stream.insertBefore(card, stream.firstChild);
       return;
     }
 
-    if (kind === "markdown") {
-      // Full markdown response as a collapsible details block. Renders below
-      // any structured cards because it's appended after them.
-      const md = (event.payload?.markdown as string) || event.detail || "";
-      const det = document.createElement("details");
-      det.className = "pp-card-md-details";
-      const sum = document.createElement("summary");
-      sum.textContent = "Full response";
-      det.appendChild(sum);
-      const pre = document.createElement("pre");
-      pre.className = "pp-card-md-pre";
-      pre.textContent = md;
-      det.appendChild(pre);
-      card.appendChild(det);
-      stream.appendChild(card);  // markdown goes BELOW cards (append, not prepend)
-      return;
-    }
+    // (markdown branch handled in renderResultCard before reaching here.)
 
     const p = (event.payload || {}) as Record<string, unknown>;
     const title = (p.title as string) || event.title;
@@ -556,9 +611,6 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       link.textContent = (display.length > 48 ? display.slice(0, 45) + "…" : display) + " ↗";
       card.appendChild(link);
     }
-
-    // Cards prepend (newest at top, above tool stream).
-    stream.insertBefore(card, stream.firstChild);
   }
 
   function appendCodeLine(event: ProcessEvent) {
