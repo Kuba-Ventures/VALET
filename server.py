@@ -52,7 +52,7 @@ from process_events import (
     emit_task_queued,
 )
 
-from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal
+from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
 from work_mode import WorkSession, is_casual_question
 from screen import get_active_windows, take_screenshot, describe_screen, format_windows_for_context
 from calendar_access import get_todays_events, get_upcoming_events, get_next_event, format_events_for_context, format_schedule_summary, refresh_cache as refresh_calendar_cache, create_event as calendar_create_event, delete_event as calendar_delete_event, get_events_for_date as calendar_events_for_date
@@ -215,10 +215,34 @@ When you decide the user needs something DONE (not just discussed), include an a
     [ACTION:APPLESCRIPT] tell application "Cursor" to activate
     delay 0.3
     tell application "System Events" to keystroke "n" using command down
-- [ACTION:NEW_PROJECT] project_name ||| base_dir? — create a brand-new project FOLDER and open it as a fresh Cursor session. Use whenever the user wants to "start a new project", "spin up a project", "create a new app/site/repo". Optional base_dir lets the user specify where (defaults to ~/Code, then ~/Desktop).
+- [ACTION:NEW_PROJECT] project_name ||| base_dir? — create a brand-new project. Runs git init, scaffolds CLAUDE.md, opens Cursor and a side-by-side Terminal with `claude` waiting. Use whenever the user wants to "start a new project", "spin up a project", "new project for X", "create a new app/site/repo". Optional base_dir lets the user specify where (defaults to ~/Code, then ~/Desktop).
+  "new project for cerwood" → [ACTION:NEW_PROJECT] cerwood
   "start a new project called dashboard" → [ACTION:NEW_PROJECT] dashboard
   "spin up a new react app called todo-list" → [ACTION:NEW_PROJECT] todo-list
   "create a new project called blog in Documents" → [ACTION:NEW_PROJECT] blog ||| ~/Documents
+- [ACTION:OPEN_PROJECT] name — open an EXISTING project (Cursor + side-by-side Terminal with `claude` waiting). Resolves the name via fuzzy match against ~/Code/, ~/projects/, and the alias table. Use for "open X", "open project X", "open my X" — NOT for dispatching work into the project (that's PROMPT_PROJECT).
+  "open cerwood" → [ACTION:OPEN_PROJECT] cerwood
+  "open my dashboard project" → [ACTION:OPEN_PROJECT] dashboard
+  "open the harvey project" → [ACTION:OPEN_PROJECT] harvey
+- [ACTION:REFRESH_CONTEXT] name? — re-read warm context (file tree, CLAUDE.md, README, git log, entry points) for a project. If no name given, refreshes the most-recently-opened project. Use for "refresh context", "reload the project", "re-read CLAUDE".
+  "refresh context" → [ACTION:REFRESH_CONTEXT]
+  "reload the cerwood context" → [ACTION:REFRESH_CONTEXT] cerwood
+
+DESIGN-PARTNER MODE (Phase 3):
+- [ACTION:START_DESIGN] topic — open a design conversation. JARVIS becomes the design partner; subsequent turns route through Opus until the user ships or scraps. Use for "let's design X", "plan a Y", "spec a Z", "I want to design something for…".
+  "let's design a daily rollup" → [ACTION:START_DESIGN] daily rollup
+  "plan a feature for client onboarding" → [ACTION:START_DESIGN] client onboarding
+- [ACTION:SHIP_DESIGN] — finalize the active design and hand it to Claude Code (Phase 4). ONLY emit when a design session is active. Use for "ship it", "send it", "build it".
+- [ACTION:SCRAP_DESIGN] — discard the active design. Returns state to IDLE. ONLY emit when a session is active. Use for "scrap this", "start over".
+- [ACTION:SHOW_DRAFT] — speak the assembled draft so far. ONLY emit when a session is active.
+- [ACTION:LIST_PROJECTS] — read the authoritative list of projects from ~/Code/, ~/projects/, and the alias table. Emit this tag (no target) whenever the user asks what projects exist and you didn't fast-path it. Output gets spoken to the user.
+
+PROJECTS ARE AUTHORITATIVE — DO NOT FABRICATE:
+The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT actions and the `KNOWN PROJECTS` block. NEVER list, name, or reference projects from session memory, prior chats, or imagination. The KNOWN PROJECTS block in this prompt may be stale or empty — that does NOT give you license to invent. Rules:
+1. If the user asks what projects exist, what's open, or to see the list: emit [ACTION:LIST_PROJECTS]. Do not enumerate names yourself from KNOWN PROJECTS — let the action speak.
+2. If the user asks to open a project by name: emit [ACTION:OPEN_PROJECT] <name>. The resolver handles fuzzy matching, missing dirs, and the "I couldn't find that" reply. Do not pre-validate the name against KNOWN PROJECTS.
+3. If a name surfaces in session memory but isn't in KNOWN PROJECTS, do NOT speak it as if it exists. Ask: "I'm not sure which project you mean — should I list what's under ~/Code/?"
+4. Never mention a project named in a prior conversation as currently existing unless KNOWN PROJECTS confirms it AND the user just referenced it.
 - [ACTION:DELETE_FILE] absolute_path — move a file to Trash via Finder (recoverable, not permanent). YOU CAN delete files when the user asks. Don't say you can't.
   "delete the screenshot on my desktop" → [ACTION:DELETE_FILE] /Users/{user_name}/Desktop/Screenshot 2026-05-15 at 4.43.13 PM.png
   If you don't know the exact filename, use [ACTION:APPLESCRIPT] to list the desktop first and find it, or [ACTION:OPEN_APP] Desktop so the user can identify it.
@@ -645,42 +669,39 @@ class ClaudeTaskManager:
 # ---------------------------------------------------------------------------
 
 async def scan_projects() -> list[dict]:
-    """Quick scan of ~/Desktop for git repos (depth 1)."""
+    """Scan known project roots (~/Code, ~/projects) + the alias table for git repos.
+
+    Delegates discovery to `list_projects()` so any new root the lifecycle
+    layer learns about is automatically reflected here. Only surfaces git-
+    tracked dirs to keep the LLM context useful.
+    """
     projects = []
-    desktop = DESKTOP_PATH
-
-    if not desktop.exists():
-        return projects
-
-    try:
-        for entry in sorted(desktop.iterdir()):
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            git_dir = entry / ".git"
-            if git_dir.exists():
-                branch = "unknown"
-                head_file = git_dir / "HEAD"
-                try:
-                    head_content = head_file.read_text().strip()
-                    if head_content.startswith("ref: refs/heads/"):
-                        branch = head_content.replace("ref: refs/heads/", "")
-                except Exception:
-                    pass
-
-                projects.append({
-                    "name": entry.name,
-                    "path": str(entry),
-                    "branch": branch,
-                })
-    except PermissionError:
-        pass
-
+    for entry in list_projects():
+        path = Path(entry["path"])
+        if not path.is_dir():
+            continue
+        git_dir = path / ".git"
+        if not git_dir.exists():
+            continue
+        branch = "unknown"
+        head_file = git_dir / "HEAD"
+        try:
+            head_content = head_file.read_text().strip()
+            if head_content.startswith("ref: refs/heads/"):
+                branch = head_content.replace("ref: refs/heads/", "")
+        except Exception:
+            pass
+        projects.append({
+            "name": entry["name"],
+            "path": str(path),
+            "branch": branch,
+        })
     return projects
 
 
 def format_projects_for_prompt(projects: list[dict]) -> str:
     if not projects:
-        return "No projects found on Desktop."
+        return "No projects on record."
     lines = []
     for p in projects:
         lines.append(f"- {p['name']} ({p['branch']}) @ {p['path']}")
@@ -819,7 +840,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -947,11 +968,8 @@ async def _execute_new_project(target: str, ws):
     base_dir = parts[1] if len(parts) > 1 and parts[1] else None
     async with process_bus.task_context(f"New project: {name}") as task_id:
         try:
-            await emit_step(task_id, f"Spinning up '{name}'…", status="active")
             result = await new_cursor_project(name=name, base_dir=base_dir, task_id=task_id)
             msg = result.get("confirmation", "Done, sir.")
-            if result.get("success") and result.get("path"):
-                await emit_step(task_id, "Cursor session opened", detail=result["path"], status="done")
         except Exception as e:
             log.error(f"new_project failed: {e}")
             await emit_error(task_id, "New project failed", detail=str(e)[:200])
@@ -964,6 +982,310 @@ async def _execute_new_project(target: str, ws):
                 await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
             except Exception:
                 pass
+
+
+async def _speak(ws, msg: str) -> None:
+    """Inline the synthesize+send_json speak pattern. Used by handlers that need
+    to speak independently of the main voice loop's return path. Best-effort —
+    swallows send failures."""
+    audio = await synthesize_speech(msg)
+    if not audio or not ws:
+        return
+    try:
+        await ws.send_json({"type": "status", "state": "speaking"})
+        await ws.send_json({
+            "type": "audio",
+            "data": base64.b64encode(audio).decode(),
+            "text": msg,
+        })
+    except Exception:
+        pass
+
+
+async def _execute_open_project(target: str, ws):
+    """Open an existing project — Cursor with claude auto-running via tasks.json.
+
+    On miss: sets ws.pending_offer for the voice loop to handle on the next
+    user turn (register-on-miss or remove-stale-alias). Caller-side state is
+    attached to the ws object so this background task can share with voice_handler.
+    """
+    name = target.strip()
+    async with process_bus.task_context(f"Open project: {name}") as task_id:
+        try:
+            result = await open_project(name, task_id=task_id)
+        except Exception as e:
+            log.error(f"open_project failed: {e}")
+            await emit_error(task_id, "Open project failed", detail=str(e)[:200])
+            await _speak(ws, "Something went wrong opening that project, sir.")
+            return
+
+        if result.get("success"):
+            await _speak(ws, result.get("confirmation", "Done, sir."))
+            return
+
+        # ── Failure paths: set up pending_offer for the next user turn ──
+        stale = result.get("stale_alias")
+        suggestions = result.get("suggestions") or []
+
+        if stale:
+            ws.pending_offer = {
+                "kind": "alias_remove",
+                "alias": stale["alias"],
+                "path": stale["path"],
+            }
+            msg = (
+                f"My alias for {stale['alias']} points to a missing path, sir — "
+                f"{stale['path']}. Should I remove it?"
+            )
+            await _speak(ws, msg)
+            return
+
+        if suggestions:
+            ws.pending_offer = {
+                "kind": "alias_register",
+                "target": name,
+                "suggestions": suggestions,
+            }
+            if len(suggestions) == 1:
+                msg = f"I can't find '{name}', sir. Did you mean {suggestions[0]['name']}? Say yes to alias it."
+            else:
+                listing = ", ".join(s["name"] for s in suggestions)
+                msg = f"I can't find '{name}', sir. Closest matches: {listing}. Say which to alias, or no."
+            await _speak(ws, msg)
+            return
+
+        # No suggestions and no stale alias — just report
+        await _speak(ws, result.get("confirmation", f"I couldn't find '{name}', sir."))
+
+
+async def _handle_pending_offer(transcript: str, ws) -> bool:
+    """Process the next user utterance as a response to a pending offer.
+
+    Returns True if the offer was handled (caller should `continue` to next
+    user input without normal action routing). Returns False if the utterance
+    doesn't look like a response — caller proceeds with normal flow and the
+    offer is cleared.
+    """
+    offer = getattr(ws, "pending_offer", None)
+    if not offer:
+        return False
+
+    t = transcript.lower().strip()
+    cancel_words = {"no", "nope", "cancel", "skip", "never mind", "nevermind", "forget it"}
+    confirm_words = {"yes", "yeah", "yep", "yup", "sure", "do it", "go ahead"}
+
+    if t in cancel_words or any(t.startswith(w + " ") for w in cancel_words):
+        await _speak(ws, "Cancelled, sir.")
+        return True
+
+    if offer["kind"] == "alias_remove":
+        if (t in confirm_words or any(t.startswith(w + " ") for w in confirm_words)
+                or "remove" in t or "delete" in t or "drop" in t):
+            from memory import delete_alias
+            deleted = delete_alias(offer["alias"])
+            msg = (f"Removed the stale alias for {offer['alias']}, sir."
+                   if deleted else f"Couldn't find that alias to remove, sir.")
+            await _speak(ws, msg)
+            return True
+        # Doesn't look like a response — fall through to normal handling
+        return False
+
+    if offer["kind"] == "alias_register":
+        suggestions = offer["suggestions"]
+        target_name = offer["target"]
+        picked = None
+
+        # "yes" / "first" / "the first one"
+        if t in confirm_words or any(t.startswith(w + " ") for w in confirm_words) \
+                or t in {"first", "the first", "the first one", "one"}:
+            picked = suggestions[0] if suggestions else None
+
+        # Ordinals 2-3
+        elif t in {"second", "the second", "the second one", "two", "number two"}:
+            picked = suggestions[1] if len(suggestions) > 1 else None
+        elif t in {"third", "the third", "the third one", "three", "number three"}:
+            picked = suggestions[2] if len(suggestions) > 2 else None
+
+        # Direct name match against any suggestion
+        else:
+            from memory import _normalize_project_key, _keys_match
+            tk = _normalize_project_key(transcript)
+            for s in suggestions:
+                if _keys_match(tk, _normalize_project_key(s["name"]), exact=False):
+                    picked = s
+                    break
+
+        if picked:
+            await register_project(picked["path"], alias=target_name)
+            log.info(f"On-miss register: '{target_name}' -> {picked['path']}")
+            await _speak(ws, f"Aliased '{target_name}' to {picked['name']}, sir. Opening now.")
+            asyncio.create_task(_execute_open_project(target_name, ws))
+            return True
+
+        # Doesn't match anything — let normal flow handle it
+        return False
+
+    return False
+
+
+async def _execute_start_design(topic: str, ws):
+    """Open a design conversation rooted at the active project (or the project the user names).
+
+    Future turns route to `design_session.handle_turn()` via the voice_handler
+    DESIGNING branch — Haiku is bypassed entirely until ship/scrap.
+    """
+    import design_partner, project_context
+
+    # Determine the project context. Prefer the active warm-loaded project;
+    # fall back to the JARVIS repo so the user can always design something
+    # without first opening a project.
+    active_ctx = project_context.get_active()
+    if active_ctx:
+        project_path = active_ctx.project_path
+    else:
+        project_path = Path(__file__).resolve().parent
+        log.info(f"start_design: no active project, defaulting to {project_path}")
+
+    topic_clean = (topic or "").strip() or "untitled design"
+    self_mod = (project_path.resolve() == Path(__file__).resolve().parent.resolve())
+
+    session = design_partner.start_for_ws(ws, project_path, topic_clean, self_mod=self_mod)
+    log.info(f"design_partner: session {session.id} started on {project_path} (topic={topic_clean!r}, self_mod={self_mod})")
+
+    await session.emit_state()
+    await session.emit("design.topic_set", title=topic_clean, status="done",
+                        payload={"project_path": str(project_path)})
+
+    msg = (
+        f"Right, sir — let's design '{topic_clean}'."
+        if not self_mod
+        else f"Right, sir — let's design '{topic_clean}' for myself. I'll be careful."
+    )
+    await _speak(ws, msg)
+
+
+async def _execute_ship_design(ws):
+    """Transition DESIGNING → BUILDING and hand the prompt off (Phase 4 owns the actual pipe).
+
+    For Phase 3, persists the finalized draft to design_sessions, emits the
+    state transition, and parks BUILDING. Phase 4 will replace the parked
+    behavior with the actual handoff into Cursor's claude pane.
+    """
+    import design_partner
+
+    session = design_partner.get_for_ws(ws)
+    if session is None:
+        await _speak(ws, "No design to ship, sir.")
+        return
+
+    if session.draft.is_empty():
+        await _speak(ws, "The draft is empty, sir — nothing to ship yet.")
+        return
+
+    final_prompt = session.draft.render_markdown()
+    session.mark_building()
+    await session.emit_state()
+    design_partner.persist(session, status="building", final_prompt=final_prompt)
+
+    # Phase 4 replaces this — for now we just acknowledge and park.
+    await _speak(
+        ws,
+        "Shipping now, sir. The handoff into Cursor's terminal is the Phase 4 piece — "
+        "for now the draft is saved and the panel has the final text."
+    )
+
+
+async def _execute_scrap_design(ws):
+    """DESIGNING → IDLE. Drops the draft and the design conversation history."""
+    import design_partner
+
+    session = design_partner.get_for_ws(ws)
+    if session is None:
+        await _speak(ws, "No design to scrap, sir.")
+        return
+
+    design_partner.persist(session, status="scrapped", final_prompt=session.draft.render_markdown())
+    session.scrap()
+    await session.emit_state()
+    design_partner.stop_for_ws(ws)
+    await _speak(ws, "Scrapped, sir. Clean slate.")
+
+
+async def _execute_show_draft(ws):
+    """Speak the assembled draft so far."""
+    import design_partner
+
+    session = design_partner.get_for_ws(ws)
+    if session is None:
+        await _speak(ws, "No design in progress, sir.")
+        return
+    if session.draft.is_empty():
+        await _speak(ws, "The draft is empty so far, sir.")
+        return
+
+    # The full markdown can be long — speak a short summary, panel has the full text.
+    bits = []
+    if session.draft.goal:
+        bits.append(f"Goal: {session.draft.goal[:140]}")
+    if session.draft.constraints:
+        bits.append(f"Constraints: {session.draft.constraints[:120]}")
+    if session.draft.open_questions:
+        bits.append(f"{len(session.draft.open_questions)} open question{'s' if len(session.draft.open_questions) != 1 else ''}")
+    spoken = "Current draft, sir. " + ". ".join(bits) + ". Full text is in the panel."
+    await _speak(ws, spoken)
+
+
+async def _execute_refresh_context(target: str, ws):
+    """Re-read warm context for the active project (or a named one)."""
+    import project_context
+    name = target.strip()
+    path = None
+    if name:
+        from memory import resolve_project
+        resolved = resolve_project(name)
+        if resolved:
+            path = Path(resolved)
+        else:
+            msg = f"I don't have '{name}' on file as an open project, sir."
+            audio = await synthesize_speech(msg)
+            if audio and ws:
+                try:
+                    await ws.send_json({"type": "status", "state": "speaking"})
+                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+                except Exception:
+                    pass
+            return
+
+    try:
+        ctx = await project_context.refresh(path)
+        if ctx is None:
+            msg = "No active project to refresh, sir — open one first."
+        else:
+            msg = f"Context refreshed for {ctx.project_path.name}, sir."
+    except Exception as e:
+        log.error(f"refresh_context failed: {e}")
+        msg = "Something went wrong refreshing context, sir."
+
+    audio = await synthesize_speech(msg)
+    if audio and ws:
+        try:
+            await ws.send_json({"type": "status", "state": "speaking"})
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+        except Exception:
+            pass
+
+
+def _format_projects_for_voice(projects: list[dict]) -> str:
+    """Render a known-projects list as a single-sentence butler reply."""
+    if not projects:
+        return "No projects on the list, sir."
+    n = len(projects)
+    sample = ", ".join(p["name"] for p in projects[:5])
+    if n == 1:
+        return f"One project, sir: {sample}."
+    if n <= 5:
+        return f"{n} projects, sir: {sample}."
+    return f"{n} projects, sir. The latest are: {sample}, and {n - 5} more."
 
 
 async def _execute_draft_email(target: str, ws):
@@ -1743,6 +2065,21 @@ async def lifespan(application: FastAPI):
 
     # Start context refresh in a separate thread (never touches event loop)
     _refresh_context_sync()
+
+    # One-shot cleanup of project_aliases: repair moved projects (basename
+    # match in any configured root) or delete truly orphaned rows. Silent
+    # self-heal — prevents the alias table from accumulating cruft over time.
+    try:
+        from memory import cleanup_stale_aliases
+        from actions import _project_roots
+        cleanup_result = cleanup_stale_aliases([str(r) for r in _project_roots()])
+        if cleanup_result["repaired"]:
+            log.info(f"alias cleanup repaired: {cleanup_result['repaired']}")
+        if cleanup_result["deleted"]:
+            log.info(f"alias cleanup deleted: {cleanup_result['deleted']}")
+    except Exception as e:
+        log.warning(f"cleanup_stale_aliases failed: {e}")
+
     log.info("JARVIS server starting")
 
     yield
@@ -1879,23 +2216,126 @@ async def api_list_projects():
 # -- Fast Action Detection (no LLM call) -----------------------------------
 
 def _scan_projects_sync() -> list[dict]:
-    """Synchronous Desktop scan — runs in executor."""
-    projects = []
-    desktop = Path.home() / "Desktop"
+    """Synchronous startup-time project scan — runs in executor.
+
+    Pulls from `list_projects()` so the cached_projects context surfaces both
+    alias-recorded projects and filesystem scans of ~/Code + ~/projects. No
+    git-branch lookup here — that's left to the async `scan_projects()`.
+    """
     try:
-        for entry in desktop.iterdir():
-            if entry.is_dir() and not entry.name.startswith("."):
-                projects.append({"name": entry.name, "path": str(entry), "branch": ""})
+        return [{"name": p["name"], "path": p["path"], "branch": ""}
+                for p in list_projects()]
     except Exception:
-        pass
-    return projects
+        return []
 
 
-def detect_action_fast(text: str) -> dict | None:
-    """Keyword-based action detection — ONLY for short, obvious commands.
+# Project-intent regexes. Structured patterns so we catch real speech
+# (filler words, "in cursor" suffix, no-hyphen STT artifacts) rather than
+# only matching a hand-picked substring list.
+_OPEN_PROJECT_PATTERNS = [
+    # "open the project called/named X" (more specific — tried first)
+    _action_re.compile(
+        r'^\s*(?:can you |could you |please )?'
+        r'(?:open|launch|pull up|bring up|fire up)\s+'
+        r'(?:the |a |my )?project\s+(?:called|named)\s+'
+        r'(?P<name>[\w.\- ]+?)'
+        r'\s*\??\.?\s*$',
+        _action_re.IGNORECASE,
+    ),
+    # Standard: "[can you/please] open [the/my/that/a] NAME [project] [in cursor]"
+    _action_re.compile(
+        r'^\s*(?:can you |could you |please )?'
+        r'(?:open|launch|pull up|bring up|fire up)\s+'
+        r'(?:the |my |that |a )?'
+        r'(?P<name>[\w.\- ]+?)'
+        r'(?:\s+project)?'
+        r'(?:\s+in\s+cursor)?'
+        r'\s*\??\.?\s*$',
+        _action_re.IGNORECASE,
+    ),
+]
+
+# Register-project intent — for one-off projects outside any configured root.
+# All patterns capture an absolute or tilde-prefixed path; alias is optional
+# (defaults to the dir's basename in register_project).
+_REGISTER_PROJECT_PATTERNS = [
+    # "register <path> as [my/the/a] <alias> [project]" / same with "add"
+    _action_re.compile(
+        r'^\s*(?:register|add)\s+(?P<path>[~/][^\s]+)\s+as\s+'
+        r'(?:my\s+|the\s+|a\s+)?(?P<alias>[\w.\- ]+?)'
+        r'(?:\s+project)?\.?\s*$',
+        _action_re.IGNORECASE,
+    ),
+    # "remember <path> as [my/the/a] <alias> [project]"
+    _action_re.compile(
+        r'^\s*remember\s+(?P<path>[~/][^\s]+)\s+as\s+'
+        r'(?:my\s+|the\s+|a\s+)?(?P<alias>[\w.\- ]+?)'
+        r'(?:\s+project)?\.?\s*$',
+        _action_re.IGNORECASE,
+    ),
+    # "add (this) project: <path>" — alias falls back to basename
+    _action_re.compile(
+        r'^\s*add\s+(?:this\s+)?project[:\s]+(?P<path>[~/][^\s]+)\s*\.?\s*$',
+        _action_re.IGNORECASE,
+    ),
+]
+
+# Start-design intent — "let's design X" / "design a Y" / "spec X" / "plan a Z".
+# Captures the topic so we can spawn a session with it immediately.
+_START_DESIGN_PATTERN = _action_re.compile(
+    r'^\s*(?:let\'?s |let us |i (?:want to|wanna|wish to) |can we |please )?'
+    r'(?:design|spec|architect|plan|think through|prototype)\s+'
+    r'(?:a |an |the |some )?(?P<topic>[\w .,\'\-]+?)\s*\??\.?\s*$',
+    _action_re.IGNORECASE,
+)
+
+# In-design fast-action phrases — only matched when a session is active.
+_SHIP_DESIGN_PHRASES = {
+    "ship it", "ship this", "send it", "ok build it", "okay build it",
+    "go ahead and build", "okay ship", "ok ship", "ship the design",
+    "let's ship it", "lets ship it",
+}
+_SCRAP_DESIGN_PHRASES = {
+    "scrap this", "scrap that", "scrap the design", "start over",
+    "throw this out", "throw it out", "forget the design", "drop the design",
+    "cancel the design", "abandon this",
+}
+_SHOW_DRAFT_PHRASES = {
+    "show me the prompt", "show the prompt", "what's the prompt",
+    "whats the prompt", "read me the prompt", "read the prompt",
+    "show me the draft", "show the draft",
+}
+
+# List-projects intent — verb+projects in any of several speech-shaped forms.
+_LIST_PROJECTS_PATTERN = _action_re.compile(
+    r'\b('
+    r'(?:list|show|tell\s+me|name|enumerate)\s+(?:me\s+)?(?:the\s+|my\s+|all\s+(?:my\s+|the\s+)?)?projects?'
+    r'|what\s+projects?\s+(?:do\s+i\s+have|can\s+you\s+see|are\s+there|do\s+you\s+know|you\s+can\s+see)'
+    r'|(?:^|\s)(?:my|the)\s+projects?(?:\s|$|\?|\.)'
+    r')\b',
+    _action_re.IGNORECASE,
+)
+
+# Reserved app names that "open X" should route to OPEN_APP, not OPEN_PROJECT.
+# Keeps "open cursor" / "open chrome" / "open terminal" out of the project resolver.
+_OPEN_APP_NAMES = {
+    "cursor", "chrome", "google chrome", "firefox", "safari", "terminal",
+    "iterm", "iterm2", "warp", "vscode", "visual studio code", "code",
+    "finder", "slack", "spotify", "notes", "mail", "messages", "calendar",
+    "discord", "zoom", "obsidian", "xcode", "settings", "system settings",
+    "desktop", "downloads", "documents", "music", "photos", "preview",
+}
+
+
+def detect_action_fast(text: str, ws=None) -> dict | None:
+    """Keyword/regex-based action detection — ONLY for short, obvious commands.
 
     Everything else goes to the LLM which uses [ACTION:X] tags when it decides
     to act based on conversational understanding.
+
+    When `ws` is provided AND has an active design session, design-mode
+    fast-actions (ship/scrap/show-draft) are enabled. Outside a design session
+    those phrases are passed through to the normal pipeline.
     """
     t = text.lower().strip()
     words = t.split()
@@ -1903,6 +2343,26 @@ def detect_action_fast(text: str) -> dict | None:
     # Only trigger on SHORT, clear commands (< 12 words)
     if len(words) > 12:
         return None  # Long messages are conversation, not commands
+
+    # ── Design-mode commands (only when a session is active on this ws) ──
+    if ws is not None:
+        import design_partner
+        if design_partner.get_for_ws(ws) is not None:
+            if t in _SHIP_DESIGN_PHRASES or any(t.startswith(p + " ") for p in _SHIP_DESIGN_PHRASES):
+                return {"action": "ship_design"}
+            if t in _SCRAP_DESIGN_PHRASES or any(t.startswith(p + " ") for p in _SCRAP_DESIGN_PHRASES):
+                return {"action": "scrap_design"}
+            if t in _SHOW_DRAFT_PHRASES or any(t.startswith(p + " ") for p in _SHOW_DRAFT_PHRASES):
+                return {"action": "show_draft"}
+
+    # Start-design intent — match against ORIGINAL text (preserves capitalized topic words)
+    m = _START_DESIGN_PATTERN.match(text.strip())
+    if m:
+        topic = m.group("topic").strip()
+        # Filter out single-word topics that are likely other intents misrouting
+        # (e.g. "plan tomorrow" should hit calendar planning, not design).
+        if topic and topic.lower() not in {"tomorrow", "today", "this", "that", "it", "something"}:
+            return {"action": "start_design", "target": topic}
 
     # Close / dismiss the process panel. Fast-path so JARVIS responds
     # instantly without round-tripping through the LLM.
@@ -1959,6 +2419,41 @@ def detect_action_fast(text: str) -> dict | None:
     if any(p in t for p in ["what's on my list", "whats on my list", "my tasks", "my to do",
                              "my todo", "what do i need to do", "open tasks", "task list"]):
         return {"action": "check_tasks"}
+
+    # List of known projects — regex captures "list/show/tell me/name/enumerate projects",
+    # "what projects can you see / do I have", "my projects", etc.
+    if _LIST_PROJECTS_PATTERN.search(t):
+        return {"action": "list_projects"}
+
+    # Open a named project — regex captures "open X", "open the X project",
+    # "open my X project in cursor", "can you open X", "open the project called X".
+    # Skipped when the captured name is a known app (so "open Cursor" still routes
+    # through the LLM's OPEN_APP path).
+    for pat in _OPEN_PROJECT_PATTERNS:
+        m = pat.match(t)
+        if m:
+            name = m.group("name").strip()
+            if name and name not in _OPEN_APP_NAMES:
+                return {"action": "open_project", "target": name}
+            break  # Matched as "open <app>" — let the LLM handle via OPEN_APP
+
+    # Register a path → alias for projects outside any configured root.
+    # Match against the ORIGINAL text (not lowercased `t`) so absolute paths
+    # like /Users/Finley/foo keep their case.
+    for pat in _REGISTER_PROJECT_PATTERNS:
+        m = pat.match(text.strip())
+        if m:
+            gd = m.groupdict()
+            return {
+                "action": "register_project",
+                "target": gd.get("path", "").strip(),
+                "alias": (gd.get("alias") or "").strip(),
+            }
+
+    # Re-read warm context for the active project
+    if any(p in t for p in ["refresh context", "refresh the context", "reload context",
+                             "reload the context", "re-read context", "rescan context"]):
+        return {"action": "refresh_context"}
 
     # Usage / cost check
     if any(p in t for p in ["usage", "how much have you cost", "how much am i spending",
@@ -2428,6 +2923,18 @@ async def voice_handler(ws: WebSocket):
             log.info(f"User: {user_text}")
             await ws.send_json({"type": "status", "state": "thinking"})
 
+            # If a pending alias offer is waiting (register-on-miss or remove-
+            # stale-alias), give it first crack at this utterance. Cleared
+            # whether handled or not — if the user moved on, drop the offer.
+            if getattr(ws, "pending_offer", None) is not None:
+                handled = await _handle_pending_offer(user_text, ws)
+                ws.pending_offer = None
+                if handled:
+                    history.append({"role": "user", "content": user_text})
+                    history.append({"role": "assistant", "content": "(offer handled)"})
+                    await ws.send_json({"type": "status", "state": "idle"})
+                    continue
+
             # Lazy project scan on first message
             global cached_projects
             if not cached_projects:
@@ -2562,7 +3069,7 @@ async def voice_handler(ws: WebSocket):
 
                 # ── CHAT MODE: fast keyword detection + Haiku ──
                 else:
-                    action = detect_action_fast(user_text)
+                    action = detect_action_fast(user_text, ws=ws)
 
                     # close_panel is handled silently before any TTS — JARVIS
                     # just dismisses the panel without speaking.
@@ -2609,12 +3116,65 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "check_tasks":
                             tasks = get_open_tasks()
                             response_text = format_tasks_for_voice(tasks)
+                        elif action["action"] == "list_projects":
+                            response_text = _format_projects_for_voice(list_projects())
+                        elif action["action"] == "open_project":
+                            target = action.get("target", "").strip()
+                            response_text = f"Opening {target}, sir." if target else "Which project, sir?"
+                            if target:
+                                asyncio.create_task(_execute_open_project(target, ws))
+                        elif action["action"] == "register_project":
+                            raw_path = action.get("target", "")
+                            alias = action.get("alias", "") or None
+                            async with process_bus.task_context(f"Register: {raw_path}") as _rt:
+                                result = await register_project(raw_path, alias, task_id=_rt)
+                            response_text = result.get("confirmation", "Done, sir.")
+                        elif action["action"] == "refresh_context":
+                            response_text = "Refreshing context, sir."
+
+                            async def _refresh_silent():
+                                try:
+                                    import project_context
+                                    await project_context.refresh()
+                                except Exception as exc:
+                                    log.warning(f"silent refresh_context failed: {exc}")
+
+                            asyncio.create_task(_refresh_silent())
+                        elif action["action"] == "start_design":
+                            response_text = ""  # _execute_start_design speaks
+                            topic = action.get("target", "")
+                            asyncio.create_task(_execute_start_design(topic, ws))
+                        elif action["action"] == "ship_design":
+                            response_text = ""
+                            asyncio.create_task(_execute_ship_design(ws))
+                        elif action["action"] == "scrap_design":
+                            response_text = ""
+                            asyncio.create_task(_execute_scrap_design(ws))
+                        elif action["action"] == "show_draft":
+                            response_text = ""
+                            asyncio.create_task(_execute_show_draft(ws))
                         elif action["action"] == "check_usage":
                             response_text = get_usage_summary()
                         else:
                             response_text = "Understood, sir."
                     else:
-                        if not anthropic_client:
+                        # ── DESIGNING branch — bypass Haiku entirely while a
+                        # design session is active and in DESIGNING state.
+                        # Routes the turn through Opus + design_turn tool-use.
+                        import design_partner
+                        active_session = design_partner.get_for_ws(ws)
+                        if active_session is not None and active_session.state == "DESIGNING":
+                            if not anthropic_client:
+                                response_text = "API key not configured, sir."
+                            else:
+                                try:
+                                    voice_reply = await active_session.handle_turn(user_text, anthropic_client)
+                                    await _speak(ws, voice_reply)
+                                    response_text = ""  # speak already happened
+                                except Exception as e:
+                                    log.error(f"design handle_turn failed: {e}", exc_info=True)
+                                    response_text = "I had trouble thinking that through, sir."
+                        elif not anthropic_client:
                             response_text = "API key not configured."
                         else:
                             response_text = await generate_response(
@@ -2687,6 +3247,21 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_open_app(embedded_action["target"]))
                                 elif embedded_action["action"] == "new_project":
                                     asyncio.create_task(_execute_new_project(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "open_project":
+                                    asyncio.create_task(_execute_open_project(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "list_projects":
+                                    # LLM fallback when fast-path missed — speak the authoritative list.
+                                    response_text = _format_projects_for_voice(list_projects())
+                                elif embedded_action["action"] == "refresh_context":
+                                    asyncio.create_task(_execute_refresh_context(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "start_design":
+                                    asyncio.create_task(_execute_start_design(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "ship_design":
+                                    asyncio.create_task(_execute_ship_design(ws))
+                                elif embedded_action["action"] == "scrap_design":
+                                    asyncio.create_task(_execute_scrap_design(ws))
+                                elif embedded_action["action"] == "show_draft":
+                                    asyncio.create_task(_execute_show_draft(ws))
                                 elif embedded_action["action"] == "delete_file":
                                     asyncio.create_task(delete_file(embedded_action["target"]))
                                 elif embedded_action["action"] == "applescript":
@@ -2809,17 +3384,21 @@ async def voice_handler(ws: WebSocket):
                 if anthropic_client and len(user_text) > 15:
                     asyncio.create_task(extract_memories(user_text, response_text, anthropic_client))
 
-                # TTS
-                tts = strip_markdown_for_tts(response_text)
-                await ws.send_json({"type": "status", "state": "speaking"})
-                audio = await synthesize_speech(tts)
-                if audio:
-                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
+                # TTS — skip entirely if response_text is empty (handler did its
+                # own _speak() call, e.g. design-partner branch).
+                if response_text:
+                    tts = strip_markdown_for_tts(response_text)
+                    await ws.send_json({"type": "status", "state": "speaking"})
+                    audio = await synthesize_speech(tts)
+                    if audio:
+                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
+                    else:
+                        await ws.send_json({"type": "text", "text": response_text})
+                        await ws.send_json({"type": "status", "state": "idle"})
+                    log.info(f"JARVIS: {response_text}")
+                    last_jarvis_response = response_text
                 else:
-                    await ws.send_json({"type": "text", "text": response_text})
                     await ws.send_json({"type": "status", "state": "idle"})
-                log.info(f"JARVIS: {response_text}")
-                last_jarvis_response = response_text
 
             except Exception as e:
                 log.error(f"Error: {e}", exc_info=True)

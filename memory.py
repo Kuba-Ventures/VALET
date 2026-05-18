@@ -21,6 +21,9 @@ log = logging.getLogger("jarvis.memory")
 
 DB_PATH = Path(__file__).parent / "data" / "jarvis.db"
 
+# Bump when adding migrations below. PRAGMA user_version is checked on init.
+SCHEMA_VERSION = 2
+
 
 def _get_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -28,6 +31,49 @@ def _get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Apply pending schema migrations based on PRAGMA user_version.
+
+    Each migration block runs only when crossing its version boundary. After
+    all applicable blocks run, user_version is bumped to SCHEMA_VERSION.
+    """
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current >= SCHEMA_VERSION:
+        return
+
+    if current < 1:
+        # v1: project_aliases for the design-partner project lifecycle.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS project_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alias TEXT NOT NULL UNIQUE,
+                path TEXT NOT NULL,
+                last_opened_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_project_aliases_path ON project_aliases(path);
+        """)
+
+    if current < 2:
+        # v2: design_sessions for Phase 3 design-partner audit trail.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS design_sessions (
+                id TEXT PRIMARY KEY,
+                topic TEXT,
+                project_path TEXT,
+                started_at REAL,
+                finished_at REAL,
+                final_prompt TEXT DEFAULT '',
+                status TEXT DEFAULT 'designing',
+                self_mod INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_design_sessions_status ON design_sessions(status);
+        """)
+
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.commit()
+    log.info(f"Schema migrated to version {SCHEMA_VERSION}")
 
 
 def init_db():
@@ -85,8 +131,193 @@ def init_db():
             content='notes', content_rowid='id'
         );
     """)
+    _run_migrations(conn)
     conn.close()
     log.info("Memory database initialized")
+
+
+# ---------------------------------------------------------------------------
+# Project aliases — fuzzy "open <name>" resolution for design-partner mode
+# ---------------------------------------------------------------------------
+
+def _normalize_project_key(name: str) -> str:
+    """Canonical project-name key: split camelcase, lowercase, collapse separators.
+
+    Examples:
+      RecipeBook Code        -> recipe-book-code
+      TommyTopDecker-Trading -> tommy-top-decker-trading
+      jarvis-main            -> jarvis-main
+      tommytopdecker         -> tommytopdecker  (no camelcase boundary)
+    """
+    import re as _re
+    # Camelcase split: insert '-' between lowercase->uppercase transitions.
+    name = _re.sub(r"([a-z])([A-Z])", r"\1-\2", name)
+    return _re.sub(r"[\s_.\-]+", "-", name.lower()).strip("-")
+
+
+def _keys_match(input_key: str, folder_key: str, exact: bool = False) -> bool:
+    """Match two normalized keys with hyphen-tolerant fallback.
+
+    The camelcase fix can leave inputs and folders disagreeing about hyphen
+    placement (e.g., spoken "tommytopdecker" vs folder "tommy-top-decker-trading").
+    So matching also tries the compressed (hyphenless) form of each side.
+    """
+    if exact:
+        return (input_key == folder_key) or (
+            input_key.replace("-", "") == folder_key.replace("-", "")
+        )
+    return (input_key in folder_key) or (
+        input_key.replace("-", "") in folder_key.replace("-", "")
+    )
+
+
+def resolve_project(name: str) -> str | None:
+    """Resolve a project name to a filesystem path via the alias table.
+
+    Matches by canonical key (case-insensitive, separator-insensitive,
+    camelcase-tolerant, hyphen-fallback) so "jarvis main", "jarvis_main",
+    "Jarvis.Main", "jarvis-main" all resolve to the same row.
+    Returns None if nothing matches.
+    """
+    if not name or not name.strip():
+        return None
+    key = _normalize_project_key(name)
+    conn = _get_db()
+    rows = conn.execute("SELECT alias, path FROM project_aliases").fetchall()
+    conn.close()
+    for row in rows:
+        if _keys_match(key, _normalize_project_key(row["alias"]), exact=True):
+            return row["path"]
+    return None
+
+
+def delete_alias(alias: str) -> bool:
+    """Delete an alias row by name (case + separator insensitive). Returns True if anything was deleted."""
+    if not alias:
+        return False
+    key = _normalize_project_key(alias)
+    conn = _get_db()
+    rows = conn.execute("SELECT id, alias FROM project_aliases").fetchall()
+    ids_to_delete = [
+        r["id"] for r in rows
+        if _keys_match(key, _normalize_project_key(r["alias"]), exact=True)
+    ]
+    if ids_to_delete:
+        conn.executemany(
+            "DELETE FROM project_aliases WHERE id = ?",
+            [(i,) for i in ids_to_delete],
+        )
+        conn.commit()
+    conn.close()
+    return bool(ids_to_delete)
+
+
+def update_alias_path(alias: str, new_path: str) -> bool:
+    """Update an alias's path. Returns True if anything was updated."""
+    if not alias:
+        return False
+    key = _normalize_project_key(alias)
+    conn = _get_db()
+    rows = conn.execute("SELECT id, alias FROM project_aliases").fetchall()
+    ids = [
+        r["id"] for r in rows
+        if _keys_match(key, _normalize_project_key(r["alias"]), exact=True)
+    ]
+    if ids:
+        conn.executemany(
+            "UPDATE project_aliases SET path = ? WHERE id = ?",
+            [(new_path, i) for i in ids],
+        )
+        conn.commit()
+    conn.close()
+    return bool(ids)
+
+
+def cleanup_stale_aliases(known_roots: list) -> dict:
+    """One-shot scan of project_aliases. Repair moved projects, delete truly orphaned rows.
+
+    For each row whose stored path doesn't exist:
+      - If exactly one configured root contains a folder with the same basename,
+        UPDATE the row to point there (silent self-heal).
+      - Otherwise DELETE the row (it's cruft; user can re-register).
+
+    Returns {"repaired": [...], "deleted": [...]} for logging.
+    """
+    from pathlib import Path
+    conn = _get_db()
+    rows = conn.execute("SELECT id, alias, path FROM project_aliases").fetchall()
+    repaired: list[dict] = []
+    deleted: list[dict] = []
+    for row in rows:
+        stored_path = Path(row["path"])
+        if stored_path.exists():
+            continue
+        basename = stored_path.name
+        candidates: list[Path] = []
+        for root in known_roots:
+            root_path = Path(root)
+            if not root_path.exists():
+                continue
+            candidate = root_path / basename
+            if candidate.exists():
+                candidates.append(candidate)
+        if len(candidates) == 1:
+            new_path = str(candidates[0])
+            conn.execute(
+                "UPDATE project_aliases SET path = ? WHERE id = ?",
+                (new_path, row["id"]),
+            )
+            repaired.append({"alias": row["alias"], "old": row["path"], "new": new_path})
+        else:
+            conn.execute("DELETE FROM project_aliases WHERE id = ?", (row["id"],))
+            deleted.append({
+                "alias": row["alias"],
+                "path": row["path"],
+                "reason": "ambiguous" if candidates else "orphaned",
+            })
+    conn.commit()
+    conn.close()
+    if repaired or deleted:
+        log.info(f"cleanup_stale_aliases: repaired={len(repaired)}, deleted={len(deleted)}")
+    return {"repaired": repaired, "deleted": deleted}
+
+
+def record_project(alias: str, path: str) -> None:
+    """Insert or update an alias → path mapping, stamping last_opened_at."""
+    if not alias or not path:
+        return
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO project_aliases (alias, path, last_opened_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(alias) DO UPDATE SET path = excluded.path, last_opened_at = excluded.last_opened_at",
+        (alias.strip(), path, time.time())
+    )
+    conn.commit()
+    conn.close()
+
+
+def touch_project(path: str) -> None:
+    """Bump last_opened_at for whichever alias(es) point at this path."""
+    if not path:
+        return
+    conn = _get_db()
+    conn.execute(
+        "UPDATE project_aliases SET last_opened_at = ? WHERE path = ?",
+        (time.time(), path)
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_known_projects() -> list[dict]:
+    """All recorded project aliases, most-recently-opened first."""
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT alias, path, last_opened_at FROM project_aliases "
+        "ORDER BY (last_opened_at IS NULL), last_opened_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

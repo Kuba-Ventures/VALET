@@ -1,0 +1,22 @@
+{
+  "project_roots": ["~/Code", "~/projects"],
+  "new_project_root": "~/Code",
+  "window_layout": {
+    "cursor": {"x_pct": 0.0, "width_pct": 1.0}
+  },
+  "warm_context": {
+    "file_tree_depth": 3,
+    "git_log_count": 20,
+    "entry_point_lines": 200,
+    "max_entry_points": 3,
+    "fs_debounce_ms": 500
+  },
+  "design_session": {
+    "building_idle_timeout_sec": 300,
+    "self_mod_confirmation_window_sec": 10
+  },
+  "self_mod": {
+    "smoke_test_timeout_sec": 120,
+    "post_restart_health_timeout_sec": 30
+  }
+}

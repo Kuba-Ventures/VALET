@@ -237,3 +237,39 @@ async def emit_task_queued(task_id: str, title: str, detail: str = "") -> None:
         detail=detail,
         status=EventStatus.PENDING.value,
     ))
+
+
+async def emit_project_event(task_id: str, stage: str, title: str,
+                             detail: str = "", status: str = "active",
+                             payload: dict[str, Any] | None = None) -> None:
+    """Emit a project-lifecycle event (creating / scaffolding / opening_* / ready).
+
+    The event `type` is `project.<stage>` so the frontend can target stages
+    individually if it wants distinct icons, while falling back to generic
+    step rendering for stages it doesn't know yet.
+    """
+    await bus.emit(Event(
+        type=f"project.{stage}",
+        task_id=task_id,
+        title=title,
+        detail=detail,
+        status=status,
+        payload=payload or {},
+    ))
+
+
+async def emit_context_event(task_id: str, stage: str, title: str,
+                             detail: str = "", status: str = "active",
+                             payload: dict[str, Any] | None = None) -> None:
+    """Emit a warm-context-loader event (loading / file_read / ready / refreshed).
+
+    Symmetric with `emit_project_event` — the event `type` is `context.<stage>`.
+    """
+    await bus.emit(Event(
+        type=f"context.{stage}",
+        task_id=task_id,
+        title=title,
+        detail=detail,
+        status=status,
+        payload=payload or {},
+    ))

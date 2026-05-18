@@ -6,6 +6,7 @@ Each function returns {"success": bool, "confirmation": str}.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -13,11 +14,143 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
-from process_events import emit_app_launch, emit_error, emit_step, emit_text_write
+from process_events import (
+    emit_app_launch,
+    emit_error,
+    emit_project_event,
+    emit_step,
+    emit_text_write,
+)
 
 log = logging.getLogger("jarvis.actions")
 
 DESKTOP_PATH = Path.home() / "Desktop"
+
+_CONFIG_PATH = Path(__file__).parent / "config" / "design_partner.json"
+_cached_config: dict | None = None
+
+
+def _design_partner_config() -> dict:
+    """Lazy-load config/design_partner.json. Returns {} on any read/parse error."""
+    global _cached_config
+    if _cached_config is not None:
+        return _cached_config
+    try:
+        if _CONFIG_PATH.exists():
+            _cached_config = json.loads(_CONFIG_PATH.read_text())
+        else:
+            _cached_config = {}
+    except Exception as e:
+        log.warning(f"design_partner.json unreadable: {e}")
+        _cached_config = {}
+    return _cached_config
+
+
+_CLAUDE_MD_TEMPLATE = """# {name}
+
+## Client
+<placeholder>
+
+## Value prop
+<placeholder>
+
+## Current MVP scope
+<placeholder>
+
+## Recent meeting notes
+<!-- TODO: JARVIS will populate from memory layer in a future phase -->
+"""
+
+
+# .vscode/tasks.json scaffold — auto-runs `claude` in a dedicated terminal
+# panel inside Cursor on workspace open. First open per workspace prompts the
+# user with a Workspace Trust "Allow Automated Tasks" dialog; subsequent opens
+# run silently. Keys verified against the VS Code tasks.json 2.0.0 schema:
+#   version, tasks[].label, .type, .command, .presentation (reveal/panel/focus),
+#   .runOptions.runOn = "folderOpen".
+_TASKS_JSON = """{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Claude",
+      "type": "shell",
+      "command": "claude",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      }
+    }
+  ]
+}
+"""
+
+
+def _ensure_cursor_task(project_path: Path, task_id: str | None = None) -> bool:
+    """No-clobber scaffold of .vscode/tasks.json that auto-runs claude on open.
+
+    Returns True if the file was newly written, False if it already existed
+    (no-clobber — caller has likely customized it). Same pattern as the
+    CLAUDE.md scaffolding rule.
+    """
+    vscode_dir = project_path / ".vscode"
+    tasks_path = vscode_dir / "tasks.json"
+    if tasks_path.exists():
+        return False
+    try:
+        vscode_dir.mkdir(parents=True, exist_ok=True)
+        tasks_path.write_text(_TASKS_JSON)
+        log.info(f"Scaffolded {tasks_path}")
+        return True
+    except Exception as e:
+        log.warning(f"Failed to scaffold {tasks_path}: {e}")
+        return False
+
+
+async def _load_warm_context(path: Path) -> None:
+    """Background task: load project_context for `path`. Best-effort, never raises."""
+    try:
+        import project_context
+        await project_context.load(path)
+    except Exception as e:
+        log.warning(f"project_context.load({path}) failed: {e}")
+
+
+def _project_roots() -> list[Path]:
+    """Resolve configured project_roots paths. Defaults to ~/Code + ~/projects.
+
+    Read fresh from config each call (cheap dict get) so config edits take
+    effect without a restart. Skips entries that don't expand to real dirs.
+    """
+    cfg = _design_partner_config()
+    raw = cfg.get("project_roots") or ["~/Code", "~/projects"]
+    return [Path(r).expanduser() for r in raw]
+
+
+def _fuzzy_suggestions(name: str, limit: int = 3) -> list[dict]:
+    """Top-N likely projects for a name that didn't resolve cleanly.
+
+    Token-overlap scoring against `list_projects()`. Returns empty list when
+    no tokens overlap — the caller should then prompt the user to register
+    by path rather than offering wrong matches.
+    """
+    from memory import _normalize_project_key
+    key = _normalize_project_key(name)
+    if not key:
+        return []
+    tokens = set(t for t in key.split("-") if t)
+    scored: list[tuple[int, dict]] = []
+    for proj in list_projects():
+        pkey = _normalize_project_key(proj["name"])
+        ptokens = set(t for t in pkey.split("-") if t)
+        overlap = len(tokens & ptokens)
+        if overlap > 0:
+            scored.append((overlap, proj))
+    scored.sort(key=lambda x: (-x[0], x[1]["name"].lower()))
+    return [proj for _, proj in scored[:limit]]
 
 
 async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
@@ -243,43 +376,95 @@ async def run_applescript(script: str) -> dict:
 
 
 async def new_cursor_project(name: str, base_dir: str | None = None, task_id: str | None = None) -> dict:
-    """Create a fresh project directory and open it in Cursor as a new session.
+    """Create (or reuse) a project directory and open it in Cursor with `claude` auto-running.
+
+    On a fresh dir: runs `git init`, scaffolds CLAUDE.md (placeholder template)
+    and .vscode/tasks.json (auto-runs `claude` in a dedicated terminal panel
+    on workspace open via VS Code's runOn=folderOpen pattern), records the
+    project alias, opens Cursor full-width, sizes Cursor per layout config.
+
+    No external Terminal.app is spawned — claude lives inside Cursor's
+    integrated terminal. First open of each workspace triggers Cursor's
+    "Allow Automated Tasks" trust prompt; subsequent opens run silently.
 
     name: project folder name (kebab-cased internally if necessary)
-    base_dir: optional parent (default: ~/Code, falling back to ~/Desktop)
-    task_id: optional process-panel task_id; step and app_launch events
+    base_dir: optional parent (default reads config/design_partner.json#new_project_root, ~/Code)
+    task_id: optional process-panel task_id; project.* and app_launch events
         are emitted to the panel when supplied.
     """
     raw_name = name.strip()
     if not raw_name:
         return {"success": False, "confirmation": "I need a project name, sir."}
 
-    # Sanitize name to a safe filesystem slug.
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_name).strip("-")
     if not slug:
         return {"success": False, "confirmation": "That name doesn't translate to a folder, sir."}
 
-    home = Path.home()
     if base_dir:
         base = Path(base_dir).expanduser()
     else:
-        # Prefer ~/Code if it exists, otherwise ~/Desktop
-        base = home / "Code" if (home / "Code").exists() else home / "Desktop"
+        # Always create new projects in the configured new_project_root (default ~/Code/).
+        # Voice command "new project for X" never scatters across roots.
+        cfg = _design_partner_config()
+        base = Path(cfg.get("new_project_root") or "~/Code").expanduser()
 
     base.mkdir(parents=True, exist_ok=True)
     project_path = base / slug
 
-    if project_path.exists():
-        # If the dir already exists, just open it (don't error — user may be resuming).
-        log.info(f"new_cursor_project: '{project_path}' already exists, opening as-is")
-        if task_id:
-            await emit_step(task_id, f"Reusing existing folder", detail=str(project_path))
-    else:
+    if task_id:
+        await emit_project_event(task_id, "creating", f"Creating '{slug}'", detail=str(project_path))
+
+    is_new = not project_path.exists()
+    if is_new:
         project_path.mkdir(parents=True)
-        # Drop a minimal README so the folder isn't empty (Cursor file tree feels alive).
-        (project_path / "README.md").write_text(f"# {raw_name}\n")
+        # git init — best-effort; bare `git` may not be on PATH in some shells.
+        try:
+            git_proc = await asyncio.create_subprocess_exec(
+                "git", "init", "-q",
+                cwd=str(project_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await git_proc.communicate()
+        except Exception as e:
+            log.warning(f"git init failed in {project_path}: {e}")
+
+        # Scaffold CLAUDE.md only if absent — never clobber.
+        claude_md = project_path / "CLAUDE.md"
+        if not claude_md.exists():
+            claude_md.write_text(_CLAUDE_MD_TEMPLATE.format(name=raw_name))
+
         if task_id:
-            await emit_step(task_id, "Created project folder", detail=str(project_path))
+            await emit_project_event(
+                task_id, "scaffolding", "Scaffolded project",
+                detail="git init + CLAUDE.md", status="done",
+            )
+    else:
+        log.info(f"new_cursor_project: '{project_path}' already exists, reusing")
+        if task_id:
+            await emit_step(task_id, "Reusing existing folder", detail=str(project_path))
+
+    # Ensure .vscode/tasks.json exists BEFORE Cursor opens so the runOn=folderOpen
+    # task fires on this workspace load. No-clobber if already present.
+    wrote_tasks = _ensure_cursor_task(project_path, task_id=task_id)
+    if task_id and wrote_tasks:
+        await emit_project_event(
+            task_id, "scaffolding", "Scaffolded .vscode/tasks.json",
+            detail="claude auto-runs on open (first time: trust prompt)",
+            status="done",
+        )
+
+    # Record / refresh alias so "open <name>" works next time.
+    try:
+        from memory import record_project
+        record_project(raw_name, str(project_path))
+        if slug.lower() != raw_name.lower():
+            record_project(slug, str(project_path))
+    except Exception as e:
+        log.warning(f"record_project failed: {e}")
+
+    if task_id:
+        await emit_project_event(task_id, "opening_cursor", "Opening Cursor", status="active")
 
     proc = await asyncio.create_subprocess_exec(
         "open", "-na", "Cursor", "--args", str(project_path),
@@ -306,35 +491,52 @@ async def new_cursor_project(name: str, base_dir: str | None = None, task_id: st
     if task_id:
         await emit_app_launch(task_id, "Cursor", status="done", detail=str(project_path))
 
-    # After Cursor finishes loading the workspace, open the integrated terminal
-    # and split it so the user sees two terminal panes side by side.
-    # Key codes: 50 = backtick (`), 42 = backslash (\). Defaults in VS Code /
-    # Cursor: Ctrl+` toggles terminal, Cmd+\ splits the active terminal.
-    asyncio.create_task(_open_split_terminal_in_cursor())
+    # Cursor's integrated terminal runs `claude` via .vscode/tasks.json — no
+    # external Terminal.app spawn. Just size Cursor to the configured width.
+    asyncio.create_task(_position_cursor())
 
+    # Warm-context loader runs in parallel — its own task_context narrates progress.
+    asyncio.create_task(_load_warm_context(project_path))
+
+    if task_id:
+        await emit_project_event(
+            task_id, "ready", "Project ready",
+            detail=str(project_path), status="done",
+        )
+
+    verb = "New project" if is_new else f"{raw_name} reopened"
     return {
         "success": True,
-        "confirmation": f"New Cursor session up at {project_path}, sir.",
+        "confirmation": f"{verb} at {project_path}, sir." if is_new else f"{verb}, sir.",
         "path": str(project_path),
     }
 
 
-async def _open_split_terminal_in_cursor() -> None:
-    """Wait for Cursor to be ready, then open terminal + split it.
+async def _set_window_bounds(process_name: str, x_pct: float, width_pct: float) -> bool:
+    """Position the front window of `process_name` to a horizontal slice of the main display.
 
-    Runs as a background task so the calling action returns quickly. Cursor
-    needs ~1.5s after launch before keystrokes register reliably.
+    Uses System Events (not the app's native scripting dictionary, which most
+    apps don't expose) so it works for Cursor, Terminal, and most third-party
+    GUI apps. Best-effort — silently returns False if the app has no window
+    or Accessibility permission is missing.
     """
-    await asyncio.sleep(1.8)
-    script = (
-        'tell application "Cursor" to activate\n'
-        'delay 0.4\n'
-        'tell application "System Events"\n'
-        '    key code 50 using control down\n'  # Ctrl+`  → toggle terminal
-        '    delay 0.5\n'
-        '    key code 42 using command down\n'  # Cmd+\   → split terminal
-        'end tell'
-    )
+    script = f'''
+    tell application "Finder"
+        set screenBounds to bounds of window of desktop
+    end tell
+    set screenW to item 3 of screenBounds
+    set screenH to item 4 of screenBounds
+    set xPos to (screenW * {x_pct}) as integer
+    set winW to (screenW * {width_pct}) as integer
+    tell application "System Events"
+        tell process "{process_name}"
+            try
+                set position of front window to {{xPos, 0}}
+                set size of front window to {{winW, screenH}}
+            end try
+        end tell
+    end tell
+    '''
     proc = await asyncio.create_subprocess_exec(
         "osascript", "-e", script,
         stdout=asyncio.subprocess.PIPE,
@@ -342,7 +544,286 @@ async def _open_split_terminal_in_cursor() -> None:
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
-        log.warning(f"split-terminal keystroke failed: {stderr.decode()}")
+        log.warning(f"_set_window_bounds({process_name}) failed: {stderr.decode()[:200]}")
+        return False
+    return True
+
+
+async def _position_cursor() -> None:
+    """Wait for Cursor to be ready, then size its front window per config.
+
+    Default config gives Cursor the full screen now that there's no external
+    Terminal sharing real estate. Layout overrides in
+    config/design_partner.json#window_layout.cursor still apply.
+
+    Cursor needs ~1.8s after launch before its window can be targeted via
+    System Events; 2s gives a small safety margin.
+    """
+    cfg = _design_partner_config().get("window_layout", {})
+    cursor_cfg = cfg.get("cursor", {"x_pct": 0.0, "width_pct": 1.0})
+    await asyncio.sleep(2.0)
+    await _set_window_bounds("Cursor", cursor_cfg["x_pct"], cursor_cfg["width_pct"])
+
+
+async def _spawn_external_terminal(project_path: Path, task_id: str | None = None) -> dict:
+    """Open a real Terminal.app window at `project_path` running `claude`.
+
+    NOT called by the lifecycle flow — claude now runs inside Cursor's
+    integrated terminal via .vscode/tasks.json. Kept available for future use
+    (e.g. a "give me a real Terminal here" voice command, or fallback when
+    Cursor's task runner is disabled).
+    """
+    term_script = (
+        'tell application "Terminal"\n'
+        '    activate\n'
+        f'    do script "cd {project_path} && claude --dangerously-skip-permissions"\n'
+        'end tell'
+    )
+    proc = await asyncio.create_subprocess_exec(
+        "osascript", "-e", term_script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    success = proc.returncode == 0
+    if success:
+        await _mark_terminal_as_jarvis()
+        if task_id:
+            await emit_app_launch(task_id, "Terminal", status="done", detail=str(project_path))
+    else:
+        log.warning(f"_spawn_external_terminal failed: {stderr.decode()[:200]}")
+        if task_id:
+            await emit_error(task_id, "Terminal launch failed", detail=stderr.decode()[:200])
+    return {"success": success}
+
+
+async def open_project(slug_or_alias: str, task_id: str | None = None) -> dict:
+    """Open an existing project (Cursor + side-by-side Terminal) without scaffolding.
+
+    Resolution order:
+      1. project_aliases table (exact, case-insensitive)
+      2. Exact directory match in ~/Code/ then ~/projects/
+      3. Fuzzy substring match across ~/Code/ + ~/projects/
+
+    If fuzzy matching returns >1 candidate, refuses and asks for specificity.
+    """
+    name = slug_or_alias.strip()
+    if not name:
+        return {"success": False, "confirmation": "Which project, sir?"}
+
+    if task_id:
+        await emit_project_event(task_id, "opening", f"Opening '{name}'", status="active")
+
+    # 1. Alias table (with auto-repair on stale rows pointing at moved projects)
+    from memory import resolve_project, record_project, touch_project, _normalize_project_key, _keys_match, update_alias_path
+    resolved = resolve_project(name)
+    path: Path | None = None
+    stale_alias: dict | None = None
+
+    if resolved:
+        rp = Path(resolved)
+        if rp.exists():
+            path = rp
+        else:
+            # Alias hit but path is gone. Try silent repair by searching for
+            # the same basename in any configured root.
+            basename = rp.name
+            candidates = [r / basename for r in _project_roots() if (r / basename).exists()]
+            if len(candidates) == 1:
+                new_path = candidates[0]
+                update_alias_path(name, str(new_path))
+                log.info(f"open_project auto-repaired alias '{name}': {resolved} -> {new_path}")
+                path = new_path
+            else:
+                # Note for caller to offer removal (only matters if fs scan also misses)
+                stale_alias = {"alias": name, "path": resolved}
+
+    # 2-3. Filesystem fallbacks — scan all configured project_roots. Same
+    # normalization (camelcase-split + hyphen-tolerant) on both sides.
+    if path is None:
+        roots = _project_roots()
+        key = _normalize_project_key(name)
+
+        exact_matches: list[Path] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for entry in root.iterdir():
+                if entry.is_dir() and _keys_match(key, _normalize_project_key(entry.name), exact=True):
+                    exact_matches.append(entry)
+        if len(exact_matches) == 1:
+            path = exact_matches[0]
+        elif len(exact_matches) > 1:
+            locations = ", ".join(str(m) for m in exact_matches[:5])
+            if task_id:
+                await emit_error(task_id, f"Ambiguous: {len(exact_matches)} '{name}' across roots", detail=locations)
+            return {
+                "success": False,
+                "confirmation": f"I found {len(exact_matches)} projects called '{name}' in different roots, sir — say which: {locations}",
+            }
+
+        if path is None:
+            candidates: list[Path] = []
+            for root in roots:
+                if not root.exists():
+                    continue
+                for entry in root.iterdir():
+                    if entry.is_dir() and not entry.name.startswith(".") and _keys_match(key, _normalize_project_key(entry.name), exact=False):
+                        candidates.append(entry)
+            if len(candidates) == 1:
+                path = candidates[0]
+            elif len(candidates) > 1:
+                names = ", ".join(c.name for c in candidates[:5])
+                if task_id:
+                    await emit_error(task_id, f"Ambiguous: {len(candidates)} matches", detail=names)
+                return {
+                    "success": False,
+                    "confirmation": f"I found {len(candidates)} projects matching '{name}', sir — try more of the name.",
+                }
+
+    if path is None:
+        # No match at all — return suggestions so the caller can offer to
+        # register an alias on the spot. Stale-alias info bubbles up too.
+        suggestions = _fuzzy_suggestions(name, limit=3)
+        if task_id:
+            await emit_error(task_id, f"No project '{name}'",
+                              detail=f"suggestions: {[s['name'] for s in suggestions]}")
+        return {
+            "success": False,
+            "confirmation": f"I couldn't find a project called '{name}', sir.",
+            "suggestions": suggestions,
+            "stale_alias": stale_alias,
+        }
+
+    try:
+        record_project(name, str(path))
+        touch_project(str(path))
+    except Exception as e:
+        log.warning(f"record/touch_project failed: {e}")
+
+    # Scaffold .vscode/tasks.json BEFORE Cursor opens (no-clobber). This makes
+    # the runOn=folderOpen task fire on this workspace load and gives
+    # pre-existing projects the auto-claude behavior for free.
+    wrote_tasks = _ensure_cursor_task(path, task_id=task_id)
+    if task_id and wrote_tasks:
+        await emit_project_event(
+            task_id, "scaffolding", "Added .vscode/tasks.json",
+            detail="claude auto-runs on open (first time: trust prompt)",
+            status="done",
+        )
+
+    if task_id:
+        await emit_project_event(task_id, "opening_cursor", "Opening Cursor", detail=str(path), status="active")
+
+    proc = await asyncio.create_subprocess_exec(
+        "open", "-a", "Cursor", str(path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        log.error(f"open_project Cursor failed: {stderr.decode()}")
+        if task_id:
+            await emit_error(task_id, "Cursor failed to open", detail=stderr.decode()[:200])
+        return {"success": False, "confirmation": f"I couldn't open {path.name} in Cursor, sir."}
+    if task_id:
+        await emit_app_launch(task_id, "Cursor", status="done", detail=str(path))
+
+    # Size Cursor to the configured width (default full screen). No external
+    # Terminal — claude runs inside Cursor via the tasks.json auto-run.
+    asyncio.create_task(_position_cursor())
+    asyncio.create_task(_load_warm_context(path))
+
+    if task_id:
+        await emit_project_event(task_id, "ready", "Project ready", detail=str(path), status="done")
+
+    return {"success": True, "confirmation": f"{path.name} is up, sir.", "path": str(path)}
+
+
+def list_projects() -> list[dict]:
+    """Return all known projects: alias entries (most-recent first) + filesystem scan.
+
+    Scans every root in `config/design_partner.json#project_roots`. Same project
+    name in two roots → both entries listed (dedup is by canonical path, not name).
+
+    Shape: [{"name": str, "path": str, "source": "alias"|"fs"}].
+    Synchronous — cheap filesystem listdir.
+    """
+    from memory import list_known_projects
+    seen: dict[str, dict] = {}
+    for entry in list_known_projects():
+        raw = entry["path"]
+        if not raw:
+            continue
+        p = Path(raw)
+        if not p.exists():
+            continue
+        key = str(p.resolve())
+        if key not in seen:
+            seen[key] = {"name": entry["alias"], "path": str(p), "source": "alias"}
+
+    for root in _project_roots():
+        if not root.exists():
+            continue
+        try:
+            for entry in root.iterdir():
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                key = str(entry.resolve())
+                if key not in seen:
+                    seen[key] = {"name": entry.name, "path": str(entry), "source": "fs"}
+        except Exception:
+            pass
+    return list(seen.values())
+
+
+async def register_project(path: str, alias: str | None = None, task_id: str | None = None) -> dict:
+    """Record a path → alias mapping so "open <alias>" resolves to a project
+    living outside any configured root.
+
+    `path` may be tilde-prefixed or absolute. The alias defaults to the dir's
+    basename if not provided. Idempotent: re-registering an existing alias
+    updates the path. Returns {success, confirmation, path, alias}.
+    """
+    raw = (path or "").strip()
+    if not raw:
+        return {"success": False, "confirmation": "I need a path, sir."}
+
+    expanded = Path(raw).expanduser().resolve()
+    if not expanded.exists():
+        if task_id:
+            await emit_error(task_id, f"Path missing: {expanded}")
+        return {"success": False, "confirmation": f"That path doesn't exist, sir: {expanded}"}
+    if not expanded.is_dir():
+        if task_id:
+            await emit_error(task_id, f"Not a directory: {expanded}")
+        return {"success": False, "confirmation": f"That's not a directory, sir: {expanded}"}
+
+    final_alias = (alias or expanded.name).strip()
+    if not final_alias:
+        return {"success": False, "confirmation": "I need an alias for that project, sir."}
+
+    try:
+        from memory import record_project
+        record_project(final_alias, str(expanded))
+    except Exception as e:
+        log.error(f"register_project DB write failed: {e}")
+        if task_id:
+            await emit_error(task_id, "Alias DB write failed", detail=str(e)[:200])
+        return {"success": False, "confirmation": "I couldn't save that alias, sir."}
+
+    if task_id:
+        await emit_project_event(
+            task_id, "registered", f"Registered '{final_alias}'",
+            detail=str(expanded), status="done",
+        )
+
+    return {
+        "success": True,
+        "confirmation": f"Registered '{final_alias}' at {expanded}, sir.",
+        "path": str(expanded),
+        "alias": final_alias,
+    }
 
 
 async def refresh_calendar_tabs() -> dict:
@@ -491,13 +972,18 @@ async def open_chrome(url: str) -> dict:
 async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
     """Open Terminal, cd to project dir, run Claude Code interactively.
 
-    Writes the prompt to CLAUDE.md (which claude reads automatically on startup)
-    then launches claude in interactive mode with --dangerously-skip-permissions.
-    No prompt escaping needed — CLAUDE.md handles context delivery.
+    On a fresh project (no CLAUDE.md), writes the prompt to CLAUDE.md so claude
+    picks it up on startup. On a project that already has a CLAUDE.md (the
+    warm-context source of truth), writes the per-invocation prompt to a
+    sidecar `.jarvis_prompt.md` instead — never clobbers user-owned context.
     """
-    # Write prompt to CLAUDE.md — claude reads this automatically
     claude_md = Path(project_dir) / "CLAUDE.md"
-    claude_md.write_text(f"# Task\n\n{prompt}\n\nBuild this completely. If web app, make index.html work standalone.\n")
+    if not claude_md.exists():
+        claude_md.write_text(f"# Task\n\n{prompt}\n\nBuild this completely. If web app, make index.html work standalone.\n")
+    else:
+        # Preserve existing CLAUDE.md (Phase 2 warm-context loader reads it).
+        sidecar = Path(project_dir) / ".jarvis_prompt.md"
+        sidecar.write_text(f"# Latest task\n\n{prompt}\n")
 
     # Launch claude interactive — it reads CLAUDE.md on its own
     script = (

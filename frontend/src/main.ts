@@ -11,6 +11,7 @@ import { createWakeWord } from "./wakeWord";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { createProcessPanel, type ProcessEvent } from "./processPanel";
+import { createDesignPanel, type DesignEvent } from "./designPanel";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,16 @@ orb.setAnalyser(audioPlayer.getAnalyser());
 
 // Live "what JARVIS is doing" panel. Hidden until the first event arrives.
 const processPanel = createProcessPanel();
+const designPanel = createDesignPanel();
+
+// Ship/Scrap button handlers → synthesize a fake transcript so the existing
+// fast-action path runs (single source of truth for the ship/scrap pipeline).
+designPanel.onShipClick(() => {
+  socket.send({ type: "transcript", text: "ship it", isFinal: true });
+});
+designPanel.onScrapClick(() => {
+  socket.send({ type: "transcript", text: "scrap this", isFinal: true });
+});
 
 // Reflect WS connection health in the central ERROR badge.
 socket.onConnectionChange((isConnected) => {
@@ -209,6 +220,10 @@ socket.onMessage((msg) => {
   } else if (type === "close_panel") {
     // Server-side voice intent ("close it", "dismiss", etc.) closes the panel.
     processPanel.close();
+  } else if (type === "design_event") {
+    // Design-partner emissions — drive the Design Panel beside the orb.
+    const event = msg.event as DesignEvent | undefined;
+    if (event) designPanel.handleEvent(event);
   }
 });
 
