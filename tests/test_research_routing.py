@@ -383,6 +383,69 @@ def test_system_prompt_handles_ambiguous_create_a_project():
     print("✓ System prompt instructs the model to ask when ambiguous (case #6)")
 
 
+def test_extract_urls_from_code_pulls_real_urls():
+    """The chunk-17 fix relies on this parser to recover URLs from the
+    Python source that _20260209 web_fetch hides them in. Test a few
+    realistic patterns observed in /tmp/smoke_baseline.log."""
+    from server import _extract_urls_from_code
+
+    # Pattern 1: list literal + loop (the most common shape)
+    code1 = (
+        'import json\n'
+        'urls = [\n'
+        '    "https://www.outdoorgearlab.com/topics/camping-and-hiking/best-fishing-rod",\n'
+        '    "https://www.wired2fish.com/fishing-videos/best-rod-and-tackle-setups-for-pond-fishing",\n'
+        '    "https://fishingbooker.com/blog/beginner-fishing-rod/",\n'
+        '    "https://www.wired2fish.com/crappie-fishing/choosing-the-right-panfish-rod"\n'
+        ']\n'
+        'for u in urls:\n'
+        '    r = await web_fetch({"url": u})\n'
+    )
+    out1 = _extract_urls_from_code(code1)
+    assert out1 == [
+        "https://www.outdoorgearlab.com/topics/camping-and-hiking/best-fishing-rod",
+        "https://www.wired2fish.com/fishing-videos/best-rod-and-tackle-setups-for-pond-fishing",
+        "https://fishingbooker.com/blog/beginner-fishing-rod/",
+        "https://www.wired2fish.com/crappie-fishing/choosing-the-right-panfish-rod",
+    ], f"List-literal pattern wrong: {out1}"
+
+    # Pattern 2: single literal in web_fetch call
+    code2 = (
+        'import json\n'
+        'r = await web_fetch({"url": "https://fishingbooker.com/blog/beginner-fishing-rod/"})\n'
+        'print(repr(r)[:500])\n'
+    )
+    out2 = _extract_urls_from_code(code2)
+    assert out2 == ["https://fishingbooker.com/blog/beginner-fishing-rod/"], out2
+
+    # Pattern 3: trailing punctuation stripped
+    code3 = '''
+print("checking", "https://example.com/foo,")
+print("see https://example.com/bar.")
+print("(https://example.com/baz)")
+'''
+    out3 = _extract_urls_from_code(code3)
+    assert out3 == [
+        "https://example.com/foo",
+        "https://example.com/bar",
+        "https://example.com/baz",
+    ], out3
+
+    # Pattern 4: no URLs — empty list, not an error
+    assert _extract_urls_from_code("import json\nprint(42)") == []
+    assert _extract_urls_from_code("") == []
+
+    # Pattern 5: duplicates preserved (model may fetch same URL twice)
+    code5 = '''
+for u in ["https://a.com/x", "https://a.com/x"]:
+    await web_fetch({"url": u})
+'''
+    out5 = _extract_urls_from_code(code5)
+    assert out5 == ["https://a.com/x", "https://a.com/x"], out5
+
+    print("✓ _extract_urls_from_code handles list literals, single calls, trailing punct, empties, dupes")
+
+
 def test_middleware_strips_non_usd_prices():
     """Non-USD price strings should be replaced with None and logged."""
     from claude_middleware import _strip_non_usd_price
@@ -536,6 +599,7 @@ ALL_TESTS = [
     test_system_prompt_distinguishes_research_verbs_from_build_verbs,
     test_system_prompt_handles_show_me_how_to_build_carveout,
     test_system_prompt_handles_ambiguous_create_a_project,
+    test_extract_urls_from_code_pulls_real_urls,
     test_middleware_strips_non_usd_prices,
     test_middleware_enriches_product_cards_with_og_image,
     test_dispatch_path_does_not_slugify_for_research,

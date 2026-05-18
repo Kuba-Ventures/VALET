@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -1909,6 +1910,29 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
                 pass
 
 
+# Match any http(s) URL appearing in a code_execution.input.code Python
+# source. Excludes whitespace, quotes, angle brackets, and the closing
+# paren that often follows the URL in code. Stripping is done at the
+# caller because trailing punctuation (`,`, `.`, `)`) is common in code
+# but should not be part of the URL.
+_CODE_URL_RE = re.compile(r'https?://[^\s"\'<>)]+')
+
+
+def _extract_urls_from_code(code: str) -> list[str]:
+    """Pull URLs out of a code_execution Python source string in order of
+    appearance. Trailing code punctuation is stripped. Returns a list with
+    duplicates preserved — the model may legitimately fetch the same URL
+    twice across iterations."""
+    if not code:
+        return []
+    urls: list[str] = []
+    for m in _CODE_URL_RE.findall(code):
+        clean = m.rstrip(",.;:)\"'")
+        if clean.startswith(("http://", "https://")):
+            urls.append(clean)
+    return urls
+
+
 async def _emit_research_source_card(task_id: str, url: str, snippet: str) -> None:
     """Fire-and-forget: fetch preview metadata, emit result.research_source.
 
@@ -2021,6 +2045,17 @@ async def _execute_native_research(target: str, ws=None):
         tool_result_snippets: list[str] = []
         seen_search_ids: set[str] = set()
         seen_fetch_ids: set[str] = set()
+        # FIFO queue of URLs parsed out of code_execution.input.code blocks.
+        # With the _20260209 web_fetch tool version, the actual URL the
+        # model is fetching lives in the Python source the model writes
+        # inside a code_execution call (e.g. `for u in urls: await
+        # web_fetch({"url": u})`); the standalone web_fetch tool_use blocks
+        # that follow have input={}. So we extract URLs from each
+        # code_execution block as it closes and pop the next URL when each
+        # web_fetch block closes. Order-matched: the model executes the
+        # web_fetch calls in the order URLs appear in the code.
+        # See docs/streaming_hang_diagnosis.md → Finding A.
+        pending_fetch_urls: list[str] = []
         # tool_use_id → URL — populated when a web_fetch server_tool_use
         # block closes; consumed when its matching web_fetch_tool_result
         # arrives so the source-preview card can be emitted with the right URL.
@@ -2215,7 +2250,22 @@ async def _execute_native_research(target: str, ws=None):
                                 "stream_event content_block_stop index=%s tool_use name=%s id=%s input=%r",
                                 event.index, name, bid, inp,
                             )
-                            if name == "web_search" and bid not in seen_search_ids:
+                            if name == "code_execution":
+                                # Dynamic filtering wraps web_fetch in
+                                # Python that the model writes here. Pull
+                                # URL literals out of the code and FIFO-
+                                # queue them so the web_fetch blocks that
+                                # follow can show real URLs in the panel
+                                # and feed source-preview cards.
+                                code = inp.get("code", "") if isinstance(inp, dict) else ""
+                                extracted = _extract_urls_from_code(code)
+                                if extracted:
+                                    pending_fetch_urls.extend(extracted)
+                                    log.info(
+                                        "code_execution queued %d URL(s) (queue_depth=%d)",
+                                        len(extracted), len(pending_fetch_urls),
+                                    )
+                            elif name == "web_search" and bid not in seen_search_ids:
                                 seen_search_ids.add(bid)
                                 searches += 1
                                 query = inp.get("query", "") if isinstance(inp, dict) else ""
@@ -2228,7 +2278,28 @@ async def _execute_native_research(target: str, ws=None):
                             elif name == "web_fetch" and bid not in seen_fetch_ids:
                                 seen_fetch_ids.add(bid)
                                 fetches += 1
-                                url = inp.get("url", "") if isinstance(inp, dict) else ""
+                                # _20260209 puts the URL inside the
+                                # preceding code_execution block — input is
+                                # empty here. Pop from the FIFO queue we
+                                # built when those blocks closed. Fall
+                                # back to whatever the SDK gave us so we
+                                # don't break if Anthropic changes the
+                                # shape and starts populating input again.
+                                direct_url = inp.get("url", "") if isinstance(inp, dict) else ""
+                                if direct_url:
+                                    url = direct_url
+                                elif pending_fetch_urls:
+                                    url = pending_fetch_urls.pop(0)
+                                    log.info(
+                                        "web_fetch claimed queued URL (remaining=%d): %s",
+                                        len(pending_fetch_urls), url[:120],
+                                    )
+                                else:
+                                    url = ""
+                                    log.warning(
+                                        "web_fetch with no input and empty URL queue — "
+                                        "panel row will be URL-less"
+                                    )
                                 if url:
                                     fetch_url_by_id[bid] = url
                                 await emit_tool_event(
