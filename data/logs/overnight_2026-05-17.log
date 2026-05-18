@@ -1,0 +1,6 @@
+[2026-05-17T23:32:20-0400] OVERNIGHT RUN STARTED
+[2026-05-17T23:32:20-0400] branch: overnight/2026-05-17
+[2026-05-17T23:32:20-0400] baseline: 50a46b8 chunk 0: phase 1-3 baseline from 2026-05-17 session
+[2026-05-17T23:32:20-0400] tag pre-overnight-2026-05-17: 50a46b8bae9635815b8bb280f838cf23e16d386b
+[2026-05-17T23:32:34-0400] ── CHUNK 0: setup ──
+[2026-05-17T23:33:08-0400] chunk 0 smoke: branch + logs OK, tree has setup additions only
