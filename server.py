@@ -2076,12 +2076,24 @@ async def _execute_native_research(target: str, ws=None):
             # so panel events appear live rather than after the whole turn.
             # If a turn ends with stop_reason="pause_turn" we open another
             # stream to resume.
-            for _ in range(6):  # cap resumes to avoid runaway
+            #
+            # Visibility layer (chunk 16): every stream event is logged at
+            # INFO so a silent stall is visible in logs/jarvis.err.log.
+            # A 60s watchdog (wait_for around iterator.__anext__) aborts
+            # the stream loudly if no event arrives within that window —
+            # SSE can silently disconnect, and without this the symptom
+            # was "POST 200, then nothing for 6 minutes" (see
+            # docs/streaming_hang_diagnosis.md).
+            STREAM_IDLE_TIMEOUT_S = 60.0
+            DELTA_HEARTBEAT_INTERVAL_S = 5.0
+            for turn_idx in range(6):  # cap resumes to avoid runaway
                 # Per-stream state: partial tool-use input JSON keyed by
                 # content-block index (the SDK delivers input_json deltas
                 # per index, then content_block_stop at index closure).
                 pending_tool_use: dict[int, dict] = {}
                 final_message = None
+                log.info("stream_event turn=%d open (model=claude-opus-4-7, msgs=%d)",
+                         turn_idx, len(messages))
 
                 async with client.messages.stream(
                     model="claude-opus-4-7",
@@ -2090,11 +2102,37 @@ async def _execute_native_research(target: str, ws=None):
                     messages=messages,
                     tools=tools,
                 ) as stream:
-                    async for event in stream:
+                    iterator = stream.__aiter__()
+                    delta_count = 0
+                    last_heartbeat = time.monotonic()
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(
+                                iterator.__anext__(),
+                                timeout=STREAM_IDLE_TIMEOUT_S,
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            log.error(
+                                "stream_event WATCHDOG: silent for %.0fs — aborting "
+                                "(turn=%d, deltas_so_far=%d, search=%d, fetch=%d)",
+                                STREAM_IDLE_TIMEOUT_S, turn_idx, delta_count,
+                                searches, fetches,
+                            )
+                            raise RuntimeError("stream_silent_timeout")
+
                         et = getattr(event, "type", None)
+
                         if et == "content_block_start":
                             block = getattr(event, "content_block", None)
                             btype = getattr(block, "type", None)
+                            bname = getattr(block, "name", "") if btype == "server_tool_use" else ""
+                            bid_log = getattr(block, "id", "") if btype == "server_tool_use" else ""
+                            log.info(
+                                "stream_event content_block_start index=%s type=%s name=%s id=%s",
+                                event.index, btype, bname, bid_log,
+                            )
                             if btype == "server_tool_use":
                                 # Input streams via input_json_delta. Stash
                                 # name+id and accumulate until block_stop.
@@ -2107,6 +2145,8 @@ async def _execute_native_research(target: str, ws=None):
                                 # Results arrive whole at content_block_start
                                 # — collect snippets for middleware context.
                                 results = getattr(block, "content", None)
+                                result_count = len(results) if isinstance(results, list) else 0
+                                log.info("stream_event web_search_tool_result results=%d", result_count)
                                 if isinstance(results, list):
                                     for r in results:
                                         rtype = getattr(r, "type", None)
@@ -2117,6 +2157,10 @@ async def _execute_native_research(target: str, ws=None):
                                                 tool_result_snippets.append(f"{title}\n{url}")
                             elif btype == "web_fetch_tool_result":
                                 rc = getattr(block, "content", None)
+                                rc_count = len(rc) if isinstance(rc, list) else 0
+                                tu_id = getattr(block, "tool_use_id", "") or ""
+                                log.info("stream_event web_fetch_tool_result tool_use_id=%s parts=%d",
+                                         tu_id, rc_count)
                                 if isinstance(rc, list):
                                     for r in rc:
                                         txt = getattr(r, "text", None)
@@ -2126,7 +2170,6 @@ async def _execute_native_research(target: str, ws=None):
                                 # Spawned as a task so the (capped 1.5s)
                                 # preview fetch doesn't slow the stream
                                 # consumer.
-                                tu_id = getattr(block, "tool_use_id", "") or ""
                                 fetched_url = fetch_url_by_id.get(tu_id, "")
                                 if fetched_url:
                                     snippet = _extract_fetch_snippet(rc)
@@ -2137,6 +2180,16 @@ async def _execute_native_research(target: str, ws=None):
                         elif et == "content_block_delta":
                             delta = getattr(event, "delta", None)
                             dtype = getattr(delta, "type", None)
+                            delta_count += 1
+                            now = time.monotonic()
+                            if now - last_heartbeat >= DELTA_HEARTBEAT_INTERVAL_S:
+                                log.info(
+                                    "stream_event delta_heartbeat count=%d "
+                                    "(rate=%.1f/s, last_type=%s)",
+                                    delta_count, delta_count / max(0.1, now - last_heartbeat),
+                                    dtype,
+                                )
+                                last_heartbeat = now
                             if dtype == "input_json_delta":
                                 pending = pending_tool_use.get(event.index)
                                 if pending is not None:
@@ -2149,6 +2202,8 @@ async def _execute_native_research(target: str, ws=None):
                         elif et == "content_block_stop":
                             pending = pending_tool_use.pop(event.index, None)
                             if pending is None:
+                                log.info("stream_event content_block_stop index=%s (non-tool)",
+                                         event.index)
                                 continue
                             try:
                                 inp = json.loads(pending["partial_json"] or "{}")
@@ -2156,6 +2211,10 @@ async def _execute_native_research(target: str, ws=None):
                                 inp = {}
                             bid = pending["id"]
                             name = pending["name"]
+                            log.info(
+                                "stream_event content_block_stop index=%s tool_use name=%s id=%s input=%r",
+                                event.index, name, bid, inp,
+                            )
                             if name == "web_search" and bid not in seen_search_ids:
                                 seen_search_ids.add(bid)
                                 searches += 1
@@ -2179,7 +2238,16 @@ async def _execute_native_research(target: str, ws=None):
                                 )
                                 await _emit_progress()
 
+                        elif et == "message_stop":
+                            log.info("stream_event message_stop")
+
                     final_message = await stream.get_final_message()
+                    log.info(
+                        "stream_event turn=%d closed stop_reason=%s in_tokens=%s out_tokens=%s",
+                        turn_idx, getattr(final_message, "stop_reason", "?"),
+                        getattr(final_message.usage, "input_tokens", "?"),
+                        getattr(final_message.usage, "output_tokens", "?"),
+                    )
 
                 track_usage(final_message)
                 messages.append({"role": "assistant", "content": final_message.content})
