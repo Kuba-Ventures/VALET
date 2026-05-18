@@ -41,6 +41,9 @@ export interface DesignEvent {
     changed?: string[];
     entry?: { type: string; title: string; detail?: string };
     project_path?: string;
+    project_name?: string;
+    has_target?: boolean;
+    git_branch?: string;
   };
 }
 
@@ -84,23 +87,30 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
           <span class="dp-draft-ready" data-dp-ready>Ready to ship</span>
         </div>
         <div class="dp-draft-body" data-dp-draft><em class="empty">(no draft yet)</em></div>
+        <div class="dp-target" data-dp-target-row>
+          <span class="dp-target-label">Target</span>
+          <span class="dp-target-name" data-dp-target-name>(none — open a project to ship)</span>
+          <span class="dp-target-branch" data-dp-target-branch></span>
+        </div>
         <div class="dp-actions">
           <button class="dp-btn dp-btn-scrap" data-dp-scrap>Scrap</button>
-          <button class="dp-btn dp-btn-ship"  data-dp-ship>Ship to Claude Code</button>
+          <button class="dp-btn dp-btn-ship"  data-dp-ship disabled title="Open a project before shipping">Ship to Claude Code</button>
         </div>
       </div>
     </div>
   `;
 
-  const topicEl    = root.querySelector<HTMLElement>("[data-dp-topic]")!;
-  const badgeEl    = root.querySelector<HTMLElement>("[data-dp-badge]")!;
-  const timelineEl = root.querySelector<HTMLElement>("[data-dp-timeline]")!;
-  const draftEl    = root.querySelector<HTMLElement>("[data-dp-draft]")!;
-  const readyEl    = root.querySelector<HTMLElement>("[data-dp-ready]")!;
-  const shipBtn    = root.querySelector<HTMLButtonElement>("[data-dp-ship]")!;
-  const scrapBtn   = root.querySelector<HTMLButtonElement>("[data-dp-scrap]")!;
-  const closeBtn   = root.querySelector<HTMLButtonElement>("[data-dp-close]")!;
-  const handle     = root.querySelector<HTMLElement>("[data-dp-handle]")!;
+  const topicEl       = root.querySelector<HTMLElement>("[data-dp-topic]")!;
+  const badgeEl       = root.querySelector<HTMLElement>("[data-dp-badge]")!;
+  const timelineEl    = root.querySelector<HTMLElement>("[data-dp-timeline]")!;
+  const draftEl       = root.querySelector<HTMLElement>("[data-dp-draft]")!;
+  const readyEl       = root.querySelector<HTMLElement>("[data-dp-ready]")!;
+  const shipBtn       = root.querySelector<HTMLButtonElement>("[data-dp-ship]")!;
+  const scrapBtn      = root.querySelector<HTMLButtonElement>("[data-dp-scrap]")!;
+  const closeBtn      = root.querySelector<HTMLButtonElement>("[data-dp-close]")!;
+  const handle        = root.querySelector<HTMLElement>("[data-dp-handle]")!;
+  const targetNameEl  = root.querySelector<HTMLElement>("[data-dp-target-name]")!;
+  const targetBranchEl= root.querySelector<HTMLElement>("[data-dp-target-branch]")!;
 
   closeBtn.addEventListener("click", () => close());
   shipBtn.addEventListener("click", () => shipHandler && shipHandler());
@@ -172,6 +182,22 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     }
   }
 
+  function setTarget(name: string, branch: string, hasTarget: boolean) {
+    if (hasTarget && name) {
+      targetNameEl.textContent = name;
+      targetNameEl.classList.remove("dp-target-none");
+      targetBranchEl.textContent = branch ? `· ${branch}` : "";
+      shipBtn.disabled = false;
+      shipBtn.removeAttribute("title");
+    } else {
+      targetNameEl.textContent = "(none — open a project to ship)";
+      targetNameEl.classList.add("dp-target-none");
+      targetBranchEl.textContent = "";
+      shipBtn.disabled = true;
+      shipBtn.setAttribute("title", "Open a project before shipping");
+    }
+  }
+
   function setTopic(topic: string) {
     topicEl.textContent = topic;
     topicEl.title = topic;
@@ -222,6 +248,10 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
       const ready = !!event.payload.ready_to_ship;
       setState(state, ready);
       if (event.payload.topic) setTopic(event.payload.topic);
+      const hasTarget = !!event.payload.has_target;
+      const projectName = (event.payload.project_name as string) || "";
+      const branch = (event.payload.git_branch as string) || "";
+      setTarget(projectName, branch, hasTarget);
       if (typeof event.payload.draft_markdown === "string") {
         setDraft(event.payload.draft_markdown);
       }

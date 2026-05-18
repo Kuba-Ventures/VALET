@@ -205,10 +205,28 @@ class DraftPrompt:
 # DesignSession
 # ---------------------------------------------------------------------------
 
+def _git_branch_for(path: Path) -> Optional[str]:
+    """Read the current branch name from a project's .git/HEAD. Best-effort.
+
+    Returns None if no .git/HEAD or unparseable; short SHA for detached HEAD.
+    Cheap — single file read, no subprocess.
+    """
+    try:
+        head_file = path / ".git" / "HEAD"
+        if not head_file.exists():
+            return None
+        content = head_file.read_text().strip()
+        if content.startswith("ref: refs/heads/"):
+            return content.replace("ref: refs/heads/", "")
+        return content[:8]  # detached HEAD
+    except Exception:
+        return None
+
+
 @dataclass
 class DesignSession:
     id: str
-    project_path: Path
+    project_path: Optional[Path]                       # None when no project is open
     topic: str
     ws: Any                                            # WebSocket — used to emit design events
     state: SessionState = "DESIGNING"
@@ -217,6 +235,18 @@ class DesignSession:
     ready_to_ship: bool = False
     self_mod: bool = False
     started_at: float = field(default_factory=time.time)
+
+    @property
+    def project_name(self) -> str:
+        return self.project_path.name if self.project_path else ""
+
+    @property
+    def has_target(self) -> bool:
+        return self.project_path is not None
+
+    @property
+    def git_branch(self) -> Optional[str]:
+        return _git_branch_for(self.project_path) if self.project_path else None
 
     async def emit(self, event_type: str, title: str = "", detail: str = "",
                    status: str = "active", payload: Optional[dict] = None) -> None:
@@ -236,7 +266,12 @@ class DesignSession:
             log.warning(f"design_event send failed: {e}")
 
     async def emit_state(self) -> None:
-        """Push current state + draft + ready_to_ship to the panel."""
+        """Push current state + draft + target + ready_to_ship to the panel.
+
+        Includes project_name / project_path / git_branch so the panel can
+        render the ship target row from the same source of truth as the
+        Phase 4 ship-it handoff (they read the same `session.project_path`).
+        """
         await self.emit(
             "design.state_changed",
             title=self.state,
@@ -248,6 +283,10 @@ class DesignSession:
                 "self_mod": self.self_mod,
                 "draft_markdown": self.draft.render_markdown(),
                 "draft": asdict(self.draft),
+                "project_name": self.project_name,
+                "project_path": str(self.project_path) if self.project_path else "",
+                "has_target": self.has_target,
+                "git_branch": self.git_branch or "",
             },
         )
 
@@ -256,13 +295,27 @@ class DesignSession:
 
         Calls Opus with forced design_turn tool-use, applies the returned
         patch to the running draft, emits timeline events to the panel.
-        """
-        # Build system prompt: static text + project-specific warm context + draft snapshot.
-        from project_context import get as get_warm
-        warm = get_warm(self.project_path)
-        warm_block = warm.summary_for_prompt() if warm else f"# Project: {self.project_path.name}\n(no warm context loaded)"
 
-        system = _DESIGN_SYSTEM_PROMPT.replace("{project_name}", self.project_path.name)
+        If project_path is None (no project open at session start), Opus
+        designs abstractly — useful for sketching before assigning a target,
+        but the user must open a project before ship-it succeeds.
+        """
+        from project_context import get as get_warm
+        if self.project_path is None:
+            warm_block = (
+                "# Project: (none)\n"
+                "No project is currently open. Design abstractly. The user must "
+                "open a project before shipping; their ship button is disabled "
+                "until then. Prefer concrete file names/paths from prior project "
+                "conventions only when the user names a specific project."
+            )
+            project_token = "(no project yet)"
+        else:
+            warm = get_warm(self.project_path)
+            warm_block = warm.summary_for_prompt() if warm else f"# Project: {self.project_path.name}\n(no warm context loaded)"
+            project_token = self.project_path.name
+
+        system = _DESIGN_SYSTEM_PROMPT.replace("{project_name}", project_token)
         system += "\n\n# WARM CONTEXT\n" + warm_block
         system += f"\n\n# CURRENT DRAFT\n{self.draft.render_markdown()}"
 
@@ -373,16 +426,17 @@ def get_for_ws(ws) -> Optional[DesignSession]:
     return _active.get(id(ws))
 
 
-def start_for_ws(ws, project_path: Path, topic: str, self_mod: bool = False) -> DesignSession:
+def start_for_ws(ws, project_path: Optional[Path], topic: str, self_mod: bool = False) -> DesignSession:
     """Create + register a fresh design session for this WebSocket.
 
-    Stops any prior session on the same WS (rare — would mean "let's design Y"
-    while already in DESIGNING for X without a scrap/ship in between).
+    `project_path` may be None when no project is currently open; the session
+    starts anyway in "no target" mode (ship disabled, abstract design).
+    Stops any prior session on the same WS.
     """
     stop_for_ws(ws)
     session = DesignSession(
         id=str(uuid.uuid4())[:8],
-        project_path=Path(project_path),
+        project_path=Path(project_path) if project_path else None,
         topic=topic,
         ws=ws,
         self_mod=self_mod,

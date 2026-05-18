@@ -4,3 +4,6 @@
 [2026-05-17T23:32:20-0400] tag pre-overnight-2026-05-17: 50a46b8bae9635815b8bb280f838cf23e16d386b
 [2026-05-17T23:32:34-0400] ── CHUNK 0: setup ──
 [2026-05-17T23:33:08-0400] chunk 0 smoke: branch + logs OK, tree has setup additions only
+[2026-05-17T23:33:08-0400] chunk 0 committed: d6d17d1 chunk 0: overnight run setup
+[2026-05-17T23:36:50-0400] ── CHUNK 1: ship target row ──
+[2026-05-17T23:36:50-0400] chunk 1 smoke OK: py_compile + tsc + restart + 3 unit cases

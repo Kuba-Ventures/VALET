@@ -334,6 +334,45 @@
   100% { background: transparent; }
 }
 
+/* --- Target row --------------------------------------------------------- */
+
+.dp-target {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--dp-border);
+  background: rgba(0, 0, 0, 0.16);
+  font-size: 11px;
+  line-height: 1.3;
+}
+.dp-target-label {
+  font-size: 9px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--dp-text-faint);
+  flex-shrink: 0;
+}
+.dp-target-name {
+  color: var(--dp-text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.dp-target-name.dp-target-none {
+  color: var(--dp-text-faint);
+  font-style: italic;
+  font-weight: 400;
+}
+.dp-target-branch {
+  color: var(--dp-text-dim);
+  font-family: var(--dp-mono);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
 /* --- Action bar --------------------------------------------------------- */
 
 .dp-actions {
@@ -376,6 +415,18 @@
   background: rgba(124, 255, 176, 0.08);
   border-color: var(--dp-active);
   box-shadow: 0 0 12px rgba(124, 255, 176, 0.2);
+}
+.dp-btn-ship:disabled {
+  color: var(--dp-text-faint);
+  border-color: var(--dp-border);
+  cursor: not-allowed;
+  opacity: 0.6;
+  background: transparent;
+  box-shadow: none;
+}
+.dp-btn-ship:disabled:hover {
+  background: transparent;
+  border-color: var(--dp-border);
 }
 .dp-btn-scrap {
   color: var(--dp-text-dim);

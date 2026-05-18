@@ -1129,38 +1129,40 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
 
 
 async def _execute_start_design(topic: str, ws):
-    """Open a design conversation rooted at the active project (or the project the user names).
+    """Open a design conversation rooted at whatever project is currently active.
+
+    If no project is open, the session starts with no target — Opus designs
+    abstractly and the Design Panel disables the Ship button until a project
+    is opened.
 
     Future turns route to `design_session.handle_turn()` via the voice_handler
     DESIGNING branch — Haiku is bypassed entirely until ship/scrap.
     """
     import design_partner, project_context
 
-    # Determine the project context. Prefer the active warm-loaded project;
-    # fall back to the JARVIS repo so the user can always design something
-    # without first opening a project.
     active_ctx = project_context.get_active()
-    if active_ctx:
-        project_path = active_ctx.project_path
-    else:
-        project_path = Path(__file__).resolve().parent
-        log.info(f"start_design: no active project, defaulting to {project_path}")
-
+    project_path = active_ctx.project_path if active_ctx else None
     topic_clean = (topic or "").strip() or "untitled design"
-    self_mod = (project_path.resolve() == Path(__file__).resolve().parent.resolve())
+
+    self_mod = bool(
+        project_path
+        and project_path.resolve() == Path(__file__).resolve().parent.resolve()
+    )
 
     session = design_partner.start_for_ws(ws, project_path, topic_clean, self_mod=self_mod)
-    log.info(f"design_partner: session {session.id} started on {project_path} (topic={topic_clean!r}, self_mod={self_mod})")
+    target_desc = str(project_path) if project_path else "(no project)"
+    log.info(f"design_partner: session {session.id} started on {target_desc} (topic={topic_clean!r}, self_mod={self_mod})")
 
     await session.emit_state()
     await session.emit("design.topic_set", title=topic_clean, status="done",
-                        payload={"project_path": str(project_path)})
+                        payload={"project_path": str(project_path) if project_path else ""})
 
-    msg = (
-        f"Right, sir — let's design '{topic_clean}'."
-        if not self_mod
-        else f"Right, sir — let's design '{topic_clean}' for myself. I'll be careful."
-    )
+    if not project_path:
+        msg = f"Right, sir — designing '{topic_clean}' in the abstract. Open a project before shipping."
+    elif self_mod:
+        msg = f"Right, sir — let's design '{topic_clean}' for myself. I'll be careful."
+    else:
+        msg = f"Right, sir — let's design '{topic_clean}' for {project_path.name}."
     await _speak(ws, msg)
 
 
@@ -1180,6 +1182,10 @@ async def _execute_ship_design(ws):
 
     if session.draft.is_empty():
         await _speak(ws, "The draft is empty, sir — nothing to ship yet.")
+        return
+
+    if not session.has_target:
+        await _speak(ws, "No project to ship to, sir — open one first, then say ship.")
         return
 
     final_prompt = session.draft.render_markdown()
