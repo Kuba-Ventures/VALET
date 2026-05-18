@@ -431,6 +431,85 @@ def test_design_optin_fast_path():
     print("✓ Design opt-in fast-path: 4 cases route correctly; targets populated as expected")
 
 
+def test_chunk_20_bug_long_design_opt_in_routes_correctly():
+    """Regression — the exact 13-word transcript from logs/jarvis.err.log
+    at 17:02:22 (chunk-20 routing bug). Before chunk 21 this fell off the
+    12-word cliff and reached the LLM instead of fast-pathing."""
+    from server import detect_action_fast
+
+    utterance = "let's talk about a feature I want to add to Jarvis Dash Main"
+    assert len(utterance.split()) > 12, "test fixture invariant — must exceed the old cap"
+
+    result = detect_action_fast(utterance, ws=None)
+    assert result is not None, "13-word design opt-in must now reach the fast-path"
+    assert result["action"] == "start_design", result
+    assert result.get("target") == "", (
+        f"Substring path should not capture a topic; got target={result.get('target')!r}"
+    )
+    print("✓ chunk-20 routing bug fixed — 13-word 'talk about a feature' utterance "
+          "routes to start_design")
+
+
+def test_dictation_routing_cases():
+    """Mode 2 routing — the 5 explicit phrases all hit fast-path."""
+    from server import detect_action_fast, _DICTATION_OPTIN_PHRASES
+
+    cases = [
+        "dictate to claude",
+        "tell claude directly",
+        "send claude a message",
+        "dictation mode",
+        "skip design",
+        "dictate to claude — let's add a logout button",  # embedded variant
+    ]
+    for phrase in cases:
+        result = detect_action_fast(phrase, ws=None)
+        assert result is not None, f"{phrase!r} should fast-path"
+        assert result["action"] == "start_dictation", (
+            f"{phrase!r}: expected start_dictation, got {result!r}"
+        )
+    print(f"✓ All {len(_DICTATION_OPTIN_PHRASES)} dictation phrases route correctly")
+
+
+def test_dictation_precedence_over_design():
+    """Spec test 3 — an utterance containing BOTH a dictation phrase and
+    a design phrase must route to dictation (the user explicitly chose
+    the bypass)."""
+    from server import detect_action_fast
+
+    utterance = "dictate to claude — let's talk about a feature for jarvis-main"
+    result = detect_action_fast(utterance, ws=None)
+    assert result is not None
+    assert result["action"] == "start_dictation", (
+        f"Precedence violated: dictation should win over design, got {result!r}"
+    )
+    print("✓ Dictation precedence wins when both phrases present")
+
+
+def test_no_regression_research_build_list():
+    """Spec test 5 — common verbs must NOT accidentally route to dictation
+    or design just because the new code lives above the word cap."""
+    from server import detect_action_fast
+
+    cases = [
+        ("list my projects", "list_projects"),
+        ("show me the three best fishing poles", None),  # research goes through LLM
+        ("build me a recipe tracker", None),             # build goes through LLM
+        ("add a footer that says copyright 2026", None), # build goes through LLM
+    ]
+    for utterance, expected_action in cases:
+        result = detect_action_fast(utterance, ws=None)
+        actual = result["action"] if result else None
+        assert actual == expected_action, (
+            f"{utterance!r}: expected action={expected_action!r}, got {actual!r}"
+        )
+        # Explicit check that none of these accidentally landed in mode 2 or design.
+        assert actual not in ("start_dictation", "start_design"), (
+            f"{utterance!r} should NOT route to a mode-entry action: {actual!r}"
+        )
+    print("✓ No regression — research/build/list utterances don't accidentally enter dictation/design")
+
+
 def test_design_optin_phrases_all_match():
     """Every phrase in _DESIGN_OPTIN_PHRASES must trigger start_design with empty target."""
     from server import detect_action_fast, _DESIGN_OPTIN_PHRASES
@@ -664,6 +743,10 @@ ALL_TESTS = [
     test_system_prompt_handles_show_me_how_to_build_carveout,
     test_system_prompt_handles_ambiguous_create_a_project,
     test_design_optin_fast_path,
+    test_chunk_20_bug_long_design_opt_in_routes_correctly,
+    test_dictation_routing_cases,
+    test_dictation_precedence_over_design,
+    test_no_regression_research_build_list,
     test_design_optin_phrases_all_match,
     test_extract_urls_from_code_pulls_real_urls,
     test_middleware_strips_non_usd_prices,

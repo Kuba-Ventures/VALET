@@ -512,8 +512,14 @@ async def new_cursor_project(name: str, base_dir: str | None = None, task_id: st
     }
 
 
-async def _set_window_bounds(process_name: str, x_pct: float, width_pct: float) -> bool:
-    """Position the front window of `process_name` to a horizontal slice of the main display.
+async def _set_window_bounds(
+    process_name: str,
+    x_pct: float,
+    width_pct: float,
+    y_pct: float = 0.0,
+    height_pct: float = 1.0,
+) -> bool:
+    """Position the front window of `process_name` to a rectangular slice of the main display.
 
     Uses System Events (not the app's native scripting dictionary, which most
     apps don't expose) so it works for Cursor, Terminal, and most third-party
@@ -527,12 +533,14 @@ async def _set_window_bounds(process_name: str, x_pct: float, width_pct: float) 
     set screenW to item 3 of screenBounds
     set screenH to item 4 of screenBounds
     set xPos to (screenW * {x_pct}) as integer
+    set yPos to (screenH * {y_pct}) as integer
     set winW to (screenW * {width_pct}) as integer
+    set winH to (screenH * {height_pct}) as integer
     tell application "System Events"
         tell process "{process_name}"
             try
-                set position of front window to {{xPos, 0}}
-                set size of front window to {{winW, screenH}}
+                set position of front window to {{xPos, yPos}}
+                set size of front window to {{winW, winH}}
             end try
         end tell
     end tell
@@ -552,17 +560,26 @@ async def _set_window_bounds(process_name: str, x_pct: float, width_pct: float) 
 async def _position_cursor() -> None:
     """Wait for Cursor to be ready, then size its front window per config.
 
-    Default config gives Cursor the full screen now that there's no external
-    Terminal sharing real estate. Layout overrides in
+    Default config gives Cursor the top-left quarter of the screen for better
+    workspace organization. Layout overrides in
     config/design_partner.json#window_layout.cursor still apply.
 
     Cursor needs ~1.8s after launch before its window can be targeted via
     System Events; 2s gives a small safety margin.
     """
     cfg = _design_partner_config().get("window_layout", {})
-    cursor_cfg = cfg.get("cursor", {"x_pct": 0.0, "width_pct": 1.0})
+    cursor_cfg = cfg.get(
+        "cursor",
+        {"x_pct": 0.0, "y_pct": 0.0, "width_pct": 0.5, "height_pct": 0.5},
+    )
     await asyncio.sleep(2.0)
-    await _set_window_bounds("Cursor", cursor_cfg["x_pct"], cursor_cfg["width_pct"])
+    await _set_window_bounds(
+        "Cursor",
+        cursor_cfg["x_pct"],
+        cursor_cfg["width_pct"],
+        y_pct=cursor_cfg.get("y_pct", 0.0),
+        height_pct=cursor_cfg.get("height_pct", 1.0),
+    )
 
 
 async def _spawn_external_terminal(project_path: Path, task_id: str | None = None) -> dict:
@@ -930,6 +947,8 @@ async def open_app_or_path(target: str, task_id: str | None = None) -> dict:
             await emit_app_launch(task_id, raw, status="done")
         else:
             await emit_error(task_id, f"No app called {raw}", detail=stderr.decode()[:200])
+    if success and raw.strip().lower() == "cursor":
+        asyncio.create_task(_position_cursor())
     return {
         "success": success,
         "confirmation": f"{raw} is up, sir." if success else f"I couldn't find an app called {raw}, sir.",
@@ -1120,6 +1139,162 @@ async def get_chrome_tab_info() -> dict:
     except Exception as e:
         log.warning(f"get_chrome_tab_info failed: {e}")
         return {}
+
+
+async def _frontmost_app_name() -> str:
+    """Return the name of the macOS frontmost app, or "" on any failure.
+
+    Used by paste_into_cursor_claude as a pre-flight gate so we don't fire
+    keystrokes into whatever app happens to have focus.
+    """
+    script = (
+        'tell application "System Events"\n'
+        '    set frontApp to name of first application process whose frontmost is true\n'
+        'end tell\n'
+        'return frontApp'
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        if proc.returncode == 0:
+            return stdout.decode().strip()
+    except Exception as e:
+        log.debug(f"_frontmost_app_name failed: {e}")
+    return ""
+
+
+async def paste_into_cursor_claude(prompt: str, task_id: str | None = None) -> dict:
+    """Auto-paste a prompt into Cursor's active claude terminal pane.
+
+    Used by both design ship-it (chunk 21 Mode 1) and dictation
+    (Mode 2). The flow:
+
+      1. Pre-flight: confirm Cursor is the macOS frontmost app. If not,
+         we DO NOT attempt to bring it forward — the spec is that the
+         user has Cursor open and focused with the claude pane visible.
+         If Cursor isn't focused, return {"success": False, "reason":
+         "cursor_not_focused", "frontmost": <whatever>} so the caller
+         can write the prompt to .jarvis/inbox/<task_id>.md as a fallback.
+      2. Save the user's existing clipboard via `pbpaste` so we can
+         restore it after the paste lands. We don't want to clobber
+         whatever they had copied.
+      3. Put the prompt on the clipboard via `pbcopy`.
+      4. Send Cmd+V then Return via osascript / System Events. Small
+         pause between activate and keystroke gives the input focus a
+         beat to land in the integrated terminal.
+      5. Restore the saved clipboard after a short delay (long enough
+         that the paste has consumed the prompt).
+
+    Every step has a tight timeout so a hung osascript can't block the
+    ship-it flow indefinitely. Returns:
+      {"success": True}                               — paste fired cleanly
+      {"success": False, "reason": "...", "detail": ".."}  — caller falls back
+    Never raises. All telemetry goes to logs/jarvis.err.log via log.
+    """
+    # ── (1) Pre-flight: is Cursor the frontmost app? ────────────────────
+    frontmost = await _frontmost_app_name()
+    if frontmost.lower() != "cursor":
+        log.warning(
+            "paste_into_cursor_claude pre-flight failed: frontmost=%r (need 'Cursor')",
+            frontmost,
+        )
+        return {
+            "success": False,
+            "reason": "cursor_not_focused",
+            "frontmost": frontmost,
+            "detail": f"Frontmost app is {frontmost!r}; expected 'Cursor'. "
+                       "User needs to click into Cursor's claude pane before ship-it.",
+        }
+
+    # ── (2) Save existing clipboard so we can restore it after paste ────
+    saved_clipboard = ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pbpaste",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        saved_clipboard = stdout.decode()
+    except Exception as e:
+        log.debug(f"paste_into_cursor_claude: pbpaste save failed: {e}")
+        # Non-fatal — we'll just not restore. The paste still proceeds.
+
+    # ── (3) Put prompt on clipboard ─────────────────────────────────────
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pbcopy",
+            stdin=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(input=prompt.encode()), timeout=2.0)
+        if proc.returncode != 0:
+            return {"success": False, "reason": "clipboard_write_failed",
+                    "detail": "pbcopy returned non-zero"}
+    except Exception as e:
+        return {"success": False, "reason": "clipboard_write_failed",
+                "detail": str(e)[:200]}
+
+    # ── (4) Cmd+V then Return via System Events ─────────────────────────
+    # Brief activate first to ensure Cursor really is the keyboard target
+    # (in case the pre-flight check was racy). Then paste, brief pause,
+    # then Return. Pauses are conservative — total ~250ms — chosen for
+    # reliability over speed; tune down if it feels sluggish.
+    paste_script = (
+        'tell application "Cursor" to activate\n'
+        'delay 0.1\n'
+        'tell application "System Events"\n'
+        '    keystroke "v" using {command down}\n'
+        '    delay 0.1\n'
+        '    key code 36\n'  # 36 = Return
+        'end tell'
+    )
+    paste_ok = False
+    paste_err = ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", paste_script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        paste_ok = proc.returncode == 0
+        if not paste_ok:
+            paste_err = stderr.decode()[:200]
+    except asyncio.TimeoutError:
+        paste_err = "osascript timed out after 5s"
+    except Exception as e:
+        paste_err = str(e)[:200]
+
+    # ── (5) Restore the user's prior clipboard ──────────────────────────
+    # Wait a moment so the paste has consumed the prompt before we
+    # overwrite. If we restore too quickly the paste might pick up the
+    # restored content instead.
+    await asyncio.sleep(0.3)
+    if saved_clipboard:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pbcopy",
+                stdin=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(
+                proc.communicate(input=saved_clipboard.encode()),
+                timeout=2.0,
+            )
+        except Exception as e:
+            log.debug(f"paste_into_cursor_claude: clipboard restore failed: {e}")
+
+    if not paste_ok:
+        log.warning(f"paste_into_cursor_claude osascript failed: {paste_err}")
+        return {"success": False, "reason": "applescript_failed", "detail": paste_err}
+
+    log.info(f"paste_into_cursor_claude succeeded (prompt_len={len(prompt)})")
+    return {"success": True}
 
 
 async def monitor_build(project_dir: str, ws=None, synthesize_fn=None) -> None:

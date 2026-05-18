@@ -73,6 +73,10 @@ export interface ProcessPanel {
   /** Toggle the "· design" indicator next to the panel title. Called from
    *  main.ts when the design partner's state transitions in/out of DESIGNING. */
   setDesignActive(active: boolean): void;
+  /** Toggle the "· dictation" indicator (amber). Distinct from · design
+   *  so the user knows their voice is being captured verbatim, not
+   *  routed through the design partner. */
+  setDictationActive(active: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +124,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
         <div class="pp-handle-grip"></div>
         <div class="pp-title">Process</div>
         <span class="pp-design-indicator" data-pp-design-indicator hidden>· design</span>
+        <span class="pp-dictation-indicator" data-pp-dictation-indicator hidden>· dictation</span>
         <div class="pp-progress" data-pp-progress hidden></div>
         <button class="pp-pin" data-pp-pin title="Pin (disable auto-dismiss)" aria-pressed="${pinned}">${pinned ? "◉" : "◌"}</button>
         <button class="pp-close" data-pp-close title="Close">×</button>
@@ -134,6 +139,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   const pinBtn = root.querySelector<HTMLButtonElement>("[data-pp-pin]")!;
   const progressChip = root.querySelector<HTMLElement>("[data-pp-progress]")!;
   const designIndicator = root.querySelector<HTMLElement>("[data-pp-design-indicator]")!;
+  const dictationIndicator = root.querySelector<HTMLElement>("[data-pp-dictation-indicator]")!;
 
   pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(); });
 
@@ -724,6 +730,15 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     }
   }
 
+  function setDictationActive(active: boolean) {
+    // Mirror of setDesignActive for dictation. Amber chip rather than
+    // cyan so the two modes are visually distinguishable at a glance.
+    dictationIndicator.hidden = !active;
+    if (active) {
+      show();
+    }
+  }
+
   return {
     handleEvent,
     close: closeAndClear,
@@ -732,6 +747,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       root.remove();
     },
     setDesignActive,
+    setDictationActive,
   };
 }
 

@@ -2,7 +2,7 @@
   "project_roots": ["~/Code", "~/projects"],
   "new_project_root": "~/Code",
   "window_layout": {
-    "cursor": {"x_pct": 0.0, "width_pct": 1.0}
+    "cursor": {"x_pct": 0.0, "y_pct": 0.0, "width_pct": 0.5, "height_pct": 0.5}
   },
   "warm_context": {
     "file_tree_depth": 3,
@@ -19,5 +19,5 @@
     "smoke_test_timeout_sec": 120,
     "post_restart_health_timeout_sec": 30
   },
-  "ship_method": "file"
+  "ship_method": "auto_paste"
 }

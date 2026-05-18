@@ -174,6 +174,21 @@
   display: none;
 }
 
+/* Dictation-mode active indicator — amber/orange to distinguish from the
+ * cyan · design chip. Same idiom, different color. */
+.pp-dictation-indicator {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #ffb84a;
+  text-shadow: 0 0 6px rgba(255, 184, 74, 0.35);
+  margin-left: -4px;
+}
+.pp-dictation-indicator[hidden] {
+  display: none;
+}
+
 .pp-pin {
   width: 22px;
   height: 22px;

@@ -296,6 +296,7 @@ DESIGN-PARTNER MODE (Phase 3):
 - [ACTION:SHIP_DESIGN] — finalize the active design and hand it to Claude Code (Phase 4). ONLY emit when a design session is active. Use for "ship it", "send it", "build it".
 - [ACTION:SCRAP_DESIGN] — discard the active design. Returns state to IDLE. ONLY emit when a session is active. Use for "scrap this", "start over".
 - [ACTION:SHOW_DRAFT] — speak the assembled draft so far. ONLY emit when a session is active.
+- [ACTION:START_DICTATION] — engage dictation mode: the next user utterance is captured verbatim and pasted into Cursor's claude terminal after confirmation. ONLY emit when the user explicitly says one of: "dictate to claude", "tell claude directly", "send claude a message", "dictation mode", "skip design". Never infer dictation intent from build/feature requests — direct build requests go to PROMPT_PROJECT.
 - [ACTION:MERGE_BRANCH] — run smoke_test.sh then merge the current feature/* branch into main. ONLY emit when the user explicitly says "merge it" or similar and we're on a feature branch. Never auto-emit.
 - [ACTION:RESTART_SELF] — spawn the detached restarter (scripts/restart.sh). Use ONLY for "restart yourself" / "restart jarvis" / "kick yourself". Acknowledge before restart kills the current process.
 - [ACTION:LIST_PROJECTS] — read the authoritative list of projects from ~/Code/, ~/projects/, and the alias table. Emit this tag (no target) whenever the user asks what projects exist and you didn't fast-path it. Output gets spoken to the user.
@@ -903,7 +904,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1258,6 +1259,138 @@ async def _execute_start_design(topic: str, ws):
     await _speak(ws, msg)
 
 
+async def _execute_start_dictation(ws):
+    """Mode 2 (chunk 21) — open dictation mode.
+
+    Verifies a project is open (dictation needs a target). Sets the
+    voice_handler's dictation_phase to "capturing_prompt" so the next
+    user utterance is captured verbatim as the prompt rather than
+    routed through the normal action pipeline. Speaks the entry line
+    and flips the Process Panel's · dictation indicator on.
+
+    The phase is owned by voice_handler — it lives on the ws object
+    via setattr (no nicer option for cross-call state without a class
+    rewrite). Cleared on confirm/cancel or on a fresh dictation start.
+    """
+    import project_context
+
+    active_ctx = project_context.get_active()
+    project_path = active_ctx.project_path if active_ctx else None
+    if project_path is None:
+        await _speak(
+            ws,
+            "Which project should I dictate to, sir? Open one first, then say it again.",
+        )
+        return
+
+    # Stash state on ws so the transcript handler can find it next turn.
+    ws.dictation_phase = "capturing_prompt"
+    ws.dictation_captured_prompt = ""
+    ws.dictation_project_path = str(project_path)
+
+    log.info(
+        "dictation: opened for project=%s — awaiting prompt utterance",
+        project_path.name,
+    )
+
+    # Push the panel indicator on via a dedicated WS event the frontend
+    # mirrors into Process Panel header chrome. (See main.ts hook.)
+    try:
+        await ws.send_json({
+            "type": "dictation_event",
+            "event": {"state": "capturing_prompt", "project": project_path.name},
+        })
+    except Exception:
+        pass
+
+    await _speak(ws, "Dictating to Claude Code, sir. What would you like to say?")
+
+
+async def _execute_confirm_dictation(ws, prompt: str):
+    """Mode 2 — user confirmed; auto-paste to Cursor's claude terminal.
+
+    Uses the same paste_into_cursor_claude helper as design ship-it
+    (Mode 1). On pre-flight failure (Cursor not focused), falls back to
+    writing .jarvis/inbox/<task_id>.md so the user still has the prompt
+    staged.
+
+    Clears ws.dictation_* state on exit (success OR failure).
+    """
+    from actions import paste_into_cursor_claude
+    import uuid
+
+    project_path_str = getattr(ws, "dictation_project_path", "")
+    project_path = Path(project_path_str) if project_path_str else None
+
+    # Wipe state up front so an error path doesn't leave a half-active
+    # dictation session.
+    ws.dictation_phase = None
+    ws.dictation_captured_prompt = ""
+    try:
+        ws.dictation_project_path = ""
+    except Exception:
+        pass
+    try:
+        await ws.send_json({"type": "dictation_event", "event": {"state": "idle"}})
+    except Exception:
+        pass
+
+    result = await paste_into_cursor_claude(prompt)
+
+    if result.get("success"):
+        log.info("dictation: paste succeeded (prompt_len=%d)", len(prompt))
+        await _speak(ws, "Sent, sir.")
+        return
+
+    # Fallback path — write the prompt to .jarvis/inbox/<id>.md so the
+    # user can paste manually. Mirrors the chunk-21 Mode 1 fallback.
+    reason = result.get("reason", "unknown")
+    detail = result.get("detail", "")
+    log.warning(
+        "dictation paste failed (reason=%s, detail=%s) — staging file fallback",
+        reason, detail[:120],
+    )
+
+    inbox_path = None
+    if project_path:
+        try:
+            inbox_dir = project_path / ".jarvis" / "inbox"
+            inbox_dir.mkdir(parents=True, exist_ok=True)
+            stem = uuid.uuid4().hex[:8]
+            inbox_path = inbox_dir / f"dictation-{stem}.md"
+            inbox_path.write_text(prompt + "\n", encoding="utf-8")
+        except Exception as e:
+            log.error("dictation fallback write failed: %s", e)
+            inbox_path = None
+
+    if reason == "cursor_not_focused":
+        front = result.get("frontmost", "another app")
+        msg = (f"Prompt staged, sir — {front} was in focus, not Cursor. "
+               f"Paste manually when ready.")
+    else:
+        msg = "Prompt staged, sir — paste manually if Cursor wasn't ready."
+    if inbox_path is None:
+        msg = ("Couldn't paste OR stage, sir — Cursor wasn't focused and "
+               "I had no project to fall back to.")
+    await _speak(ws, msg)
+
+
+async def _execute_cancel_dictation(ws):
+    """Mode 2 — user said cancel/scrap/nevermind. Drop the dictation state
+    and speak an acknowledgment. No file write, no paste."""
+    ws.dictation_phase = None
+    ws.dictation_captured_prompt = ""
+    try:
+        ws.dictation_project_path = ""
+    except Exception:
+        pass
+    try:
+        await ws.send_json({"type": "dictation_event", "event": {"state": "idle"}})
+    except Exception:
+        pass
+    await _speak(ws, "Cancelled, sir.")
+
+
 async def _execute_ship_design(ws):
     """Phase 4 — DESIGNING → BUILDING. Compose final prompt + hand off.
 
@@ -1307,6 +1440,63 @@ async def _execute_ship_design(ws):
 
     final_prompt = design_partner.compose_final_prompt(session)
     method = design_partner.get_ship_method()
+
+    if method == "auto_paste":
+        # Chunk 21 Mode 1: bring Cursor to front (pre-flight checks it's
+        # already frontmost), clipboard-paste the prompt, press Enter. The
+        # helper handles clipboard save/restore so the user's clipboard
+        # isn't clobbered. On any pre-flight or AppleScript failure, fall
+        # back to the file path — the prompt is staged at .jarvis/inbox/
+        # so the user can paste manually.
+        from actions import paste_into_cursor_claude
+        result = await paste_into_cursor_claude(final_prompt)
+
+        if result.get("success"):
+            session.mark_building()
+            await session.emit_state()
+            design_partner.persist(
+                session, status="building",
+                final_prompt=final_prompt, ship_method="auto_paste",
+            )
+            await _speak(ws, "Sent to Claude Code, sir.")
+            return
+
+        # Pre-flight or paste failed — fall through to file fallback with
+        # an explanatory voice line.
+        reason = result.get("reason", "unknown")
+        detail = result.get("detail", "")
+        log.warning(
+            "auto_paste failed (reason=%s, detail=%s) — falling back to file ship",
+            reason, detail[:120],
+        )
+        try:
+            out = design_partner.ship_via_file(session, final_prompt)
+        except Exception as e:
+            log.error(f"ship_via_file fallback also failed: {e}")
+            await _speak(ws, f"Couldn't stage the prompt, sir: {str(e)[:120]}")
+            return
+
+        session.mark_building()
+        await session.emit_state()
+        design_partner.persist(
+            session, status="building",
+            final_prompt=final_prompt, ship_method="auto_paste_fallback_file",
+            inbox_path=str(out),
+        )
+
+        if reason == "cursor_not_focused":
+            front = result.get("frontmost", "another app")
+            await _speak(
+                ws,
+                f"Prompt staged, sir — {front} was in focus, not Cursor. "
+                f"Paste manually when ready.",
+            )
+        else:
+            await _speak(
+                ws,
+                "Prompt staged, sir — paste manually if Cursor wasn't ready.",
+            )
+        return
 
     if method == "applescript":
         # Two-step: prep + voice confirmation via the existing pending_offer
@@ -3018,6 +3208,29 @@ _DESIGN_OPTIN_PHRASES = (
     "design before we build",
 )
 
+# Dictation-mode opt-in phrases. Substring match, case-insensitive.
+# Take precedence over design phrases (a single utterance containing
+# BOTH a dictation phrase and a design phrase routes to dictation —
+# the user explicitly chose the bypass). One utterance per session.
+# See chunk 21 spec.
+_DICTATION_OPTIN_PHRASES = (
+    "dictate to claude",
+    "tell claude directly",
+    "send claude a message",
+    "dictation mode",
+    "skip design",
+)
+
+# Confirmation / cancellation phrases used by the dictation confirm step.
+_DICTATION_CONFIRM_PHRASES = (
+    "send it", "send this", "yes send", "confirmed", "confirm",
+    "yes please", "go ahead", "ship it", "fire it off",
+)
+_DICTATION_CANCEL_PHRASES = (
+    "scrap", "cancel", "nevermind", "never mind", "abort",
+    "don't send", "do not send", "no don't", "forget it",
+)
+
 _MERGE_BRANCH_PHRASES = {
     "merge it", "merge this", "merge the branch", "merge that branch",
     "okay merge it", "ok merge it", "go ahead and merge", "let's merge it",
@@ -3072,18 +3285,47 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     Everything else goes to the LLM which uses [ACTION:X] tags when it decides
     to act based on conversational understanding.
 
-    When `ws` is provided AND has an active design session, design-mode
-    fast-actions (ship/scrap/show-draft) are enabled. Outside a design session
-    those phrases are passed through to the normal pipeline.
+    Routing precedence (chunk 21):
+      1. Dictation opt-in phrases  — highest priority. The user explicitly
+         opted out of design and into "speak verbatim to Claude Code". A
+         transcript containing BOTH a dictation phrase and a design phrase
+         routes to dictation (user picked the bypass on purpose).
+      2. Design opt-in phrases (regex + substring) — second priority. These
+         are explicit design-intent signals and ARE allowed past the
+         word-count gate below; without that exemption, the chunk-20 bug
+         from 17:02:22 ("let's talk about a feature I want to add to
+         Jarvis Dash Main", 13 words) would still slip through to the LLM.
+      3. Word-count gate — everything below this gate is restricted to
+         short, command-shaped utterances (≤ 12 words). Long messages are
+         conversation, not commands, and route to the LLM router.
+      4. In-session ship/scrap/show-draft (only when a design session is
+         active on this ws). Phrases are tiny so the cap is not in play.
+      5. Everything else.
     """
     t = text.lower().strip()
     words = t.split()
 
-    # Only trigger on SHORT, clear commands (< 12 words)
+    # ── (1) Dictation mode opt-in — highest precedence, exempt from word cap.
+    if any(p in t for p in _DICTATION_OPTIN_PHRASES):
+        return {"action": "start_dictation"}
+
+    # ── (2) Design-mode opt-in — exempt from word cap so naturally-phrased
+    # intent like "let's talk about a feature I want to add to X" still
+    # routes correctly. Regex path captures a topic; substring path doesn't
+    # and falls through to the topic-prompt.
+    m = _START_DESIGN_PATTERN.match(text.strip())
+    if m:
+        topic = m.group("topic").strip()
+        if topic and topic.lower() not in {"tomorrow", "today", "this", "that", "it", "something"}:
+            return {"action": "start_design", "target": topic}
+    if any(p in t for p in _DESIGN_OPTIN_PHRASES):
+        return {"action": "start_design", "target": ""}
+
+    # ── (3) Word-count gate for everything else.
     if len(words) > 12:
         return None  # Long messages are conversation, not commands
 
-    # ── Design-mode commands (only when a session is active on this ws) ──
+    # ── (4) In-design fast-actions (only when a session is active on ws).
     if ws is not None:
         import design_partner
         if design_partner.get_for_ws(ws) is not None:
@@ -3093,22 +3335,6 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                 return {"action": "scrap_design"}
             if t in _SHOW_DRAFT_PHRASES or any(t.startswith(p + " ") for p in _SHOW_DRAFT_PHRASES):
                 return {"action": "show_draft"}
-
-    # Start-design intent — match against ORIGINAL text (preserves capitalized topic words)
-    m = _START_DESIGN_PATTERN.match(text.strip())
-    if m:
-        topic = m.group("topic").strip()
-        # Filter out single-word topics that are likely other intents misrouting
-        # (e.g. "plan tomorrow" should hit calendar planning, not design).
-        if topic and topic.lower() not in {"tomorrow", "today", "this", "that", "it", "something"}:
-            return {"action": "start_design", "target": topic}
-
-    # Explicit design-mode opt-in — runs AFTER the topic-capturing regex so
-    # "let's design a recipe tracker" still keeps its topic. These phrases
-    # are for users who want design mode WITHOUT specifying a topic up
-    # front; Jarvis asks "what would you like to design, sir?" next turn.
-    if any(p in t for p in _DESIGN_OPTIN_PHRASES):
-        return {"action": "start_design", "target": ""}
 
     # Close / dismiss the process panel. Fast-path so JARVIS responds
     # instantly without round-tripping through the LLM.
@@ -3550,6 +3776,17 @@ async def voice_handler(ws: WebSocket):
     # the cancel-word allowlist while research is in flight.
     active_research_task: Optional[asyncio.Task] = None
 
+    # Dictation mode state (chunk 21 Mode 2). Two phases:
+    #   "capturing_prompt"   — waiting for the user's next utterance to
+    #                          become the prompt that's sent to Cursor.
+    #   "confirming"         — prompt is captured; waiting for the user
+    #                          to confirm or cancel. captured_prompt
+    #                          holds the verbatim text.
+    # When phase is None, dictation is inactive and transcripts route
+    # normally.
+    dictation_phase: Optional[str] = None
+    dictation_captured_prompt: str = ""
+
     # Audio collision prevention — track when user last spoke
     voice_state = {"last_user_time": 0.0}
 
@@ -3638,6 +3875,47 @@ async def voice_handler(ws: WebSocket):
 
             voice_state["last_user_time"] = time.time()
             log.info(f"User: {user_text}")
+
+            # ── Dictation mode capture/confirm intercept (chunk 21 Mode 2).
+            # When ws is in a dictation phase, the user's utterance is the
+            # prompt body (or a confirm/cancel) — NOT a routable command. We
+            # short-circuit the entire action pipeline.
+            current_phase = getattr(ws, "dictation_phase", None)
+            if current_phase == "capturing_prompt":
+                t_lower = user_text.lower()
+                if any(p in t_lower for p in _DICTATION_CANCEL_PHRASES):
+                    asyncio.create_task(_execute_cancel_dictation(ws))
+                    continue
+                # Capture verbatim, move to confirm phase, read back.
+                ws.dictation_captured_prompt = user_text
+                ws.dictation_phase = "confirming"
+                try:
+                    await ws.send_json({
+                        "type": "dictation_event",
+                        "event": {"state": "confirming", "prompt": user_text},
+                    })
+                except Exception:
+                    pass
+                # Bound the read-back so a runaway transcript isn't spoken
+                # in full; user can still review the full text in the panel.
+                preview = user_text if len(user_text) <= 240 else user_text[:235] + "…"
+                await _speak(ws, f"Got it: \"{preview}\" Send this, sir?")
+                continue
+            if current_phase == "confirming":
+                t_lower = user_text.lower()
+                if any(p in t_lower for p in _DICTATION_CANCEL_PHRASES):
+                    asyncio.create_task(_execute_cancel_dictation(ws))
+                    continue
+                if any(p in t_lower for p in _DICTATION_CONFIRM_PHRASES):
+                    prompt = getattr(ws, "dictation_captured_prompt", "") or ""
+                    asyncio.create_task(_execute_confirm_dictation(ws, prompt))
+                    continue
+                # Ambiguous reply — re-prompt without leaving confirming.
+                await _speak(
+                    ws,
+                    'Sorry, sir — say "send it" to confirm or "cancel" to scrap.',
+                )
+                continue
 
             # Mute action routing while native research is in flight. Without
             # this, ambient transcripts (TV, conversation) get dispatched to
@@ -3904,6 +4182,9 @@ async def voice_handler(ws: WebSocket):
                             response_text = ""  # _execute_start_design speaks
                             topic = action.get("target", "")
                             asyncio.create_task(_execute_start_design(topic, ws))
+                        elif action["action"] == "start_dictation":
+                            response_text = ""  # _execute_start_dictation speaks
+                            asyncio.create_task(_execute_start_dictation(ws))
                         elif action["action"] == "ship_design":
                             response_text = ""
                             asyncio.create_task(_execute_ship_design(ws))
@@ -4030,6 +4311,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_refresh_context(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "start_design":
                                     asyncio.create_task(_execute_start_design(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "start_dictation":
+                                    asyncio.create_task(_execute_start_dictation(ws))
                                 elif embedded_action["action"] == "ship_design":
                                     asyncio.create_task(_execute_ship_design(ws))
                                 elif embedded_action["action"] == "scrap_design":

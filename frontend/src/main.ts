@@ -233,6 +233,14 @@ socket.onMessage((msg) => {
         processPanel.setDesignActive(state === "DESIGNING");
       }
     }
+  } else if (type === "dictation_event") {
+    // Mode 2 (chunk 21) — toggle the amber · dictation chip whenever the
+    // backend transitions in/out of capturing_prompt / confirming. Any
+    // state other than those two means dictation is inactive.
+    const event = msg.event as { state?: string } | undefined;
+    const state = event?.state ?? "idle";
+    const active = state === "capturing_prompt" || state === "confirming";
+    processPanel.setDictationActive(active);
   }
 });
 
