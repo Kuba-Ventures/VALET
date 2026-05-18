@@ -72,6 +72,43 @@ from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
 
+
+def _log_startup_banner() -> None:
+    """First log line on every server boot. Survives stale-process debugging.
+
+    Emits a single grep-friendly line:
+      [STARTUP] commit=<sha7> branch=<name> started_at=<iso8601> pid=<pid>
+
+    If git lookups fail for any reason (not a repo, git missing) the field
+    falls back to '?'. The banner never raises.
+    """
+    import datetime
+    import subprocess as _sp
+
+    def _git(args: list[str]) -> str:
+        try:
+            out = _sp.run(
+                ["git", "-C", os.path.dirname(os.path.abspath(__file__))] + args,
+                capture_output=True, text=True, timeout=2,
+            )
+            return out.stdout.strip() or "?"
+        except Exception:
+            return "?"
+
+    commit = _git(["rev-parse", "--short=7", "HEAD"])
+    branch = _git(["rev-parse", "--abbrev-ref", "HEAD"])
+    dirty = _git(["status", "--porcelain"])
+    dirty_flag = "+dirty" if dirty and dirty != "?" else ""
+    started_at = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    log.info(
+        "[STARTUP] commit=%s%s branch=%s started_at=%s pid=%d",
+        commit, dirty_flag, branch, started_at, os.getpid(),
+    )
+
+
+_log_startup_banner()
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -1874,8 +1911,10 @@ async def _execute_native_research(target: str, ws=None):
 
     Filesystem-readonly by design — see docs/research_routing_diagnosis.md.
     """
+    log.info("native_research invoked: query=%r ws=%s", target[:160], "yes" if ws else "no")
     async with process_bus.task_context(f"Researching: {target[:60]}") as task_id:
         if anthropic_client is None:
+            log.warning("native_research bypassed via fallback: reason=no_anthropic_client")
             await emit_error(task_id, "Research unavailable", detail="ANTHROPIC_API_KEY not configured.")
             return
 
@@ -3539,6 +3578,8 @@ async def voice_handler(ws: WebSocket):
                                     # render as cards in the Process Panel and
                                     # are spoken as a short summary via TTS.
                                     # See docs/research_routing_diagnosis.md.
+                                    log.info("research dispatch: routing to native handler (target=%r)",
+                                             embedded_action["target"][:160])
                                     asyncio.create_task(
                                         _execute_native_research(embedded_action["target"], ws)
                                     )
