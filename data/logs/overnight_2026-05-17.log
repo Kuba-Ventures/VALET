@@ -17,3 +17,8 @@
 [2026-05-17T23:44:17-0400]   decision: cards-present → auto-pin enables; pin button on header toggles. persisted in localStorage.
 [2026-05-17T23:49:49-0400] chunk 3 unit OK (6 cases including malformed-response fallback)
 [2026-05-17T23:50:39-0400] chunk 3 restart OK pid=28325 — proceeding to commit
+[2026-05-17T23:51:21-0400] ── CHUNK 4: ship-it handoff ──
+[2026-05-17T23:51:21-0400]   decision: Method B (AppleScript) gated via pending_offer 'ship_confirm' — user must say 'ship it for real' after JARVIS preps Cursor focus.
+[2026-05-17T23:51:21-0400]   decision: scrap from BUILDING is a no-op + clarifying message — once shipped, inbox file is user's.
+[2026-05-17T23:51:21-0400]   decision: schema v3 adds ship_method + inbox_path columns to design_sessions for audit.
+[2026-05-17T23:54:16-0400] chunk 4 unit OK (6 cases incl. compose + ship_via_file + persist v3 cols)

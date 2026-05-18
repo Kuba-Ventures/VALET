@@ -453,24 +453,143 @@ def stop_for_ws(ws) -> None:
 # SQLite persistence (write-only audit trail for shipped/scrapped sessions).
 # ---------------------------------------------------------------------------
 
-def persist(session: DesignSession, status: str, final_prompt: str = "") -> None:
+def persist(session: DesignSession, status: str, final_prompt: str = "",
+            ship_method: str = "", inbox_path: str = "") -> None:
     """Write a design_sessions row. Idempotent via INSERT OR REPLACE on session id."""
     from memory import _get_db
     conn = _get_db()
     conn.execute(
         """INSERT OR REPLACE INTO design_sessions
-           (id, topic, project_path, started_at, finished_at, final_prompt, status, self_mod)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (id, topic, project_path, started_at, finished_at, final_prompt, status, self_mod, ship_method, inbox_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session.id,
             session.topic,
-            str(session.project_path),
+            str(session.project_path) if session.project_path else "",
             session.started_at,
             time.time(),
             final_prompt,
             status,
             int(session.self_mod),
+            ship_method,
+            inbox_path,
         ),
     )
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — ship-it handoff
+# ---------------------------------------------------------------------------
+
+def compose_final_prompt(session: DesignSession) -> str:
+    """Assemble the prompt to hand to Claude Code.
+
+    Order (deliberate — matches what the Design Panel's draft pane has been
+    showing, so nothing in the shipped prompt surprises the user):
+
+      1. ## Task: <topic>
+      2. The DraftPrompt body (goal/context/constraints/acceptance/files/Qs).
+      3. ## Project warm context — from project_context.summary_for_prompt().
+      4. ## Surfaced files — explicit paths the user surfaced during design,
+         resolved to absolute paths under project_path when possible.
+    """
+    from project_context import get as get_warm
+
+    parts: list[str] = [f"## Task: {session.topic}", ""]
+    parts.append(session.draft.render_markdown())
+
+    if session.project_path:
+        warm = get_warm(session.project_path)
+        if warm:
+            parts.append("\n## Project warm context\n")
+            parts.append(warm.summary_for_prompt())
+
+    if session.draft.surfaced_files and session.project_path:
+        parts.append("\n## Surfaced file paths (absolute)\n")
+        for f in session.draft.surfaced_files:
+            p = Path(f)
+            if not p.is_absolute() and session.project_path:
+                p = session.project_path / f
+            parts.append(f"- `{p}`")
+
+    return "\n".join(parts).strip() + "\n"
+
+
+def ship_via_file(session: DesignSession, final_prompt: str) -> Path:
+    """Method A — write the composed prompt to <project>/.jarvis/inbox/<id>.md.
+
+    Returns the resolved file path. Caller is expected to surface the path
+    via voice + panel ("Prompt staged at … — paste into Cursor's claude
+    terminal to ship."). Safe, deterministic, no AppleScript fragility.
+    """
+    if not session.project_path:
+        raise ValueError("ship_via_file: session has no project_path")
+
+    inbox = session.project_path / ".jarvis" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    out = inbox / f"{session.id}.md"
+    header = (
+        f"<!-- JARVIS Design Session {session.id} — {session.topic}\n"
+        f"     Shipped at {time.strftime('%Y-%m-%d %H:%M:%S')} via ship_method=file\n"
+        f"     Paste this file's body into Cursor's claude terminal to dispatch. -->\n\n"
+    )
+    out.write_text(header + final_prompt)
+    log.info(f"ship_via_file: wrote {out}")
+    return out
+
+
+async def ship_via_applescript(session: DesignSession, final_prompt: str) -> bool:
+    """Method B — clipboard-paste into Cursor's frontmost terminal pane.
+
+    Brittle by design: assumes the user has focus on Cursor's claude terminal
+    when JARVIS triggers the paste. Caller is expected to have asked for
+    explicit voice confirmation ('ship it for real') before reaching here.
+
+    Returns True on AppleScript success, False otherwise. Does NOT verify
+    that the prompt actually landed in the right pane (Cursor's Electron
+    DOM isn't introspectable from System Events).
+    """
+    import asyncio as _asyncio
+    # Place on clipboard via pbcopy (handles newlines + quoting cleanly).
+    proc = await _asyncio.create_subprocess_exec(
+        "pbcopy",
+        stdin=_asyncio.subprocess.PIPE,
+    )
+    await proc.communicate(input=final_prompt.encode())
+    if proc.returncode != 0:
+        log.warning("ship_via_applescript: pbcopy failed")
+        return False
+
+    # Bring Cursor to front, paste, send return.
+    script = '''
+    tell application "Cursor" to activate
+    delay 0.6
+    tell application "System Events"
+        keystroke "v" using command down
+        delay 0.2
+        key code 36
+    end tell
+    '''
+    proc = await _asyncio.create_subprocess_exec(
+        "osascript", "-e", script,
+        stdout=_asyncio.subprocess.PIPE,
+        stderr=_asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        log.warning(f"ship_via_applescript: osascript failed: {stderr.decode()[:200]}")
+        return False
+    return True
+
+
+def get_ship_method() -> str:
+    """Read configured ship method. Default 'file'. Valid: 'file' | 'applescript'."""
+    try:
+        from actions import _design_partner_config
+        cfg = _design_partner_config()
+        m = cfg.get("ship_method", "file")
+        return m if m in ("file", "applescript") else "file"
+    except Exception:
+        return "file"

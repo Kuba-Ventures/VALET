@@ -1078,6 +1078,11 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
         await _speak(ws, "Cancelled, sir.")
         return True
 
+    # Phase 4: AppleScript ship confirmation routes to its dedicated handler
+    # before the alias/register paths so its phrases take priority.
+    if offer["kind"] == "ship_confirm":
+        return await _handle_ship_confirm(transcript, ws)
+
     if offer["kind"] == "alias_remove":
         if (t in confirm_words or any(t.startswith(w + " ") for w in confirm_words)
                 or "remove" in t or "delete" in t or "drop" in t):
@@ -1167,11 +1172,19 @@ async def _execute_start_design(topic: str, ws):
 
 
 async def _execute_ship_design(ws):
-    """Transition DESIGNING → BUILDING and hand the prompt off (Phase 4 owns the actual pipe).
+    """Phase 4 — DESIGNING → BUILDING. Compose final prompt + hand off.
 
-    For Phase 3, persists the finalized draft to design_sessions, emits the
-    state transition, and parks BUILDING. Phase 4 will replace the parked
-    behavior with the actual handoff into Cursor's claude pane.
+    Two dispatch methods, picked by config/design_partner.json#ship_method:
+
+      file        — write to <project>/.jarvis/inbox/<id>.md, speak the path,
+                    transition to BUILDING. Safe, deterministic, default.
+      applescript — bring Cursor to front, ask for explicit voice confirmation
+                    ("ship it for real"), then clipboard-paste + Enter into
+                    whatever pane has focus. Brittle — confirmation gate is
+                    NOT optional.
+
+    Self-mod ships (target == jarvis repo) get an additional approval gate
+    handled in Phase 5's machinery — for now, recognized but unblocked.
     """
     import design_partner
 
@@ -1188,26 +1201,136 @@ async def _execute_ship_design(ws):
         await _speak(ws, "No project to ship to, sir — open one first, then say ship.")
         return
 
-    final_prompt = session.draft.render_markdown()
+    final_prompt = design_partner.compose_final_prompt(session)
+    method = design_partner.get_ship_method()
+
+    if method == "applescript":
+        # Two-step: prep + voice confirmation via the existing pending_offer
+        # infrastructure. The actual paste happens after the user says
+        # "ship it for real" — handled in _handle_pending_offer.
+        ws.pending_offer = {
+            "kind": "ship_confirm",
+            "session_id": session.id,
+            "final_prompt": final_prompt,
+            "project_path": str(session.project_path),
+        }
+        await _speak(
+            ws,
+            f"Bringing Cursor forward, sir. Focus the claude terminal pane, "
+            f"then say 'ship it for real' to paste. Cancel by saying 'never mind'."
+        )
+        # Pre-focus Cursor so the user can confirm focus immediately.
+        try:
+            import asyncio as _aio
+            await _aio.create_subprocess_exec(
+                "osascript", "-e", 'tell application "Cursor" to activate',
+                stdout=_aio.subprocess.DEVNULL, stderr=_aio.subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        return
+
+    # Default: file method
+    try:
+        out = design_partner.ship_via_file(session, final_prompt)
+    except Exception as e:
+        log.error(f"ship_via_file failed: {e}")
+        await _speak(ws, f"Couldn't stage the prompt, sir: {str(e)[:120]}")
+        return
+
     session.mark_building()
     await session.emit_state()
-    design_partner.persist(session, status="building", final_prompt=final_prompt)
+    design_partner.persist(
+        session, status="building",
+        final_prompt=final_prompt, ship_method="file",
+        inbox_path=str(out),
+    )
 
-    # Phase 4 replaces this — for now we just acknowledge and park.
+    rel = out.relative_to(session.project_path) if session.project_path else out
     await _speak(
         ws,
-        "Shipping now, sir. The handoff into Cursor's terminal is the Phase 4 piece — "
-        "for now the draft is saved and the panel has the final text."
+        f"Prompt staged at {rel}, sir. Paste it into Cursor's claude terminal to ship."
     )
 
 
+async def _handle_ship_confirm(transcript: str, ws) -> bool:
+    """Pending-offer handler for AppleScript ship method.
+
+    Triggered after _execute_ship_design (method=applescript) staged the
+    prompt and asked for voice confirmation. Recognizes:
+      'ship it for real' / 'do it' / 'paste it' / 'go ahead' → paste
+      cancel words (handled by _handle_pending_offer upstream) → drop offer
+
+    Returns True if handled (offer consumed), False otherwise.
+    """
+    offer = getattr(ws, "pending_offer", None)
+    if not offer or offer.get("kind") != "ship_confirm":
+        return False
+
+    t = transcript.lower().strip()
+    confirm = (
+        "ship it for real" in t or t == "for real" or
+        "paste it" in t or t == "do it" or "go ahead" in t
+    )
+    if not confirm:
+        return False
+
+    import design_partner
+    session = None
+    for s in design_partner._active.values():
+        if s.id == offer["session_id"]:
+            session = s
+            break
+    if session is None:
+        await _speak(ws, "I lost the session, sir — try again.")
+        return True
+
+    ok = await design_partner.ship_via_applescript(session, offer["final_prompt"])
+    if not ok:
+        await _speak(ws, "AppleScript paste failed, sir — falling back to file method.")
+        try:
+            out = design_partner.ship_via_file(session, offer["final_prompt"])
+            design_partner.persist(
+                session, status="building",
+                final_prompt=offer["final_prompt"],
+                ship_method="applescript-fallback-file",
+                inbox_path=str(out),
+            )
+            session.mark_building()
+            await session.emit_state()
+            await _speak(ws, f"Staged at .jarvis/inbox/{out.name} instead.")
+        except Exception as e:
+            log.error(f"applescript fallback file write failed: {e}")
+        return True
+
+    session.mark_building()
+    await session.emit_state()
+    design_partner.persist(
+        session, status="building",
+        final_prompt=offer["final_prompt"], ship_method="applescript",
+        inbox_path="",
+    )
+    await _speak(ws, "Pasted, sir.")
+    return True
+
+
 async def _execute_scrap_design(ws):
-    """DESIGNING → IDLE. Drops the draft and the design conversation history."""
+    """DESIGNING → IDLE. Drops the draft and the design conversation history.
+
+    Once the session has transitioned to BUILDING (shipped), scrap is a
+    no-op + clarification — the inbox file (if any) is the user's now and
+    JARVIS doesn't delete it. To clean up an in-progress build the user
+    deletes the inbox file manually.
+    """
     import design_partner
 
     session = design_partner.get_for_ws(ws)
     if session is None:
         await _speak(ws, "No design to scrap, sir.")
+        return
+
+    if session.state == "BUILDING":
+        await _speak(ws, "That one already shipped, sir — the inbox file is yours to keep or delete.")
         return
 
     design_partner.persist(session, status="scrapped", final_prompt=session.draft.render_markdown())

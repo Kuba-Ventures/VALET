@@ -22,7 +22,7 @@ log = logging.getLogger("jarvis.memory")
 DB_PATH = Path(__file__).parent / "data" / "jarvis.db"
 
 # Bump when adding migrations below. PRAGMA user_version is checked on init.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _get_db() -> sqlite3.Connection:
@@ -70,6 +70,20 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_design_sessions_status ON design_sessions(status);
         """)
+
+    if current < 3:
+        # v3: Phase 4 ship-it audit columns — how it shipped + where it landed.
+        # ALTER ADD COLUMN is idempotent-by-name only; guard with try/except to
+        # tolerate re-runs in dev environments that may have the column already.
+        for stmt in (
+            "ALTER TABLE design_sessions ADD COLUMN ship_method TEXT DEFAULT ''",
+            "ALTER TABLE design_sessions ADD COLUMN inbox_path TEXT DEFAULT ''",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()

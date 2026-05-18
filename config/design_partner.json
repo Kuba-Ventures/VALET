@@ -18,5 +18,6 @@
   "self_mod": {
     "smoke_test_timeout_sec": 120,
     "post_restart_health_timeout_sec": 30
-  }
+  },
+  "ship_method": "file"
 }
