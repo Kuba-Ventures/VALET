@@ -406,6 +406,48 @@
   display: block;
 }
 
+/* --- Claude Code tool calls (stream-json parser) ----------------------- */
+
+/* Shared base for every tool.* event — slightly muted text so the tool
+   stream reads as supporting detail beneath the step-level events. */
+[class*="pp-event-tool_"] .pp-event-icon::before {
+  font-family: var(--pp-mono);
+  color: var(--pp-text-dim);
+  font-size: 11px;
+  font-weight: 700;
+}
+[class*="pp-event-tool_"] .pp-event-title {
+  font-family: var(--pp-mono);
+  font-size: 11px;
+  color: var(--pp-text-dim);
+  letter-spacing: 0.5px;
+}
+[class*="pp-event-tool_"] .pp-event-detail {
+  font-family: var(--pp-mono);
+  color: rgba(180, 220, 245, 0.7);
+  font-size: 10px;
+  margin-top: 1px;
+}
+
+/* Per-tool icon + accent color */
+.pp-event-tool_file_read  .pp-event-icon::before { content: "→"; color: var(--pp-accent); }
+.pp-event-tool_file_write .pp-event-icon::before { content: "+"; color: var(--pp-active); }
+.pp-event-tool_file_edit  .pp-event-icon::before { content: "Δ"; color: var(--pp-active); }
+.pp-event-tool_bash       .pp-event-icon::before { content: "$"; color: var(--pp-accent); }
+.pp-event-tool_web_search .pp-event-icon::before { content: "?"; color: var(--pp-accent); }
+.pp-event-tool_web_fetch  .pp-event-icon::before { content: "↓"; color: var(--pp-accent); }
+.pp-event-tool_glob       .pp-event-icon::before { content: "*"; color: var(--pp-text-dim); }
+.pp-event-tool_grep       .pp-event-icon::before { content: "⌕"; color: var(--pp-text-dim); }
+.pp-event-tool_task       .pp-event-icon::before { content: "▷"; color: var(--pp-accent); }
+.pp-event-tool_thinking   .pp-event-icon::before { content: "◌"; color: var(--pp-pending); }
+.pp-event-tool_result {
+  border-top: 1px solid var(--pp-border);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+.pp-event-tool_result     .pp-event-icon::before { content: "✓"; color: var(--pp-active); }
+.pp-event-tool_result .pp-event-title { color: var(--pp-accent); }
+
 /* Lightbox for expanded screenshot */
 .pp-lightbox {
   position: fixed;

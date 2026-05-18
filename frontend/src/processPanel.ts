@@ -28,7 +28,19 @@ export type EventType =
   | "text_write"
   | "code_task"
   | "task_queued"
-  | "error";
+  | "error"
+  // Claude Code structured tool calls (from work_mode stream-json parser)
+  | "tool.file_read"
+  | "tool.file_write"
+  | "tool.file_edit"
+  | "tool.bash"
+  | "tool.web_search"
+  | "tool.web_fetch"
+  | "tool.glob"
+  | "tool.grep"
+  | "tool.task"
+  | "tool.thinking"
+  | "tool.result";
 
 export interface ProcessEvent {
   id: string;
@@ -230,7 +242,10 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
 
   function renderEventRow(event: ProcessEvent) {
     const row = document.createElement("div");
-    row.className = `pp-event pp-event-${event.type} pp-status-${event.status}`;
+    // Convert "tool.file_read" → "tool_file_read" so the dot doesn't split
+    // into two CSS class names.
+    const typeClass = String(event.type).replace(/\./g, "_");
+    row.className = `pp-event pp-event-${typeClass} pp-status-${event.status}`;
     row.dataset.taskId = event.task_id;
     row.dataset.eventId = event.id;
 

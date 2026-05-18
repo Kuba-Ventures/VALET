@@ -7,3 +7,6 @@
 [2026-05-17T23:33:08-0400] chunk 0 committed: d6d17d1 chunk 0: overnight run setup
 [2026-05-17T23:36:50-0400] ── CHUNK 1: ship target row ──
 [2026-05-17T23:36:50-0400] chunk 1 smoke OK: py_compile + tsc + restart + 3 unit cases
+[2026-05-17T23:42:26-0400] ── CHUNK 2: tool-call event parser ──
+[2026-05-17T23:42:26-0400] chunk 2 unit smoke OK (7 sub-cases)
+[2026-05-17T23:42:56-0400] chunk 2 integration OK: real claude run produced structured tool events
