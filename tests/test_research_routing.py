@@ -383,6 +383,74 @@ def test_system_prompt_handles_ambiguous_create_a_project():
     print("✓ System prompt instructs the model to ask when ambiguous (case #6)")
 
 
+def test_middleware_enriches_product_cards_with_og_image():
+    """Product cards with source_url but no image_url should be enriched
+    via fetch_page_preview before emission. Patch the fetcher with a stub
+    so the test doesn't hit the network."""
+    import claude_middleware
+    from claude_middleware import ResultCard, CardSet
+
+    cards = [
+        ResultCard(
+            type="product",
+            title="Ugly Stik GX2",
+            summary="Solid budget rod.",
+            source_url="https://example.com/ugly-stik",
+            # image_url deliberately unset — middleware should fill it.
+        ),
+        ResultCard(
+            type="product",
+            title="Daiwa BG",
+            summary="Mid-range option.",
+            source_url="https://example.com/daiwa-bg",
+            image_url="https://example.com/cached.jpg",  # already set — skip
+        ),
+        ResultCard(
+            type="location",
+            title="Bass Pro Ashland",
+            summary="VA store.",
+            source_url="https://example.com/store",  # not a product — skip
+        ),
+    ]
+
+    fetch_calls: list[str] = []
+
+    async def fake_fetch(url, timeout=1.5):
+        fetch_calls.append(url)
+        return {
+            "url": url,
+            "hostname": "example.com",
+            "title": "Ugly Stik GX2 - Example",
+            "og_image_url": "https://example.com/og.jpg",
+        }
+
+    import sys as _sys
+    fake_module = type(_sys)("page_preview")
+    fake_module.fetch_page_preview = fake_fetch
+    original_module = _sys.modules.get("page_preview")
+    _sys.modules["page_preview"] = fake_module
+    try:
+        asyncio.run(claude_middleware._enrich_card_images(cards))
+    finally:
+        if original_module is not None:
+            _sys.modules["page_preview"] = original_module
+        else:
+            _sys.modules.pop("page_preview", None)
+
+    # Only the first card (product, no image_url) should have been fetched.
+    assert fetch_calls == ["https://example.com/ugly-stik"], (
+        f"Expected exactly 1 fetch for the un-imaged product card, got: {fetch_calls}"
+    )
+    assert cards[0].image_url == "https://example.com/og.jpg", (
+        f"First card's image_url should be enriched; got {cards[0].image_url!r}"
+    )
+    assert cards[1].image_url == "https://example.com/cached.jpg", (
+        "Second card already had an image — should not be overwritten."
+    )
+    assert cards[2].image_url is None, "Location card should not be enriched."
+    print("✓ Middleware enriches product cards (no overwrite of existing image_url)")
+
+
 def test_dispatch_path_does_not_slugify_for_research():
     """Verify the dispatcher itself no longer calls _generate_project_name on research targets."""
     src = (Path(__file__).parent.parent / "server.py").read_text()
@@ -444,6 +512,7 @@ ALL_TESTS = [
     test_system_prompt_distinguishes_research_verbs_from_build_verbs,
     test_system_prompt_handles_show_me_how_to_build_carveout,
     test_system_prompt_handles_ambiguous_create_a_project,
+    test_middleware_enriches_product_cards_with_og_image,
     test_dispatch_path_does_not_slugify_for_research,
 ]
 

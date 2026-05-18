@@ -178,6 +178,17 @@ async def extract_and_emit(
     if not cardset.cards:
         return 0
 
+    # Image enrichment — for product cards with a source_url but no model-
+    # supplied image_url, fetch the source page and look for og:image /
+    # twitter:image. Source-attributed only: a card is more trustworthy when
+    # the image actually comes from where the product info came from, so we
+    # deliberately don't fall back to generic image search.
+    #
+    # Runs all candidates in parallel under a single asyncio.gather, so
+    # total added latency is the slowest single fetch (capped at 1.5s by
+    # fetch_page_preview), not the sum.
+    await _enrich_card_images(cardset.cards)
+
     for card in cardset.cards:
         event_type = f"result.{card.type}"
         await bus.emit(Event(
@@ -201,3 +212,33 @@ async def extract_and_emit(
 
     log.info(f"middleware: emitted {len(cardset.cards)} result card(s) for task {task_id}")
     return len(cardset.cards)
+
+
+async def _enrich_card_images(cards: list["ResultCard"]) -> None:
+    """Fill in `image_url` from og:image / twitter:image on cards that have
+    a source URL but no image. Product cards only — for now.
+
+    Mutates `cards` in place; never raises (per-card failures are silent).
+    """
+    # Import here so the dependency stays local and the module is still
+    # easy to use in test environments that stub out the helper.
+    import asyncio
+    from page_preview import fetch_page_preview
+
+    candidates = [
+        c for c in cards
+        if c.type == "product" and c.source_url and not c.image_url
+    ]
+    if not candidates:
+        return
+
+    async def _one(c: "ResultCard") -> None:
+        try:
+            preview = await fetch_page_preview(c.source_url, timeout=1.5)
+            img = preview.get("og_image_url")
+            if img:
+                c.image_url = img
+        except Exception as e:
+            log.debug(f"middleware: image enrichment failed for {c.source_url}: {e}")
+
+    await asyncio.gather(*[_one(c) for c in candidates], return_exceptions=True)

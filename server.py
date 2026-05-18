@@ -68,6 +68,7 @@ from memory import (
 from notes_access import get_recent_notes, read_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
+from page_preview import fetch_page_preview
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -1908,77 +1909,6 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
                 pass
 
 
-_PAGE_PREVIEW_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 JARVIS-Preview/0.1"
-)
-
-
-async def _fetch_page_preview(url: str, timeout: float = 1.5) -> dict:
-    """Best-effort metadata fetch for a research source URL.
-
-    Returns a dict with `url`, `hostname`, `title`, and `og_image_url` keys.
-    Every field is populated on success; only `url` and `hostname` are
-    guaranteed on failure — title and og_image_url default to None when
-    the fetch times out, errors out, or the page lacks the relevant tags.
-
-    Hard 1.5s cap on the whole exchange (configurable) so a flaky source
-    can't block research progress. Never raises.
-    """
-    from urllib.parse import urlparse, urljoin
-
-    parsed = urlparse(url)
-    out = {
-        "url": url,
-        "hostname": parsed.hostname or "",
-        "title": None,
-        "og_image_url": None,
-    }
-    if not parsed.scheme.startswith("http"):
-        return out
-    try:
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": _PAGE_PREVIEW_UA, "Accept": "text/html"},
-        ) as http_client:
-            r = await http_client.get(url)
-            r.raise_for_status()
-            # Only need the <head>. Reading the whole body wastes bandwidth
-            # on sites that serve megabyte-sized HTML pages.
-            head = r.text[:65536]
-
-        t = re.search(r"<title[^>]*>([^<]+)</title>", head, re.IGNORECASE | re.DOTALL)
-        if t:
-            out["title"] = re.sub(r"\s+", " ", t.group(1)).strip()[:200]
-
-        og = re.search(
-            r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
-            head, re.IGNORECASE,
-        )
-        if not og:
-            og = re.search(
-                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image(?::secure_url)?["\']',
-                head, re.IGNORECASE,
-            )
-        if not og:
-            # Twitter card fallback — common on sites without OG tags.
-            og = re.search(
-                r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
-                head, re.IGNORECASE,
-            )
-        if og:
-            img = og.group(1)
-            if img.startswith("//"):
-                img = f"{parsed.scheme}:{img}"
-            elif img.startswith("/"):
-                img = urljoin(f"{parsed.scheme}://{parsed.hostname}", img)
-            out["og_image_url"] = img
-    except Exception as e:
-        log.debug(f"page_preview fetch failed for {url}: {e}")
-    return out
-
-
 async def _emit_research_source_card(task_id: str, url: str, snippet: str) -> None:
     """Fire-and-forget: fetch preview metadata, emit result.research_source.
 
@@ -1986,7 +1916,7 @@ async def _emit_research_source_card(task_id: str, url: str, snippet: str) -> No
     hostname-only metadata and the snippet text.
     """
     try:
-        preview = await _fetch_page_preview(url)
+        preview = await fetch_page_preview(url)
         title = preview.get("title") or preview.get("hostname") or url
         await emit_tool_event(
             task_id,
@@ -2056,12 +1986,25 @@ async def _execute_native_research(target: str, ws=None):
             f"You are JARVIS, {USER_NAME}'s assistant. {USER_NAME} asked a research "
             "question. Use web_search and web_fetch to find real, current information — "
             "real product names, prices, addresses, source URLs. Never invent listings.\n\n"
+            "REQUIRED RESEARCH PROCEDURE — non-negotiable:\n"
+            "1. Start with one or two web_search calls to identify candidate sources.\n"
+            "2. Then web_fetch the 3-5 most relevant URLs from the search results. "
+            "DO NOT synthesize your answer from search snippets alone — snippets are "
+            "shallow and often missing the prices, specs, addresses, and metadata the "
+            "user wants. The depth comes from fetching the actual pages.\n"
+            "3. Only after fetching, write your final response.\n\n"
+            "JARVIS's UI relies on web_fetch events to render source-preview cards "
+            "(thumbnail + page title + snippet) and to extract product images from "
+            "fetched pages. Skipping web_fetch leaves the UI empty of imagery and "
+            "robs {user} of the visual context they expect. Always fetch.\n\n"
             "Your response renders as result cards in a visual panel plus a short "
             "spoken summary. You are NOT writing a file, document, or report. Do not "
             "say 'I will create a report' or 'see the attached document'. Reply in "
             "concise prose mentioning specific items the panel can extract as cards "
-            "(products with prices, locations with addresses, web sources with URLs)."
-        )
+            "(products with prices, locations with addresses, web sources with URLs). "
+            "Always include the source URL for each item you mention so cards can "
+            "link back."
+        ).replace("{user}", USER_NAME)
 
         messages: list[dict] = [{"role": "user", "content": target}]
         tools = [
