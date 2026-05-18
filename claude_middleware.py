@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
@@ -27,6 +28,35 @@ from pydantic import BaseModel, Field, ValidationError
 from process_events import bus, Event
 
 log = logging.getLogger("jarvis.claude_middleware")
+
+
+# Currency normalization — the user is in the US; any non-USD price that
+# slips through from a foreign-locale source page gets stripped (with a
+# loud warning to jarvis.err.log) rather than displayed. The system
+# prompt also instructs Opus to omit non-USD prices, but Haiku has been
+# observed passing them through verbatim from the model's source text.
+_NON_USD_SYMBOLS = ("£", "€", "¥", "₹", "₩", "₽", "₪", "₺", "฿")
+_NON_USD_CODES_RE = re.compile(
+    r"\b(GBP|EUR|JPY|CAD|AUD|INR|KRW|CNY|RMB|CHF|SEK|NOK|DKK|MXN|BRL|RUB|TRY)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_non_usd_price(price: Optional[str]) -> tuple[Optional[str], bool]:
+    """Detect non-USD currency in an extracted price string.
+
+    Returns (clean_price, was_stripped). If a non-USD symbol or three-letter
+    currency code is present, returns (None, True). Otherwise returns
+    (price unchanged, False).
+    """
+    if not price:
+        return price, False
+    for sym in _NON_USD_SYMBOLS:
+        if sym in price:
+            return None, True
+    if _NON_USD_CODES_RE.search(price):
+        return None, True
+    return price, False
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +207,18 @@ async def extract_and_emit(
 
     if not cardset.cards:
         return 0
+
+    # Currency normalization — strip non-USD prices that slipped through
+    # despite the system-prompt locale anchor. Loudly log so we can audit
+    # how often Opus / Haiku miss the instruction.
+    for card in cardset.cards:
+        clean_price, was_stripped = _strip_non_usd_price(card.price)
+        if was_stripped:
+            log.warning(
+                "currency_mismatch: dropping non-USD price %r from card %r (source=%r)",
+                card.price, card.title, card.source_url,
+            )
+            card.price = clean_price
 
     # Image enrichment — for product cards with a source_url but no model-
     # supplied image_url, fetch the source page and look for og:image /

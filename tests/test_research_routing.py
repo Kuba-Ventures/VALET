@@ -383,6 +383,30 @@ def test_system_prompt_handles_ambiguous_create_a_project():
     print("✓ System prompt instructs the model to ask when ambiguous (case #6)")
 
 
+def test_middleware_strips_non_usd_prices():
+    """Non-USD price strings should be replaced with None and logged."""
+    from claude_middleware import _strip_non_usd_price
+
+    cases = [
+        ("$39.99",       ("$39.99",   False)),
+        ("$1,299",       ("$1,299",   False)),
+        ("USD 50",       ("USD 50",   False)),
+        ("£40",          (None,       True)),     # pound symbol
+        ("€42.50",       (None,       True)),     # euro symbol
+        ("¥5000",        (None,       True)),     # yen symbol
+        ("40 GBP",       (None,       True)),     # three-letter code
+        ("50 eur",       (None,       True)),     # case-insensitive
+        ("$50 (was £40)",(None,       True)),     # mixed → strip
+        ("",             ("",         False)),    # empty
+        (None,           (None,       False)),    # missing
+    ]
+    for price_in, (expected_clean, expected_stripped) in cases:
+        clean, stripped = _strip_non_usd_price(price_in)
+        assert clean == expected_clean, f"{price_in!r}: expected clean={expected_clean!r}, got {clean!r}"
+        assert stripped == expected_stripped, f"{price_in!r}: expected stripped={expected_stripped}, got {stripped}"
+    print("✓ Middleware strips non-USD prices (£/€/¥/three-letter codes/mixed)")
+
+
 def test_middleware_enriches_product_cards_with_og_image():
     """Product cards with source_url but no image_url should be enriched
     via fetch_page_preview before emission. Patch the fetcher with a stub
@@ -512,6 +536,7 @@ ALL_TESTS = [
     test_system_prompt_distinguishes_research_verbs_from_build_verbs,
     test_system_prompt_handles_show_me_how_to_build_carveout,
     test_system_prompt_handles_ambiguous_create_a_project,
+    test_middleware_strips_non_usd_prices,
     test_middleware_enriches_product_cards_with_og_image,
     test_dispatch_path_does_not_slugify_for_research,
 ]
