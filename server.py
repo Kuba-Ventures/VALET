@@ -1926,6 +1926,13 @@ async def _execute_native_research(target: str, ws=None):
             await emit_error(task_id, "Research unavailable", detail="ANTHROPIC_API_KEY not configured.")
             return
 
+        # Per-request 10-minute timeout. Default client timeout is 20s, but
+        # server-side web_search + web_fetch agentic loops can easily run
+        # for minutes — non-streamed requests at the SDK default hit the
+        # docs.anthropic.com/en/api/errors#long-requests timeout. with_options
+        # clones the client without mutating the shared global.
+        client = anthropic_client.with_options(timeout=600.0, max_retries=1)
+
         system_prompt = (
             f"You are JARVIS, {USER_NAME}'s assistant. {USER_NAME} asked a research "
             "question. Use web_search and web_fetch to find real, current information — "
@@ -1953,73 +1960,107 @@ async def _execute_native_research(target: str, ws=None):
         await emit_step(task_id, "Searching the web…", status="active")
 
         try:
-            # Server-side agent loop. The API runs the loop and may return
-            # stop_reason="pause_turn" if it hits its internal iter limit;
-            # we resume by re-sending with the assistant content appended.
+            # Server-side agent loop wrapped in streaming. Each turn opens a
+            # stream context; we react to content_block events as they arrive
+            # so panel events appear live rather than after the whole turn.
+            # If a turn ends with stop_reason="pause_turn" we open another
+            # stream to resume.
             for _ in range(6):  # cap resumes to avoid runaway
-                response = await anthropic_client.messages.create(
+                # Per-stream state: partial tool-use input JSON keyed by
+                # content-block index (the SDK delivers input_json deltas
+                # per index, then content_block_stop at index closure).
+                pending_tool_use: dict[int, dict] = {}
+                final_message = None
+
+                async with client.messages.stream(
                     model="claude-opus-4-7",
                     max_tokens=8192,
                     system=system_prompt,
                     messages=messages,
                     tools=tools,
-                )
-                track_usage(response)
+                ) as stream:
+                    async for event in stream:
+                        et = getattr(event, "type", None)
+                        if et == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            btype = getattr(block, "type", None)
+                            if btype == "server_tool_use":
+                                # Input streams via input_json_delta. Stash
+                                # name+id and accumulate until block_stop.
+                                pending_tool_use[event.index] = {
+                                    "id": getattr(block, "id", "") or "",
+                                    "name": getattr(block, "name", "") or "",
+                                    "partial_json": "",
+                                }
+                            elif btype == "web_search_tool_result":
+                                # Results arrive whole at content_block_start
+                                # — collect snippets for middleware context.
+                                results = getattr(block, "content", None)
+                                if isinstance(results, list):
+                                    for r in results:
+                                        rtype = getattr(r, "type", None)
+                                        if rtype == "web_search_result":
+                                            url = getattr(r, "url", "") or ""
+                                            title = getattr(r, "title", "") or ""
+                                            if title or url:
+                                                tool_result_snippets.append(f"{title}\n{url}")
+                            elif btype == "web_fetch_tool_result":
+                                rc = getattr(block, "content", None)
+                                if isinstance(rc, list):
+                                    for r in rc:
+                                        txt = getattr(r, "text", None)
+                                        if txt:
+                                            tool_result_snippets.append(str(txt)[:2000])
 
-                for block in response.content:
-                    btype = getattr(block, "type", None)
-                    if btype == "server_tool_use":
-                        bid = getattr(block, "id", "") or ""
-                        name = getattr(block, "name", "") or ""
-                        inp = getattr(block, "input", {}) or {}
-                        if name == "web_search" and bid not in seen_search_ids:
-                            seen_search_ids.add(bid)
-                            searches += 1
-                            query = inp.get("query", "") if isinstance(inp, dict) else ""
-                            await emit_tool_event(
-                                task_id, "tool.web_search", "WebSearch",
-                                detail=query[:120],
-                                payload={"query": query},
-                            )
-                        elif name == "web_fetch" and bid not in seen_fetch_ids:
-                            seen_fetch_ids.add(bid)
-                            fetches += 1
-                            url = inp.get("url", "") if isinstance(inp, dict) else ""
-                            await emit_tool_event(
-                                task_id, "tool.web_fetch", "WebFetch",
-                                detail=url[:120],
-                                payload={"url": url},
-                            )
-                    elif btype == "web_search_tool_result":
-                        results = getattr(block, "content", None)
-                        if isinstance(results, list):
-                            for r in results:
-                                rtype = getattr(r, "type", None)
-                                if rtype == "web_search_result":
-                                    url = getattr(r, "url", "") or ""
-                                    title = getattr(r, "title", "") or ""
-                                    if title or url:
-                                        tool_result_snippets.append(f"{title}\n{url}")
-                    elif btype == "web_fetch_tool_result":
-                        # Result content shape varies; pull any text-like fields
-                        # we can find as middleware context.
-                        rc = getattr(block, "content", None)
-                        if isinstance(rc, list):
-                            for r in rc:
-                                txt = getattr(r, "text", None)
+                        elif et == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            dtype = getattr(delta, "type", None)
+                            if dtype == "input_json_delta":
+                                pending = pending_tool_use.get(event.index)
+                                if pending is not None:
+                                    pending["partial_json"] += getattr(delta, "partial_json", "") or ""
+                            elif dtype == "text_delta":
+                                txt = getattr(delta, "text", "") or ""
                                 if txt:
-                                    tool_result_snippets.append(str(txt)[:2000])
-                    elif btype == "text":
-                        txt = getattr(block, "text", "") or ""
-                        if txt:
-                            assistant_text_parts.append(txt)
+                                    assistant_text_parts.append(txt)
 
-                messages.append({"role": "assistant", "content": response.content})
+                        elif et == "content_block_stop":
+                            pending = pending_tool_use.pop(event.index, None)
+                            if pending is None:
+                                continue
+                            try:
+                                inp = json.loads(pending["partial_json"] or "{}")
+                            except Exception:
+                                inp = {}
+                            bid = pending["id"]
+                            name = pending["name"]
+                            if name == "web_search" and bid not in seen_search_ids:
+                                seen_search_ids.add(bid)
+                                searches += 1
+                                query = inp.get("query", "") if isinstance(inp, dict) else ""
+                                await emit_tool_event(
+                                    task_id, "tool.web_search", "WebSearch",
+                                    detail=query[:120],
+                                    payload={"query": query},
+                                )
+                            elif name == "web_fetch" and bid not in seen_fetch_ids:
+                                seen_fetch_ids.add(bid)
+                                fetches += 1
+                                url = inp.get("url", "") if isinstance(inp, dict) else ""
+                                await emit_tool_event(
+                                    task_id, "tool.web_fetch", "WebFetch",
+                                    detail=url[:120],
+                                    payload={"url": url},
+                                )
 
-                if response.stop_reason == "pause_turn":
+                    final_message = await stream.get_final_message()
+
+                track_usage(final_message)
+                messages.append({"role": "assistant", "content": final_message.content})
+
+                if final_message.stop_reason == "pause_turn":
                     # API hit its server-side iteration limit; resume by
-                    # re-sending. No extra user message needed — see
-                    # tool-use-concepts.md.
+                    # opening another stream. No extra user message needed.
                     continue
                 break
 

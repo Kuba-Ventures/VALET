@@ -13,6 +13,7 @@ Run: python3 tests/test_research_routing.py
 """
 
 import asyncio
+import json as _json
 import os
 import re
 import sys
@@ -119,6 +120,119 @@ def _build_fake_research_response():
     ])
 
 
+class _FakeStream:
+    """Mimics the AsyncMessagesStream context manager + async iterator."""
+    def __init__(self, events, final_message):
+        self._events = list(events)
+        self._final = final_message
+        self._idx = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._idx >= len(self._events):
+            raise StopAsyncIteration
+        ev = self._events[self._idx]
+        self._idx += 1
+        return ev
+
+    async def get_final_message(self):
+        return self._final
+
+
+def _build_fake_stream_events_and_final():
+    """Synthesize the stream events the SDK would emit for the canned reply
+    above — content_block_{start,delta,stop} interleaved across indices."""
+    final = _build_fake_research_response()
+    tool_input_json = _json.dumps({"query": "three best fishing poles backyard ponds Virginia"})
+
+    events = [
+        # Block 0 — server_tool_use (web_search)
+        _FakeBlock(
+            type="content_block_start",
+            index=0,
+            content_block=_FakeBlock(
+                type="server_tool_use",
+                id="srvtoolu_test1",
+                name="web_search",
+            ),
+        ),
+        _FakeBlock(
+            type="content_block_delta",
+            index=0,
+            delta=_FakeBlock(type="input_json_delta", partial_json=tool_input_json),
+        ),
+        _FakeBlock(type="content_block_stop", index=0),
+
+        # Block 1 — web_search_tool_result (delivered whole at block_start)
+        _FakeBlock(
+            type="content_block_start",
+            index=1,
+            content_block=_FakeBlock(
+                type="web_search_tool_result",
+                tool_use_id="srvtoolu_test1",
+                content=[
+                    _FakeBlock(
+                        type="web_search_result",
+                        url="https://example.com/poles",
+                        title="Best Backyard Pond Fishing Rods",
+                    ),
+                ],
+            ),
+        ),
+        _FakeBlock(type="content_block_stop", index=1),
+
+        # Block 2 — text (streamed via text_delta)
+        _FakeBlock(
+            type="content_block_start",
+            index=2,
+            content_block=_FakeBlock(type="text", text=""),
+        ),
+        _FakeBlock(
+            type="content_block_delta",
+            index=2,
+            delta=_FakeBlock(
+                type="text_delta",
+                text=(
+                    "Three rods worth considering, sir: the Ugly Stik GX2 at $39, "
+                    "the Shakespeare Ugly Stik Elite at $52, and the Daiwa BG at $89. "
+                    "All work well for crappie and bass in small ponds."
+                ),
+            ),
+        ),
+        _FakeBlock(type="content_block_stop", index=2),
+
+        _FakeBlock(type="message_stop"),
+    ]
+    return events, final
+
+
+def _make_fake_client_with_stream():
+    """Construct a fake AsyncAnthropic-like client with messages.stream wired up."""
+    fake = MagicMock()
+    fake.messages = MagicMock()
+
+    events, final = _build_fake_stream_events_and_final()
+    fake.messages.stream = MagicMock(return_value=_FakeStream(events, final))
+    # The Haiku voice summary call still uses messages.create; return a stub
+    # so the handler doesn't crash when summarizing.
+    summary_response = _FakeResponse(content=[
+        _FakeBlock(type="text", text="Three rods worth considering, sir.")
+    ])
+    fake.messages.create = AsyncMock(return_value=summary_response)
+    # with_options(...) returns a (lightly modified) clone — for tests, just
+    # return self so the streaming call lands on this same mock.
+    fake.with_options = MagicMock(return_value=fake)
+    return fake
+
+
 def _snapshot_dir(p: Path) -> set:
     if not p.exists():
         return set()
@@ -133,9 +247,7 @@ def test_native_research_does_not_touch_disk():
     before_desktop = _snapshot_dir(desktop)
     before_code = _snapshot_dir(code)
 
-    fake_client = MagicMock()
-    fake_client.messages = MagicMock()
-    fake_client.messages.create = AsyncMock(return_value=_build_fake_research_response())
+    fake_client = _make_fake_client_with_stream()
 
     original_client = server.anthropic_client
     server.anthropic_client = fake_client
@@ -165,10 +277,8 @@ def test_native_research_does_not_touch_disk():
 
 
 def test_native_research_uses_opus_47_and_web_tools():
-    """Confirms the new path actually calls Opus 4.7 with the right tools."""
-    fake_client = MagicMock()
-    fake_client.messages = MagicMock()
-    fake_client.messages.create = AsyncMock(return_value=_build_fake_research_response())
+    """Confirms the new path actually calls Opus 4.7 with the right tools, via streaming."""
+    fake_client = _make_fake_client_with_stream()
 
     original_client = server.anthropic_client
     server.anthropic_client = fake_client
@@ -177,10 +287,12 @@ def test_native_research_uses_opus_47_and_web_tools():
     finally:
         server.anthropic_client = original_client
 
-    # First call is the Opus research turn. (Subsequent calls may be the
-    # Haiku voice summary; we don't care about those here.)
-    assert fake_client.messages.create.await_count >= 1
-    call_args = fake_client.messages.create.await_args_list[0]
+    # Must use streaming, not create — the timeout fix is the whole point.
+    assert fake_client.messages.stream.call_count >= 1, (
+        "Native research should call messages.stream(...) — non-streamed requests "
+        "time out on long server-side tool loops."
+    )
+    call_args = fake_client.messages.stream.call_args_list[0]
     kwargs = call_args.kwargs
 
     assert kwargs["model"] == "claude-opus-4-7"
@@ -188,7 +300,16 @@ def test_native_research_uses_opus_47_and_web_tools():
     assert tool_types == ["web_fetch_20260209", "web_search_20260209"]
     tool_names = sorted(t["name"] for t in kwargs["tools"])
     assert tool_names == ["web_fetch", "web_search"]
-    print("✓ Native research uses claude-opus-4-7 + web_search_20260209 + web_fetch_20260209")
+
+    # Confirm the extended timeout was requested via with_options.
+    assert fake_client.with_options.call_count >= 1, (
+        "Research should call client.with_options(timeout=...) for the 10-min cap."
+    )
+    options_kwargs = fake_client.with_options.call_args_list[0].kwargs
+    assert options_kwargs.get("timeout", 0) >= 60, (
+        f"Research timeout should be ≥60s for long-running tool loops; got {options_kwargs}"
+    )
+    print("✓ Native research uses streaming + claude-opus-4-7 + web tools + extended timeout")
 
 
 # ---------------------------------------------------------------------------
