@@ -292,6 +292,7 @@ DESIGN-PARTNER MODE (Phase 3):
 - [ACTION:START_DESIGN] topic — open a design conversation. JARVIS becomes the design partner; subsequent turns route through Opus until the user ships or scraps. Use for "let's design X", "plan a Y", "spec a Z", "I want to design something for…".
   "let's design a daily rollup" → [ACTION:START_DESIGN] daily rollup
   "plan a feature for client onboarding" → [ACTION:START_DESIGN] client onboarding
+  DESIGN-vs-BUILD DISCRIMINATION (critical): if {user_name} says he wants to talk through, discuss, brainstorm, or design something BEFORE building it, emit [ACTION:START_DESIGN] and let the design panel collect the topic. Do NOT emit [ACTION:PROMPT_PROJECT] or [ACTION:REMEMBER] in that case. A direct build request ("add a footer that says copyright 2026", "fix the login bug", "yes please add that to the code") still emits the appropriate build/dispatch action — only stated design intent triggers START_DESIGN. When in doubt and the user did not use design-intent words, dispatch the build action; START_DESIGN is the opt-in path, not the default.
 - [ACTION:SHIP_DESIGN] — finalize the active design and hand it to Claude Code (Phase 4). ONLY emit when a design session is active. Use for "ship it", "send it", "build it".
 - [ACTION:SCRAP_DESIGN] — discard the active design. Returns state to IDLE. ONLY emit when a session is active. Use for "scrap this", "start over".
 - [ACTION:SHOW_DRAFT] — speak the assembled draft so far. ONLY emit when a session is active.
@@ -1208,6 +1209,13 @@ async def _execute_start_design(topic: str, ws):
     abstractly and the Design Panel disables the Ship button until a project
     is opened.
 
+    If `topic` is empty (the user opted into design mode via a generic phrase
+    like "design mode" or "talk about a feature"), the session still starts
+    immediately so subsequent turns route through Opus, but Jarvis speaks a
+    prompt asking for the topic instead of acknowledging it. The next user
+    turn becomes the first design-conversation message and Opus picks up
+    from there.
+
     Future turns route to `design_session.handle_turn()` via the voice_handler
     DESIGNING branch — Haiku is bypassed entirely until ship/scrap.
     """
@@ -1215,7 +1223,9 @@ async def _execute_start_design(topic: str, ws):
 
     active_ctx = project_context.get_active()
     project_path = active_ctx.project_path if active_ctx else None
-    topic_clean = (topic or "").strip() or "untitled design"
+    raw_topic = (topic or "").strip()
+    topic_was_empty = not raw_topic
+    topic_clean = raw_topic or "untitled design"
 
     self_mod = bool(
         project_path
@@ -1224,13 +1234,22 @@ async def _execute_start_design(topic: str, ws):
 
     session = design_partner.start_for_ws(ws, project_path, topic_clean, self_mod=self_mod)
     target_desc = str(project_path) if project_path else "(no project)"
-    log.info(f"design_partner: session {session.id} started on {target_desc} (topic={topic_clean!r}, self_mod={self_mod})")
+    log.info(
+        f"design_partner: session {session.id} started on {target_desc} "
+        f"(topic={topic_clean!r}, self_mod={self_mod}, prompted_for_topic={topic_was_empty})"
+    )
 
     await session.emit_state()
     await session.emit("design.topic_set", title=topic_clean, status="done",
                         payload={"project_path": str(project_path) if project_path else ""})
 
-    if not project_path:
+    if topic_was_empty:
+        # Explicit opt-in via _DESIGN_OPTIN_PHRASES — user hasn't named a
+        # topic yet. Ask for one. The next user utterance routes through the
+        # DESIGNING branch (voice_handler) directly to Opus, which will
+        # absorb it as the first design-conversation message.
+        msg = "What would you like to design, sir?"
+    elif not project_path:
         msg = f"Right, sir — designing '{topic_clean}' in the abstract. Open a project before shipping."
     elif self_mod:
         msg = f"Right, sir — let's design '{topic_clean}' for myself. I'll be careful."
@@ -2982,6 +3001,23 @@ _START_DESIGN_PATTERN = _action_re.compile(
     _action_re.IGNORECASE,
 )
 
+# Explicit design-mode opt-in phrases. Substring match, case-insensitive.
+# Matched AFTER _START_DESIGN_PATTERN so an utterance with a topic ("let's
+# design a recipe tracker") still captures the topic. These phrases trigger
+# START_DESIGN with no target — Jarvis prompts for the topic next turn.
+# See docs/design_handoff_diagnosis.md — Option C.
+_DESIGN_OPTIN_PHRASES = (
+    "design mode",
+    "talk about a feature",
+    "discuss a change",
+    "let's design",
+    "lets design",
+    "brainstorm a feature",
+    "plan a feature",
+    "think about adding",
+    "design before we build",
+)
+
 _MERGE_BRANCH_PHRASES = {
     "merge it", "merge this", "merge the branch", "merge that branch",
     "okay merge it", "ok merge it", "go ahead and merge", "let's merge it",
@@ -3066,6 +3102,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         # (e.g. "plan tomorrow" should hit calendar planning, not design).
         if topic and topic.lower() not in {"tomorrow", "today", "this", "that", "it", "something"}:
             return {"action": "start_design", "target": topic}
+
+    # Explicit design-mode opt-in — runs AFTER the topic-capturing regex so
+    # "let's design a recipe tracker" still keeps its topic. These phrases
+    # are for users who want design mode WITHOUT specifying a topic up
+    # front; Jarvis asks "what would you like to design, sir?" next turn.
+    if any(p in t for p in _DESIGN_OPTIN_PHRASES):
+        return {"action": "start_design", "target": ""}
 
     # Close / dismiss the process panel. Fast-path so JARVIS responds
     # instantly without round-tripping through the LLM.

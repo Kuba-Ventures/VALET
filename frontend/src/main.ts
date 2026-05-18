@@ -223,7 +223,16 @@ socket.onMessage((msg) => {
   } else if (type === "design_event") {
     // Design-partner emissions — drive the Design Panel beside the orb.
     const event = msg.event as DesignEvent | undefined;
-    if (event) designPanel.handleEvent(event);
+    if (event) {
+      designPanel.handleEvent(event);
+      // Mirror the design-session state into the Process Panel header so
+      // the user can tell at a glance that voice turns are routing through
+      // Opus's design partner rather than the default action router.
+      if (event.type === "design.state_changed") {
+        const state = (event.payload as Record<string, unknown> | undefined)?.state;
+        processPanel.setDesignActive(state === "DESIGNING");
+      }
+    }
   }
 });
 

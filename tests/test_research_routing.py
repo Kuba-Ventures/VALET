@@ -383,6 +383,70 @@ def test_system_prompt_handles_ambiguous_create_a_project():
     print("✓ System prompt instructs the model to ask when ambiguous (case #6)")
 
 
+def test_design_optin_fast_path():
+    """Chunk 20 — verify the 4 smoke routing cases from the user's spec
+    against detect_action_fast directly (no LLM round-trip)."""
+    from server import detect_action_fast
+
+    cases = [
+        # (utterance, expected_action_or_None, notes)
+        # 1. Explicit opt-in via "talk about a feature" — design fires with no target.
+        ("talk about a feature for jarvis-main",
+         "start_design",
+         "explicit opt-in phrase — empty target so Jarvis prompts for topic"),
+        # 2. Direct build request — must NOT route to design.
+        ("add a footer that says copyright 2026",
+         None,  # falls through to LLM; not the fast-path's job to dispatch this
+         "no design-intent words → LLM handles this as build/prompt_project"),
+        # 3. Topic-capturing pattern still works (existing _START_DESIGN_PATTERN).
+        ("let's design a new feature for RecipeBook Code",
+         "start_design",
+         "existing pattern captures topic, opt-in path is a no-op here"),
+        # 4. The exact failure mode from the diagnosed session.
+        ("yes please add the code",
+         None,
+         "user phrasing from chunk-19 diagnosis — must still route via LLM, "
+         "NOT design fast-path"),
+    ]
+
+    for utterance, expected, why in cases:
+        result = detect_action_fast(utterance, ws=None)
+        actual = result["action"] if result else None
+        assert actual == expected, (
+            f"Routing mismatch for {utterance!r}:\n"
+            f"  expected: {expected!r}\n"
+            f"  got:      {actual!r}\n"
+            f"  reason this matters: {why}"
+        )
+
+    # Bonus: the topic-capturing case must come back with the topic populated.
+    r3 = detect_action_fast("let's design a new feature for RecipeBook Code", ws=None)
+    assert r3 is not None and r3.get("target")
+    assert "feature for RecipeBook Code" in r3["target"], r3
+
+    # Bonus: the opt-in case must come back with EMPTY target (signals prompt-for-topic).
+    r1 = detect_action_fast("talk about a feature for jarvis-main", ws=None)
+    assert r1 is not None and r1.get("target") == "", r1
+
+    print("✓ Design opt-in fast-path: 4 cases route correctly; targets populated as expected")
+
+
+def test_design_optin_phrases_all_match():
+    """Every phrase in _DESIGN_OPTIN_PHRASES must trigger start_design with empty target."""
+    from server import detect_action_fast, _DESIGN_OPTIN_PHRASES
+
+    for phrase in _DESIGN_OPTIN_PHRASES:
+        result = detect_action_fast(phrase, ws=None)
+        # "let's design" alone matches the opt-in branch; "let's design X"
+        # would match the existing topic-capturing pattern with a target.
+        # Both are fine for this test: any start_design hit confirms the
+        # phrase enters design mode somehow.
+        assert result is not None and result["action"] == "start_design", (
+            f"Opt-in phrase {phrase!r} failed to trigger start_design: got {result!r}"
+        )
+    print(f"✓ All {len(_DESIGN_OPTIN_PHRASES)} opt-in phrases trigger start_design")
+
+
 def test_extract_urls_from_code_pulls_real_urls():
     """The chunk-17 fix relies on this parser to recover URLs from the
     Python source that _20260209 web_fetch hides them in. Test a few
@@ -599,6 +663,8 @@ ALL_TESTS = [
     test_system_prompt_distinguishes_research_verbs_from_build_verbs,
     test_system_prompt_handles_show_me_how_to_build_carveout,
     test_system_prompt_handles_ambiguous_create_a_project,
+    test_design_optin_fast_path,
+    test_design_optin_phrases_all_match,
     test_extract_urls_from_code_pulls_real_urls,
     test_middleware_strips_non_usd_prices,
     test_middleware_enriches_product_cards_with_og_image,

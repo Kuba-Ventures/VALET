@@ -160,6 +160,20 @@
   display: none;
 }
 
+/* Design-mode active indicator — small "· design" label next to the
+ * Process Panel title. Hidden by default; toggled by setDesignActive(). */
+.pp-design-indicator {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--pp-accent);
+  margin-left: -4px;
+}
+.pp-design-indicator[hidden] {
+  display: none;
+}
+
 .pp-pin {
   width: 22px;
   height: 22px;

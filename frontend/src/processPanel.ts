@@ -70,6 +70,9 @@ export interface ProcessPanel {
   handleEvent(event: ProcessEvent): void;
   close(): void;
   destroy(): void;
+  /** Toggle the "· design" indicator next to the panel title. Called from
+   *  main.ts when the design partner's state transitions in/out of DESIGNING. */
+  setDesignActive(active: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +119,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       <div class="pp-handle" data-pp-handle>
         <div class="pp-handle-grip"></div>
         <div class="pp-title">Process</div>
+        <span class="pp-design-indicator" data-pp-design-indicator hidden>· design</span>
         <div class="pp-progress" data-pp-progress hidden></div>
         <button class="pp-pin" data-pp-pin title="Pin (disable auto-dismiss)" aria-pressed="${pinned}">${pinned ? "◉" : "◌"}</button>
         <button class="pp-close" data-pp-close title="Close">×</button>
@@ -129,6 +133,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   const closeBtn = root.querySelector<HTMLElement>("[data-pp-close]")!;
   const pinBtn = root.querySelector<HTMLButtonElement>("[data-pp-pin]")!;
   const progressChip = root.querySelector<HTMLElement>("[data-pp-progress]")!;
+  const designIndicator = root.querySelector<HTMLElement>("[data-pp-design-indicator]")!;
 
   pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(); });
 
@@ -708,6 +713,17 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     }
   });
 
+  function setDesignActive(active: boolean) {
+    // Surfacing design-mode state in the Process Panel header so the user
+    // knows their voice turns are routing through Opus's design partner
+    // rather than the default Haiku action router. Also forces the panel
+    // visible while design is active so the indicator is actually seen.
+    designIndicator.hidden = !active;
+    if (active) {
+      show();
+    }
+  }
+
   return {
     handleEvent,
     close: closeAndClear,
@@ -715,6 +731,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       cancelDismiss();
       root.remove();
     },
+    setDesignActive,
   };
 }
 
