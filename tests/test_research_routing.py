@@ -1,0 +1,349 @@
+"""Unit tests for the [ACTION:RESEARCH] routing fix.
+
+Covers the six cases the architectural fix is supposed to handle. The first
+three and the disk-safety guarantees are testable here without a live LLM.
+The last three (cases #4–#6) depend on the system prompt's intent
+disambiguation, which is enforced by the LLM at runtime — we can't
+unit-test the LLM's choice, so for those cases we assert the system prompt
+itself contains the rules that govern the choice. A live smoke test (run
+manually after starting the server) closes the loop on the LLM-decision
+cases.
+
+Run: python3 tests/test_research_routing.py
+"""
+
+import asyncio
+import os
+import re
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Load .env if present so server imports succeed.
+env_path = Path(__file__).parent.parent / ".env"
+if env_path.exists():
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+import server  # noqa: E402
+from server import extract_action, JARVIS_SYSTEM_PROMPT  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# 1. extract_action parses [ACTION:RESEARCH] without slugifying
+# ---------------------------------------------------------------------------
+
+def test_extract_action_research():
+    text, action = extract_action(
+        "Looking into that now, sir. [ACTION:RESEARCH] three best fishing poles for backyard ponds in Virginia"
+    )
+    assert action is not None
+    assert action["action"] == "research"
+    assert action["target"] == "three best fishing poles for backyard ponds in Virginia"
+    # Speakable preamble is preserved; tag is stripped.
+    assert "Looking into that now" in text
+    assert "[ACTION" not in text
+    print("✓ extract_action parses [ACTION:RESEARCH] correctly")
+
+
+def test_extract_action_distinguishes_research_from_build():
+    # Build target should not be parsed as research.
+    _, action = extract_action("[ACTION:BUILD] a snake game")
+    assert action["action"] == "build"
+    # Research target should not be parsed as build.
+    _, action = extract_action("[ACTION:RESEARCH] best running shoes")
+    assert action["action"] == "research"
+    print("✓ extract_action distinguishes research from build tags")
+
+
+# ---------------------------------------------------------------------------
+# 2. Disk-safety: _execute_native_research never writes to ~/Desktop or ~/Code
+# ---------------------------------------------------------------------------
+
+class _FakeBlock:
+    """Minimal stand-in for an Anthropic content block."""
+    def __init__(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+class _FakeUsage:
+    input_tokens = 100
+    output_tokens = 200
+    cache_creation_input_tokens = 0
+    cache_read_input_tokens = 0
+
+
+class _FakeResponse:
+    """Mimics anthropic.types.Message enough for the handler."""
+    def __init__(self, content, stop_reason="end_turn"):
+        self.content = content
+        self.stop_reason = stop_reason
+        self.usage = _FakeUsage()
+        self.model = "claude-opus-4-7"
+
+
+def _build_fake_research_response():
+    """A canned Opus reply with one server_tool_use + one tool_result + text."""
+    return _FakeResponse(content=[
+        _FakeBlock(
+            type="server_tool_use",
+            id="srvtoolu_test1",
+            name="web_search",
+            input={"query": "three best fishing poles backyard ponds Virginia"},
+        ),
+        _FakeBlock(
+            type="web_search_tool_result",
+            tool_use_id="srvtoolu_test1",
+            content=[
+                _FakeBlock(
+                    type="web_search_result",
+                    url="https://example.com/poles",
+                    title="Best Backyard Pond Fishing Rods",
+                ),
+            ],
+        ),
+        _FakeBlock(
+            type="text",
+            text=(
+                "Three rods worth considering, sir: the Ugly Stik GX2 at $39, "
+                "the Shakespeare Ugly Stik Elite at $52, and the Daiwa BG at $89. "
+                "All work well for crappie and bass in small ponds."
+            ),
+        ),
+    ])
+
+
+def _snapshot_dir(p: Path) -> set:
+    if not p.exists():
+        return set()
+    return {child.name for child in p.iterdir()}
+
+
+def test_native_research_does_not_touch_disk():
+    """The single most load-bearing test: research must not create folders."""
+    desktop = Path.home() / "Desktop"
+    code = Path.home() / "Code"
+
+    before_desktop = _snapshot_dir(desktop)
+    before_code = _snapshot_dir(code)
+
+    fake_client = MagicMock()
+    fake_client.messages = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=_build_fake_research_response())
+
+    original_client = server.anthropic_client
+    server.anthropic_client = fake_client
+    try:
+        asyncio.run(server._execute_native_research(
+            "three best fishing poles for backyard ponds in Virginia",
+            ws=None,
+        ))
+    finally:
+        server.anthropic_client = original_client
+
+    after_desktop = _snapshot_dir(desktop)
+    after_code = _snapshot_dir(code)
+
+    new_on_desktop = after_desktop - before_desktop
+    new_in_code = after_code - before_code
+
+    assert not new_on_desktop, (
+        f"Research path created entries on ~/Desktop: {new_on_desktop}. "
+        "Research must NEVER touch the filesystem."
+    )
+    assert not new_in_code, (
+        f"Research path created entries in ~/Code: {new_in_code}. "
+        "Research must NEVER touch the filesystem."
+    )
+    print("✓ _execute_native_research does not write to ~/Desktop or ~/Code")
+
+
+def test_native_research_uses_opus_47_and_web_tools():
+    """Confirms the new path actually calls Opus 4.7 with the right tools."""
+    fake_client = MagicMock()
+    fake_client.messages = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=_build_fake_research_response())
+
+    original_client = server.anthropic_client
+    server.anthropic_client = fake_client
+    try:
+        asyncio.run(server._execute_native_research("good coffee near Martinsville VA", ws=None))
+    finally:
+        server.anthropic_client = original_client
+
+    # First call is the Opus research turn. (Subsequent calls may be the
+    # Haiku voice summary; we don't care about those here.)
+    assert fake_client.messages.create.await_count >= 1
+    call_args = fake_client.messages.create.await_args_list[0]
+    kwargs = call_args.kwargs
+
+    assert kwargs["model"] == "claude-opus-4-7"
+    tool_types = sorted(t["type"] for t in kwargs["tools"])
+    assert tool_types == ["web_fetch_20260209", "web_search_20260209"]
+    tool_names = sorted(t["name"] for t in kwargs["tools"])
+    assert tool_names == ["web_fetch", "web_search"]
+    print("✓ Native research uses claude-opus-4-7 + web_search_20260209 + web_fetch_20260209")
+
+
+# ---------------------------------------------------------------------------
+# 3. System prompt enforces the routing rules at LLM-decision time
+# ---------------------------------------------------------------------------
+
+def test_system_prompt_drops_report_document_language():
+    """The old description told the model it was creating a report. Confirm
+    every assertive (non-negated) form of that instruction is gone."""
+    research_section = _extract_research_section(JARVIS_SYSTEM_PROMPT)
+    lowered = research_section.lower()
+    # Assertive phrasings — these would tell the model to produce a file.
+    bad_phrases = [
+        "create a report document",
+        "create a report",
+        "claude code will browse",
+        "create a report.html",
+        "produce a report",
+        "write a report",
+    ]
+    for phrase in bad_phrases:
+        assert phrase not in lowered, (
+            f"Research description still contains assertive instruction {phrase!r} — "
+            "model will think it produces a file."
+        )
+    # And the prompt must include an explicit NEVER-style prohibition somewhere.
+    assert ("never produce" in lowered
+            or "never produces" in lowered
+            or "no file" in lowered
+            or "never a file" in lowered), (
+        "Research description should explicitly tell the model NOT to produce a file."
+    )
+    print("✓ System prompt no longer tells the model research produces a file or delegates to Claude Code")
+
+
+def test_system_prompt_describes_card_panel_output():
+    research_section = _extract_research_section(JARVIS_SYSTEM_PROMPT).lower()
+    assert "process panel" in research_section or "card" in research_section, (
+        "Research description should tell the model output renders as cards in the Process Panel."
+    )
+    print("✓ System prompt frames research output as Process Panel cards")
+
+
+def test_system_prompt_distinguishes_research_verbs_from_build_verbs():
+    section = _extract_research_section(JARVIS_SYSTEM_PROMPT).lower()
+    # Research verbs the rule must enumerate.
+    for verb in ["show me", "find me", "what are", "tell me about", "research"]:
+        assert verb in section, f"System prompt missing research verb example: {verb!r}"
+    # Build verbs the rule must enumerate.
+    for verb in ["build", "create a project", "new project"]:
+        assert verb in section, f"System prompt missing build verb example: {verb!r}"
+    print("✓ System prompt enumerates research and build verbs")
+
+
+def test_system_prompt_handles_show_me_how_to_build_carveout():
+    """Case #5: 'show me how to build X' must route to RESEARCH, not BUILD."""
+    section = _extract_research_section(JARVIS_SYSTEM_PROMPT).lower()
+    assert "how to build" in section or "show me how to" in section, (
+        "System prompt must address the 'show me how to build X' carve-out — "
+        "otherwise the model will keyword-match 'build' and dispatch a project."
+    )
+    print("✓ System prompt covers the 'show me how to build X' carve-out (case #5)")
+
+
+def test_system_prompt_handles_ambiguous_create_a_project():
+    """Case #6: 'create a project called X' should ask, not silently slugify."""
+    section = _extract_research_section(JARVIS_SYSTEM_PROMPT).lower()
+    assert "ask" in section or "ambiguous" in section, (
+        "System prompt must instruct the model to ask when build vs research is ambiguous."
+    )
+    print("✓ System prompt instructs the model to ask when ambiguous (case #6)")
+
+
+def test_dispatch_path_does_not_slugify_for_research():
+    """Verify the dispatcher itself no longer calls _generate_project_name on research targets."""
+    src = (Path(__file__).parent.parent / "server.py").read_text()
+    # Find the research dispatch branch.
+    m = re.search(
+        r'elif embedded_action\["action"\] == "research":\s*\n((?:[ \t]+.*\n)+)',
+        src,
+    )
+    assert m, "Could not locate the research dispatch branch in server.py"
+    body = m.group(1)
+    assert "_generate_project_name" not in body, (
+        "Research dispatch still calls _generate_project_name — slugifying user queries into folder names."
+    )
+    assert "os.makedirs" not in body, (
+        "Research dispatch still creates a directory — must be filesystem-readonly."
+    )
+    assert "work_session.start" not in body, (
+        "Research dispatch still starts a WorkSession — must use native handler instead."
+    )
+    assert "_execute_native_research" in body, (
+        "Research dispatch should call _execute_native_research."
+    )
+    print("✓ Research dispatch no longer slugifies, mkdir's, or spawns a WorkSession")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _extract_research_section(prompt: str) -> str:
+    """Return the [ACTION:RESEARCH] description block plus the disambiguation
+    paragraphs that follow it, up to the next ACTION bullet."""
+    lines = prompt.splitlines()
+    out = []
+    in_section = False
+    for line in lines:
+        if line.startswith("- [ACTION:RESEARCH]"):
+            in_section = True
+            out.append(line)
+            continue
+        if in_section:
+            if line.startswith("- [ACTION:") and not line.startswith("- [ACTION:RESEARCH]"):
+                break
+            out.append(line)
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+
+ALL_TESTS = [
+    test_extract_action_research,
+    test_extract_action_distinguishes_research_from_build,
+    test_native_research_does_not_touch_disk,
+    test_native_research_uses_opus_47_and_web_tools,
+    test_system_prompt_drops_report_document_language,
+    test_system_prompt_describes_card_panel_output,
+    test_system_prompt_distinguishes_research_verbs_from_build_verbs,
+    test_system_prompt_handles_show_me_how_to_build_carveout,
+    test_system_prompt_handles_ambiguous_create_a_project,
+    test_dispatch_path_does_not_slugify_for_research,
+]
+
+
+def main():
+    failed = 0
+    for t in ALL_TESTS:
+        try:
+            t()
+        except AssertionError as e:
+            failed += 1
+            print(f"✗ {t.__name__}: {e}")
+        except Exception as e:
+            failed += 1
+            print(f"✗ {t.__name__}: unexpected error: {e!r}")
+    print()
+    if failed:
+        print(f"FAIL — {failed} of {len(ALL_TESTS)} tests failed")
+        sys.exit(1)
+    print(f"PASS — all {len(ALL_TESTS)} tests passed")
+
+
+if __name__ == "__main__":
+    main()

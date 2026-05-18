@@ -50,6 +50,7 @@ from process_events import (
     emit_code_task,
     emit_error,
     emit_task_queued,
+    emit_tool_event,
 )
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
@@ -200,7 +201,19 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
-- [ACTION:RESEARCH] detailed research brief — when user wants real research with real data. Claude Code will browse the web, find real listings/data, and create a report document. Give it a detailed brief of what to find.
+- [ACTION:RESEARCH] brief — when the user asks an informational question. You search the web natively (web_search + web_fetch on Opus) and the answer renders as result cards in the Process Panel plus a short spoken summary. NEVER produces a file, folder, project, or report document. Do NOT slugify the user's words into a folder name. Pass the question through as the brief.
+
+RESEARCH vs BUILD — distinguish by the user's verb at the front of the request, not by any word that appears later:
+  Research verbs ("show me", "find me", "what are", "what's the best", "tell me about", "research", "look up", "compare", "how much", "where can I", "who makes") → [ACTION:RESEARCH]
+  Build verbs ("build", "create a project", "make me an app", "new project", "spin up a", "scaffold", "start a project") → [ACTION:BUILD] or [ACTION:NEW_PROJECT]
+  Examples:
+    "show me the three best fishing poles" → [ACTION:RESEARCH] three best fishing poles for backyard ponds
+    "find me good coffee shops near Martinsville VA" → [ACTION:RESEARCH] best coffee shops near Martinsville VA
+    "what's the latest on the SEC ETF rulings" → [ACTION:RESEARCH] latest SEC ETF rulings
+    "show me HOW TO build a recipe tracker" → [ACTION:RESEARCH] how to build a recipe tracker (the verb is "show me" — user wants information, not for you to build it)
+    "build me a recipe tracker" → planning flow → [ACTION:BUILD] (verb is "build", user wants the thing built)
+    "create a project called fishing-poles" → if the intent is clearly to start coding, [ACTION:NEW_PROJECT] fishing-poles; if it's ambiguous (no follow-up context, sounds like it could be a research bookmark), ask "Do you want me to scaffold a new project, sir, or research fishing poles?" — never silently slugify into a folder.
+  If genuinely ambiguous, ASK before assuming build intent.
 - [ACTION:OPEN_TERMINAL] — ONLY for spawning a fresh macOS Terminal.app window running Claude Code. NEVER use this for Cursor, VS Code, Xcode, iTerm, Warp, or any other app. Those go through OPEN_APP.
 - [ACTION:OPEN_APP] target — open a macOS app by name OR a folder in Finder. Use for ANY local-system "open X" request that isn't a web URL. This is the DEFAULT for "open X" / "launch X" / "fire up X". NEVER use [ACTION:BROWSE] for local paths or apps, and NEVER use [ACTION:OPEN_TERMINAL] for non-Terminal apps.
   "open Cursor" / "launch Cursor" / "fire up Cursor" → [ACTION:OPEN_APP] Cursor
@@ -1654,86 +1667,6 @@ async def _execute_browse(target: str):
             await emit_error(task_id, "Browse failed", detail=str(e)[:200])
 
 
-async def _execute_research(target: str, ws=None):
-    """Execute research via claude -p in background. Opens report and speaks when done."""
-    async with process_bus.task_context(f"Researching: {target[:60]}") as task_id:
-        try:
-            name = _generate_project_name(target)
-            path = str(Path.home() / "Desktop" / name)
-            os.makedirs(path, exist_ok=True)
-            await emit_step(task_id, "Project folder ready", detail=path)
-
-            prompt = (
-                f"{target}\n\n"
-                f"Research this thoroughly. Find REAL data — not made-up examples.\n"
-                f"Create a well-designed HTML file called `report.html` in the current directory.\n"
-                f"Dark theme, clean typography, organized sections, real links and sources.\n"
-                f"The working directory is: {path}"
-            )
-
-            log.info(f"Research started via claude -p in {path}")
-            await emit_step(task_id, "Claude Code researching…", status="active")
-
-            process = await asyncio.create_subprocess_exec(
-                "claude", "-p", "--output-format", "text", "--dangerously-skip-permissions",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=path,
-            )
-
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=prompt.encode()),
-                timeout=300,
-            )
-
-            result = stdout.decode().strip()
-            log.info(f"Research complete ({len(result)} chars)")
-            await emit_step(task_id, f"Research returned {len(result)} chars", status="done")
-
-            recently_built.append({"name": name, "path": path, "time": time.time()})
-
-            # Find and open any HTML report
-            report = Path(path) / "report.html"
-            if not report.exists():
-                # Check for any HTML file
-                html_files = list(Path(path).glob("*.html"))
-                if html_files:
-                    report = html_files[0]
-
-            if report.exists():
-                await emit_browser_action(task_id, "open report", url=f"file://{report}")
-                await open_browser(f"file://{report}")
-                log.info(f"Opened {report.name} in browser")
-
-            # Notify via voice if WebSocket still connected
-            if ws:
-                try:
-                    notify_text = f"Research is complete, sir. Report is open in your browser."
-                    audio = await synthesize_speech(notify_text)
-                    if audio:
-                        await ws.send_json({"type": "status", "state": "speaking"})
-                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": notify_text})
-                        await ws.send_json({"type": "status", "state": "idle"})
-                        log.info(f"JARVIS: {notify_text}")
-                except Exception:
-                    pass  # WebSocket might be gone
-
-        except asyncio.TimeoutError:
-            log.error("Research timed out after 5 minutes")
-            await emit_error(task_id, "Research timed out", detail="claude -p exceeded 5 minute budget")
-            if ws:
-                try:
-                    audio = await synthesize_speech("Research timed out, sir. It was taking too long.")
-                    if audio:
-                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": "Research timed out, sir."})
-                except Exception:
-                    pass
-        except Exception as e:
-            log.error(f"Research execution failed: {e}")
-            await emit_error(task_id, "Research failed", detail=str(e)[:200])
-
-
 async def _focus_terminal_window(project_name: str):
     """Bring a Terminal window matching the project name to front."""
     escaped = project_name.replace('"', '\\"')
@@ -1930,44 +1863,171 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
                 pass
 
 
-async def self_work_and_notify(session: WorkSession, prompt: str, ws):
-    """Run claude -p in background and notify via voice when done.
+async def _execute_native_research(target: str, ws=None):
+    """Native research path — Opus 4.7 with server-side web_search + web_fetch.
 
-    Used by the [ACTION:RESEARCH] dispatch path (and the legacy "fix yourself"
-    work-mode prompt). Wrapped in a process-panel task so users see live
-    stdout streaming from the claude -p subprocess.
+    No subprocess. No folder. Tool calls stream to the Process Panel as
+    tool.web_search / tool.web_fetch events. The completed response runs
+    through the existing Haiku card-extraction middleware so result.web /
+    result.product / result.location / result.image cards land in the panel.
+    A short voice summary is spoken via TTS.
+
+    Filesystem-readonly by design — see docs/research_routing_diagnosis.md.
     """
-    async with process_bus.task_context(f"Researching: {prompt[:60]}") as task_id:
-        try:
-            await emit_step(task_id, "Claude Code working…", status="active")
-            full_response = await session.send(prompt, task_id=task_id, anthropic_client=anthropic_client)
-            log.info(f"Background work complete ({len(full_response)} chars)")
+    async with process_bus.task_context(f"Researching: {target[:60]}") as task_id:
+        if anthropic_client is None:
+            await emit_error(task_id, "Research unavailable", detail="ANTHROPIC_API_KEY not configured.")
+            return
 
-            # Summarize and speak
-            if anthropic_client and full_response:
+        system_prompt = (
+            f"You are JARVIS, {USER_NAME}'s assistant. {USER_NAME} asked a research "
+            "question. Use web_search and web_fetch to find real, current information — "
+            "real product names, prices, addresses, source URLs. Never invent listings.\n\n"
+            "Your response renders as result cards in a visual panel plus a short "
+            "spoken summary. You are NOT writing a file, document, or report. Do not "
+            "say 'I will create a report' or 'see the attached document'. Reply in "
+            "concise prose mentioning specific items the panel can extract as cards "
+            "(products with prices, locations with addresses, web sources with URLs)."
+        )
+
+        messages: list[dict] = [{"role": "user", "content": target}]
+        tools = [
+            {"type": "web_search_20260209", "name": "web_search"},
+            {"type": "web_fetch_20260209", "name": "web_fetch"},
+        ]
+
+        assistant_text_parts: list[str] = []
+        tool_result_snippets: list[str] = []
+        seen_search_ids: set[str] = set()
+        seen_fetch_ids: set[str] = set()
+        searches = 0
+        fetches = 0
+
+        await emit_step(task_id, "Searching the web…", status="active")
+
+        try:
+            # Server-side agent loop. The API runs the loop and may return
+            # stop_reason="pause_turn" if it hits its internal iter limit;
+            # we resume by re-sending with the assistant content appended.
+            for _ in range(6):  # cap resumes to avoid runaway
+                response = await anthropic_client.messages.create(
+                    model="claude-opus-4-7",
+                    max_tokens=8192,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=tools,
+                )
+                track_usage(response)
+
+                for block in response.content:
+                    btype = getattr(block, "type", None)
+                    if btype == "server_tool_use":
+                        bid = getattr(block, "id", "") or ""
+                        name = getattr(block, "name", "") or ""
+                        inp = getattr(block, "input", {}) or {}
+                        if name == "web_search" and bid not in seen_search_ids:
+                            seen_search_ids.add(bid)
+                            searches += 1
+                            query = inp.get("query", "") if isinstance(inp, dict) else ""
+                            await emit_tool_event(
+                                task_id, "tool.web_search", "WebSearch",
+                                detail=query[:120],
+                                payload={"query": query},
+                            )
+                        elif name == "web_fetch" and bid not in seen_fetch_ids:
+                            seen_fetch_ids.add(bid)
+                            fetches += 1
+                            url = inp.get("url", "") if isinstance(inp, dict) else ""
+                            await emit_tool_event(
+                                task_id, "tool.web_fetch", "WebFetch",
+                                detail=url[:120],
+                                payload={"url": url},
+                            )
+                    elif btype == "web_search_tool_result":
+                        results = getattr(block, "content", None)
+                        if isinstance(results, list):
+                            for r in results:
+                                rtype = getattr(r, "type", None)
+                                if rtype == "web_search_result":
+                                    url = getattr(r, "url", "") or ""
+                                    title = getattr(r, "title", "") or ""
+                                    if title or url:
+                                        tool_result_snippets.append(f"{title}\n{url}")
+                    elif btype == "web_fetch_tool_result":
+                        # Result content shape varies; pull any text-like fields
+                        # we can find as middleware context.
+                        rc = getattr(block, "content", None)
+                        if isinstance(rc, list):
+                            for r in rc:
+                                txt = getattr(r, "text", None)
+                                if txt:
+                                    tool_result_snippets.append(str(txt)[:2000])
+                    elif btype == "text":
+                        txt = getattr(block, "text", "") or ""
+                        if txt:
+                            assistant_text_parts.append(txt)
+
+                messages.append({"role": "assistant", "content": response.content})
+
+                if response.stop_reason == "pause_turn":
+                    # API hit its server-side iteration limit; resume by
+                    # re-sending. No extra user message needed — see
+                    # tool-use-concepts.md.
+                    continue
+                break
+
+            response_text = "".join(assistant_text_parts).strip()
+            await emit_step(
+                task_id,
+                f"Research complete — {searches} search(es), {fetches} fetch(es)",
+                detail=f"{len(response_text)} chars",
+                status="done",
+            )
+
+            # Card extraction — re-use the existing middleware unmodified.
+            if response_text and anthropic_client:
+                try:
+                    import claude_middleware
+                    asyncio.create_task(
+                        claude_middleware.extract_and_emit(
+                            response_text=response_text,
+                            tool_result_snippets=tool_result_snippets,
+                            task_id=task_id,
+                            anthropic_client=anthropic_client,
+                        )
+                    )
+                except Exception as e:
+                    log.warning(f"native research middleware spawn failed: {e}")
+
+            # Short voice summary via Haiku.
+            if ws and response_text:
                 try:
                     summary = await anthropic_client.messages.create(
                         model="claude-haiku-4-5-20251001",
-                        max_tokens=100,
-                        system="You are JARVIS. Summarize what you just completed in 1 sentence. First person — 'I built', 'I set up'. No markdown. Never say 'Claude Code'.",
-                        messages=[{"role": "user", "content": f"Claude Code completed:\n{full_response[:2000]}"}],
+                        max_tokens=80,
+                        system=(
+                            "You are JARVIS. In ONE sentence, British butler tone, "
+                            "first person, summarize the research finding for voice. "
+                            "No markdown. End with 'sir' when natural."
+                        ),
+                        messages=[{"role": "user", "content": response_text[:2000]}],
                     )
                     msg = summary.content[0].text
-                except Exception:
-                    msg = "Work is complete, sir."
-
-                try:
                     audio = await synthesize_speech(msg)
                     if audio:
                         await ws.send_json({"type": "status", "state": "speaking"})
-                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+                        await ws.send_json({
+                            "type": "audio",
+                            "data": base64.b64encode(audio).decode(),
+                            "text": msg,
+                        })
                         await ws.send_json({"type": "status", "state": "idle"})
                         log.info(f"JARVIS: {msg}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning(f"research voice summary failed: {e}")
         except Exception as e:
-            log.error(f"Background work failed: {e}")
-            await emit_error(task_id, "Background work failed", detail=str(e)[:200])
+            log.error(f"Native research failed: {e}", exc_info=True)
+            await emit_error(task_id, "Research failed", detail=str(e)[:200])
 
 
 # Smart greeting — track last greeting to avoid re-greeting on reconnect
@@ -3011,60 +3071,6 @@ async def handle_browse(text: str, target: str) -> str:
     return "Searching for that, sir."
 
 
-async def handle_research(text: str, target: str, client: anthropic.AsyncAnthropic) -> str:
-    """Deep research with Opus — write results to HTML, open in browser."""
-    try:
-        research_response = await client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=2000,
-            system=f"You are JARVIS, researching a topic for {USER_NAME}. Be thorough, organized, and cite sources where possible.",
-            messages=[{"role": "user", "content": f"Research this thoroughly:\n\n{target}"}],
-        )
-        research_text = research_response.content[0].text
-
-        import html as _html
-        html_content = f"""<!DOCTYPE html>
-<html><head>
-<meta charset="utf-8">
-<title>JARVIS Research: {_html.escape(target[:60])}</title>
-<style>
-body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; line-height: 1.7; }}
-h1 {{ color: #0ea5e9; font-size: 1.4em; border-bottom: 1px solid #222; padding-bottom: 10px; }}
-h2 {{ color: #38bdf8; font-size: 1.1em; margin-top: 24px; }}
-a {{ color: #0ea5e9; }}
-pre {{ background: #111; padding: 12px; border-radius: 6px; overflow-x: auto; }}
-code {{ background: #111; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }}
-blockquote {{ border-left: 3px solid #0ea5e9; margin-left: 0; padding-left: 16px; color: #aaa; }}
-</style>
-</head><body>
-<h1>Research: {_html.escape(target[:80])}</h1>
-<div>{research_text.replace(chr(10), '<br>')}</div>
-<hr style="border-color:#222;margin-top:40px">
-<p style="color:#555;font-size:0.8em">Researched by JARVIS using Claude Opus &bull; {datetime.now().strftime('%B %d, %Y %I:%M %p')}</p>
-</body></html>"""
-
-        results_file = Path.home() / "Desktop" / ".jarvis_research.html"
-        results_file.write_text(html_content)
-
-        browser_name = "firefox" if "firefox" in text.lower() else "chrome"
-        await open_browser(f"file://{results_file}", browser_name)
-
-        # Short voice summary via Haiku
-        summary = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=80,
-            system="Summarize this research in ONE sentence for voice. No markdown.",
-            messages=[{"role": "user", "content": research_text[:2000]}],
-        )
-        return summary.content[0].text + " Full results are in your browser, sir."
-
-    except Exception as e:
-        log.error(f"Research failed: {e}")
-        from urllib.parse import quote
-        await open_browser(f"https://www.google.com/search?q={quote(target)}")
-        return "Pulled up a search for that, sir."
-
-
 # -- Session Summary (Three-Tier Memory) -----------------------------------
 
 async def _update_session_summary(
@@ -3527,13 +3533,14 @@ async def voice_handler(ws: WebSocket):
                                 elif embedded_action["action"] == "browse":
                                     asyncio.create_task(_execute_browse(embedded_action["target"]))
                                 elif embedded_action["action"] == "research":
-                                    # Research enters work mode too
-                                    name = _generate_project_name(embedded_action["target"])
-                                    path = str(Path.home() / "Desktop" / name)
-                                    os.makedirs(path, exist_ok=True)
-                                    await work_session.start(path)
+                                    # Native research — Opus 4.7 + server-side
+                                    # web_search/web_fetch tools. No folder, no
+                                    # subprocess, no Cursor handoff. Results
+                                    # render as cards in the Process Panel and
+                                    # are spoken as a short summary via TTS.
+                                    # See docs/research_routing_diagnosis.md.
                                     asyncio.create_task(
-                                        self_work_and_notify(work_session, embedded_action["target"], ws)
+                                        _execute_native_research(embedded_action["target"], ws)
                                     )
                                 elif embedded_action["action"] == "open_terminal":
                                     asyncio.create_task(_execute_open_terminal())
