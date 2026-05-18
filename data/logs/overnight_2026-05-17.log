@@ -29,3 +29,5 @@
 [2026-05-18T00:00:25-0400] chunk 5 unit FAIL
 [2026-05-18T00:01:19-0400]   bugfix: imported re-as-_conf_re inside _handle_self_mod_confirm (NameError caught by smoke)
 [2026-05-18T00:01:19-0400] chunk 5 unit re-smoke OK after bugfix
+[2026-05-18T00:03:55-0400] ── CHUNK 6: recap + tag + push ──
+[2026-05-18T00:03:55-0400]   recap written, all chunks green, ready to tag + push
