@@ -1577,9 +1577,10 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
             dispatch_registry.update_status(dispatch_id, "building")
             await emit_step(task_id, "Claude Code working…", status="active")
 
-            # Run claude -p in background. WorkSession.send() emits code_task
-            # events as it streams stdout (see work_mode.py).
-            full_response = await dispatch.send(prompt, task_id=task_id)
+            # Run claude -p in background. WorkSession.send() emits tool.*
+            # events as it streams stdout (see work_mode.py + claude_middleware.py
+            # — middleware extracts result.* cards via Haiku after completion).
+            full_response = await dispatch.send(prompt, task_id=task_id, anthropic_client=anthropic_client)
             await dispatch.stop()
 
             # Auto-open any localhost URLs from response
@@ -1675,7 +1676,7 @@ async def self_work_and_notify(session: WorkSession, prompt: str, ws):
     async with process_bus.task_context(f"Researching: {prompt[:60]}") as task_id:
         try:
             await emit_step(task_id, "Claude Code working…", status="active")
-            full_response = await session.send(prompt, task_id=task_id)
+            full_response = await session.send(prompt, task_id=task_id, anthropic_client=anthropic_client)
             log.info(f"Background work complete ({len(full_response)} chars)")
 
             # Summarize and speak

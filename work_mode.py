@@ -184,15 +184,20 @@ class WorkSession:
         self._status = "idle"
         log.info(f"Work mode started: {self._project_name} ({working_dir})")
 
-    async def send(self, user_text: str, task_id: str | None = None) -> str:
+    async def send(self, user_text: str, task_id: str | None = None,
+                   anthropic_client: Any = None) -> str:
         """Send a message to claude -p and get the full response.
 
         First message in a session: fresh claude -p
         Subsequent messages: claude -p --continue (resumes last session in dir)
 
-        If `task_id` is given, stdout is streamed line-by-line as code_task
-        events on the process bus so the process panel can render a live
-        terminal block while claude runs.
+        If `task_id` is given, stdout is streamed as tool.* events on the
+        process bus (plus fallback code_task for unparsed lines).
+
+        If both `task_id` AND `anthropic_client` are given, runs the
+        post-completion Haiku middleware to extract structured result cards
+        (web / product / location / image) from the response and tool
+        results — emits result.* events for the panel.
         """
         claude_path = shutil.which("claude")
         if not claude_path:
@@ -222,6 +227,7 @@ class WorkSession:
 
             collected_lines: list[str] = []
             assistant_text_parts: list[str] = []
+            tool_result_snippets: list[str] = []
 
             async def _drain_stdout():
                 """Read stream-json line-by-line. For each line:
@@ -242,15 +248,31 @@ class WorkSession:
                     # Try structured parse first.
                     events = parse_stream_line(decoded)
 
-                    # Extract assistant.text blocks as the canonical response.
+                    # Extract assistant.text blocks (canonical response) AND
+                    # user.tool_result snippets (middleware context).
                     try:
                         obj = json.loads(decoded)
-                        if isinstance(obj, dict) and obj.get("type") == "assistant":
-                            for blk in (obj.get("message") or {}).get("content", []) or []:
-                                if isinstance(blk, dict) and blk.get("type") == "text":
-                                    txt = blk.get("text", "")
-                                    if txt:
-                                        assistant_text_parts.append(txt)
+                        if isinstance(obj, dict):
+                            if obj.get("type") == "assistant":
+                                for blk in (obj.get("message") or {}).get("content", []) or []:
+                                    if isinstance(blk, dict) and blk.get("type") == "text":
+                                        txt = blk.get("text", "")
+                                        if txt:
+                                            assistant_text_parts.append(txt)
+                            elif obj.get("type") == "user":
+                                msg = obj.get("message") or {}
+                                content = msg.get("content")
+                                if isinstance(content, list):
+                                    for blk in content:
+                                        if isinstance(blk, dict) and blk.get("type") == "tool_result":
+                                            c = blk.get("content", "")
+                                            if isinstance(c, str) and c:
+                                                tool_result_snippets.append(c)
+                                            elif isinstance(c, list):
+                                                # tool_result can be a list of content blocks
+                                                for sub in c:
+                                                    if isinstance(sub, dict) and sub.get("type") == "text":
+                                                        tool_result_snippets.append(sub.get("text", ""))
                     except Exception:
                         pass
 
@@ -320,6 +342,39 @@ class WorkSession:
                 return f"Hit a problem, sir: {error}"
 
             log.info(f"Claude Code response for {self._project_name} ({len(response)} chars)")
+
+            # Emit the full response as a `result.markdown` panel event so the
+            # panel always has the canonical text — cards (if extracted) render
+            # above it as a richer UI layer. Belt-and-suspenders: markdown is
+            # the source of truth, cards are opportunistic.
+            if task_id and response and len(response) > 150:
+                try:
+                    await emit_tool_event(
+                        task_id,
+                        "result.markdown",
+                        "Claude response",
+                        detail=response[:300],
+                        payload={"markdown": response},
+                    )
+                except Exception:
+                    pass
+
+            # Post-completion middleware: extract structured result cards
+            # via Haiku. Fire-and-forget — never blocks the return path.
+            if task_id and anthropic_client and response:
+                try:
+                    import claude_middleware
+                    asyncio.create_task(
+                        claude_middleware.extract_and_emit(
+                            response_text=response,
+                            tool_result_snippets=tool_result_snippets,
+                            task_id=task_id,
+                            anthropic_client=anthropic_client,
+                        )
+                    )
+                except Exception as e:
+                    log.warning(f"middleware spawn failed: {e}")
+
             return response
 
         except Exception as e:

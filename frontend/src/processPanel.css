@@ -137,6 +137,34 @@
   color: rgba(70, 220, 255, 0.7);
 }
 
+.pp-pin {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--pp-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--pp-text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  margin-right: 4px;
+}
+.pp-pin:hover {
+  background: rgba(70, 220, 255, 0.1);
+  color: var(--pp-accent);
+  border-color: var(--pp-border-strong);
+}
+.pp-pin[aria-pressed="true"] {
+  background: rgba(70, 220, 255, 0.14);
+  color: var(--pp-accent);
+  border-color: var(--pp-border-strong);
+  box-shadow: 0 0 8px rgba(70, 220, 255, 0.3);
+}
+
 .pp-close {
   width: 22px;
   height: 22px;
@@ -447,6 +475,120 @@
 }
 .pp-event-tool_result     .pp-event-icon::before { content: "✓"; color: var(--pp-active); }
 .pp-event-tool_result .pp-event-title { color: var(--pp-accent); }
+
+/* --- Result cards (Haiku-middleware extracted) ------------------------ */
+
+.pp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  margin: 6px 0;
+  border: 1px solid var(--pp-border);
+  border-radius: 6px;
+  background: rgba(70, 220, 255, 0.04);
+  animation: pp-event-in 0.22s ease-out;
+}
+.pp-card:hover {
+  border-color: var(--pp-border-strong);
+  box-shadow: 0 0 14px rgba(70, 220, 255, 0.12);
+}
+
+.pp-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.pp-card-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pp-text);
+  line-height: 1.3;
+}
+.pp-card-price {
+  font-family: var(--pp-mono);
+  font-size: 12px;
+  color: var(--pp-active);
+  font-weight: 600;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--pp-active);
+  border-radius: 3px;
+}
+
+.pp-card-image {
+  display: block;
+  max-width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--pp-border);
+  cursor: zoom-in;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.pp-card-summary {
+  font-size: 12px;
+  color: var(--pp-text-dim);
+  line-height: 1.5;
+}
+
+.pp-card-address {
+  font-size: 11px;
+  color: var(--pp-text);
+  font-family: var(--pp-mono);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 6px 8px;
+  border-left: 2px solid var(--pp-accent);
+  border-radius: 2px;
+}
+
+.pp-card-link {
+  font-family: var(--pp-mono);
+  font-size: 11px;
+  color: var(--pp-accent);
+  text-decoration: none;
+  align-self: flex-start;
+  word-break: break-all;
+}
+.pp-card-link:hover { text-decoration: underline; }
+
+/* Markdown details (the "full response" expand) renders below cards. */
+.pp-card-md-details {
+  margin-top: 6px;
+  padding: 0;
+  background: transparent;
+  border: 1px dashed var(--pp-border);
+  border-radius: 4px;
+}
+.pp-card-md-details > summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--pp-text-dim);
+  user-select: none;
+}
+.pp-card-md-details[open] > summary {
+  border-bottom: 1px solid var(--pp-border);
+  color: var(--pp-accent);
+}
+.pp-card-md-pre {
+  margin: 0;
+  padding: 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: var(--pp-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(200, 230, 245, 0.85);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.25);
+}
 
 /* Lightbox for expanded screenshot */
 .pp-lightbox {

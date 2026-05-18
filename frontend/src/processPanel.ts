@@ -40,7 +40,13 @@ export type EventType =
   | "tool.grep"
   | "tool.task"
   | "tool.thinking"
-  | "tool.result";
+  | "tool.result"
+  // Haiku-middleware structured result cards
+  | "result.web"
+  | "result.product"
+  | "result.location"
+  | "result.image"
+  | "result.markdown";
 
 export interface ProcessEvent {
   id: string;
@@ -81,6 +87,11 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   let activeTaskCount = 0;
   let dismissTimer: number | undefined;
 
+  // Pin state — when true, auto-dismiss is suspended. Persisted in
+  // localStorage. Auto-sets true on first result.* card so users can review.
+  const PIN_KEY = "jarvis.processPanel.pinned";
+  let pinned = readPinned();
+
   // Drag state.
   let draggingFrom: { x: number; y: number; panelLeft: number; panelTop: number } | null = null;
 
@@ -90,6 +101,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       <div class="pp-handle" data-pp-handle>
         <div class="pp-handle-grip"></div>
         <div class="pp-title">Process</div>
+        <button class="pp-pin" data-pp-pin title="Pin (disable auto-dismiss)" aria-pressed="${pinned}">${pinned ? "◉" : "◌"}</button>
         <button class="pp-close" data-pp-close title="Close">×</button>
       </div>
       <div class="pp-stream" data-pp-stream></div>
@@ -99,6 +111,25 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   const handle = root.querySelector<HTMLElement>("[data-pp-handle]")!;
   const stream = root.querySelector<HTMLElement>("[data-pp-stream]")!;
   const closeBtn = root.querySelector<HTMLElement>("[data-pp-close]")!;
+  const pinBtn = root.querySelector<HTMLButtonElement>("[data-pp-pin]")!;
+
+  pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(); });
+
+  function readPinned(): boolean {
+    try { return localStorage.getItem(PIN_KEY) === "1"; } catch { return false; }
+  }
+  function writePinned(v: boolean) {
+    try { localStorage.setItem(PIN_KEY, v ? "1" : "0"); } catch {}
+  }
+  function setPinned(v: boolean) {
+    pinned = v;
+    pinBtn.textContent = v ? "◉" : "◌";
+    pinBtn.setAttribute("aria-pressed", String(v));
+    pinBtn.title = v ? "Unpin (allow auto-dismiss)" : "Pin (disable auto-dismiss)";
+    writePinned(v);
+    if (v) cancelDismiss();
+  }
+  function togglePin() { setPinned(!pinned); }
 
   restorePosition();
 
@@ -180,6 +211,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
 
   function scheduleDismiss() {
     cancelDismiss();
+    if (pinned) return;  // pin button held: never auto-dismiss
     dismissTimer = window.setTimeout(() => {
       closeAndClear();
     }, DISMISS_AFTER_DONE_MS);
@@ -212,6 +244,13 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     // First event of any kind shows the panel.
     show();
 
+    // Auto-pin on first result.* card so the user has time to read what
+    // the middleware extracted (cards default to staying pinned until
+    // manually dismissed; user can unpin to re-enable auto-dismiss).
+    if (!pinned && String(event.type).startsWith("result.")) {
+      setPinned(true);
+    }
+
     if (event.type === "task_start") {
       activeTaskCount++;
       renderEventRow(event);
@@ -241,6 +280,13 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   }
 
   function renderEventRow(event: ProcessEvent) {
+    // Haiku-middleware structured cards render via a dedicated path with
+    // richer layout (image, price, address, links) than the standard row.
+    if (String(event.type).startsWith("result.")) {
+      renderResultCard(event);
+      return;
+    }
+
     const row = document.createElement("div");
     // Convert "tool.file_read" → "tool_file_read" so the dot doesn't split
     // into two CSS class names.
@@ -303,6 +349,107 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
 
     // Newest at top.
     stream.insertBefore(row, stream.firstChild);
+  }
+
+  function renderResultCard(event: ProcessEvent) {
+    const kind = String(event.type).replace(/^result\./, "");  // web|product|location|image|markdown
+    const card = document.createElement("div");
+    card.className = `pp-card pp-card-${kind}`;
+    card.dataset.taskId = event.task_id;
+    card.dataset.eventId = event.id;
+
+    if (kind === "markdown") {
+      // Full markdown response as a collapsible details block. Renders below
+      // any structured cards because it's appended after them.
+      const md = (event.payload?.markdown as string) || event.detail || "";
+      const det = document.createElement("details");
+      det.className = "pp-card-md-details";
+      const sum = document.createElement("summary");
+      sum.textContent = "Full response";
+      det.appendChild(sum);
+      const pre = document.createElement("pre");
+      pre.className = "pp-card-md-pre";
+      pre.textContent = md;
+      det.appendChild(pre);
+      card.appendChild(det);
+      stream.appendChild(card);  // markdown goes BELOW cards (append, not prepend)
+      return;
+    }
+
+    const p = (event.payload || {}) as Record<string, unknown>;
+    const title = (p.title as string) || event.title;
+    const summary = (p.summary as string) || event.detail || "";
+    const sourceUrl = (p.source_url as string) || "";
+    const imageUrl = (p.image_url as string) || "";
+    const price = (p.price as string) || "";
+    const address = (p.address as string) || "";
+
+    // Header: title (+ price chip for product)
+    const head = document.createElement("div");
+    head.className = "pp-card-head";
+    const titleEl = document.createElement("div");
+    titleEl.className = "pp-card-title";
+    titleEl.textContent = title;
+    head.appendChild(titleEl);
+    if (price && kind === "product") {
+      const priceEl = document.createElement("div");
+      priceEl.className = "pp-card-price";
+      priceEl.textContent = price;
+      head.appendChild(priceEl);
+    }
+    card.appendChild(head);
+
+    // Image (product / image card)
+    if ((kind === "product" || kind === "image") && imageUrl) {
+      const img = document.createElement("img");
+      img.className = "pp-card-image";
+      img.src = imageUrl;
+      img.alt = title;
+      img.referrerPolicy = "no-referrer";
+      img.loading = "lazy";
+      img.addEventListener("click", () => openLightbox(imageUrl));
+      img.addEventListener("error", () => { img.style.display = "none"; });
+      card.appendChild(img);
+    }
+
+    // Summary
+    if (summary) {
+      const sum = document.createElement("div");
+      sum.className = "pp-card-summary";
+      sum.textContent = summary;
+      card.appendChild(sum);
+    }
+
+    // Address (location card) — text + Maps link (no static-map image:
+    // would need a map provider API key, not configured tonight).
+    if (kind === "location" && address) {
+      const addr = document.createElement("div");
+      addr.className = "pp-card-address";
+      addr.textContent = address;
+      card.appendChild(addr);
+      const mapsLink = document.createElement("a");
+      mapsLink.className = "pp-card-link";
+      mapsLink.href = `https://maps.apple.com/?q=${encodeURIComponent(address)}`;
+      mapsLink.target = "_blank";
+      mapsLink.rel = "noopener noreferrer";
+      mapsLink.textContent = "Open in Maps ↗";
+      card.appendChild(mapsLink);
+    }
+
+    // Source link (everyone except location)
+    if (sourceUrl && kind !== "location") {
+      const link = document.createElement("a");
+      link.className = "pp-card-link";
+      link.href = sourceUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      const display = sourceUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+      link.textContent = (display.length > 48 ? display.slice(0, 45) + "…" : display) + " ↗";
+      card.appendChild(link);
+    }
+
+    // Cards prepend (newest at top, above tool stream).
+    stream.insertBefore(card, stream.firstChild);
   }
 
   function appendCodeLine(event: ProcessEvent) {
