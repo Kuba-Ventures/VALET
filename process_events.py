@@ -121,6 +121,18 @@ class ProcessEventBus:
         ))
         try:
             yield task_id
+        except asyncio.CancelledError:
+            # User-initiated cancel (e.g. "stop" / "cancel" during research) —
+            # not an error. Still need to emit task_done so the frontend's
+            # active-task counter unwinds and auto-dismiss can fire.
+            await self.emit(Event(
+                type=EventType.TASK_DONE.value,
+                task_id=task_id,
+                title=title,
+                detail="cancelled",
+                status=EventStatus.DONE.value,
+            ))
+            raise
         except Exception as e:
             await self.emit(Event(
                 type=EventType.ERROR.value,

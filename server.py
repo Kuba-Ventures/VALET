@@ -3320,6 +3320,18 @@ Write an updated summary in 2-4 sentences capturing the key topics, decisions, a
 
 # -- WebSocket Voice Handler -----------------------------------------------
 
+# Substring-match allowlist used to abort a running long-task (e.g. native
+# research) when ambient transcripts otherwise interrupt the agent. See
+# docs/design_partner_tests.md → "Research mute test" for the live protocol.
+_RESEARCH_CANCEL_WORDS = ("cancel", "stop", "nevermind", "never mind")
+
+
+def _is_cancel_phrase(user_text: str) -> bool:
+    t = user_text.lower()
+    return any(w in t for w in _RESEARCH_CANCEL_WORDS)
+
+
+
 @app.websocket("/ws/voice")
 async def voice_handler(ws: WebSocket):
     """
@@ -3344,6 +3356,12 @@ async def voice_handler(ws: WebSocket):
     # Response cancellation — when new input arrives, cancel current response
     _current_response_id = 0
     _cancel_response = False
+
+    # Long-running native research task — set when an [ACTION:RESEARCH] is
+    # dispatched, cleared (.done()) when the task completes. Used by the
+    # transcript intercept below to suppress ambient speech and honor only
+    # the cancel-word allowlist while research is in flight.
+    active_research_task: Optional[asyncio.Task] = None
 
     # Audio collision prevention — track when user last spoke
     voice_state = {"last_user_time": 0.0}
@@ -3433,6 +3451,49 @@ async def voice_handler(ws: WebSocket):
 
             voice_state["last_user_time"] = time.time()
             log.info(f"User: {user_text}")
+
+            # Mute action routing while native research is in flight. Without
+            # this, ambient transcripts (TV, conversation) get dispatched to
+            # the LLM mid-research and Jarvis tries to "answer" them — which
+            # was the source of every "got lost during research" report.
+            # Only the cancel-word allowlist passes through; everything else
+            # is logged and dropped silently.
+            if active_research_task is not None and not active_research_task.done():
+                if _is_cancel_phrase(user_text):
+                    log.info(f"Research cancel triggered by transcript: {user_text!r}")
+                    active_research_task.cancel()
+                    try:
+                        await asyncio.wait_for(active_research_task, timeout=2.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+                    except Exception as e:
+                        log.warning(f"research cancel cleanup failed: {e}")
+                    active_research_task = None
+                    try:
+                        cancel_msg = "Cancelled, sir."
+                        cancel_audio = await synthesize_speech(cancel_msg)
+                        if cancel_audio:
+                            await ws.send_json({"type": "status", "state": "speaking"})
+                            await ws.send_json({
+                                "type": "audio",
+                                "data": base64.b64encode(cancel_audio).decode(),
+                                "text": cancel_msg,
+                            })
+                        await ws.send_json({"type": "status", "state": "idle"})
+                        log.info(f"JARVIS: {cancel_msg}")
+                    except Exception as e:
+                        log.warning(f"cancel-speech failed: {e}")
+                    continue
+                # Not a cancel phrase — log and drop. STT keeps running so
+                # the user can still issue a cancel, but no LLM/action call
+                # fires for this transcript.
+                log.info(f"Suppressed during research (no cancel keyword): {user_text!r}")
+                try:
+                    await ws.send_json({"type": "status", "state": "idle"})
+                except Exception:
+                    pass
+                continue
+
             await ws.send_json({"type": "status", "state": "thinking"})
 
             # If a pending alias offer is waiting (register-on-miss or remove-
@@ -3759,7 +3820,12 @@ async def voice_handler(ws: WebSocket):
                                     # See docs/research_routing_diagnosis.md.
                                     log.info("research dispatch: routing to native handler (target=%r)",
                                              embedded_action["target"][:160])
-                                    asyncio.create_task(
+                                    # Capture the task handle so the transcript
+                                    # intercept above can (a) suppress ambient
+                                    # transcripts during the long-running call
+                                    # and (b) honor cancel/stop/nevermind to
+                                    # abort it cleanly.
+                                    active_research_task = asyncio.create_task(
                                         _execute_native_research(embedded_action["target"], ws)
                                     )
                                 elif embedded_action["action"] == "open_terminal":
