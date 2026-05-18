@@ -589,11 +589,21 @@ async def ship_via_applescript(session: DesignSession, final_prompt: str) -> boo
 
 
 def get_ship_method() -> str:
-    """Read configured ship method. Default 'file'. Valid: 'file' | 'applescript'."""
+    """Read configured ship method. Default 'file'.
+
+    Valid: 'file' | 'applescript' | 'auto_paste'.
+
+    'auto_paste' (chunk 21) is the primary voice→Cursor path: pre-flight
+    checks Cursor is frontmost, then clipboard-pastes + presses Enter via
+    System Events. Pre-flight failure falls back to 'file' inside
+    _execute_ship_design. See docs/auto_paste_diagnosis.md (chunk 22) for
+    the bug history — the validator silently coerced unknown values for
+    one commit, masking the entire auto_paste path.
+    """
     try:
         from actions import _design_partner_config
         cfg = _design_partner_config()
         m = cfg.get("ship_method", "file")
-        return m if m in ("file", "applescript") else "file"
+        return m if m in ("file", "applescript", "auto_paste") else "file"
     except Exception:
         return "file"

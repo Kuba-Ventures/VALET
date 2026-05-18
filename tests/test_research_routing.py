@@ -431,6 +431,46 @@ def test_design_optin_fast_path():
     print("✓ Design opt-in fast-path: 4 cases route correctly; targets populated as expected")
 
 
+def test_get_ship_method_accepts_auto_paste():
+    """Chunk 22 → 23 regression. design_partner.get_ship_method() must
+    return 'auto_paste' verbatim when configured, not silently coerce to
+    'file'. Patches the cached config via sys.modules so we don't depend
+    on disk state and so this works even if config/design_partner.json
+    drifts later."""
+    import sys
+    import design_partner
+    import actions
+
+    # Stash the real cache, replace with our test fixture, restore in finally.
+    original_cache = getattr(actions, "_cached_config", None)
+    try:
+        # Force the cached config to the value we want to test.
+        actions._cached_config = {"ship_method": "auto_paste"}
+        assert design_partner.get_ship_method() == "auto_paste", (
+            "auto_paste must round-trip through get_ship_method intact — "
+            "the chunk-22 bug was a silent coerce to 'file'"
+        )
+
+        # Defensive: file and applescript still pass.
+        actions._cached_config = {"ship_method": "file"}
+        assert design_partner.get_ship_method() == "file"
+
+        actions._cached_config = {"ship_method": "applescript"}
+        assert design_partner.get_ship_method() == "applescript"
+
+        # Unknown values still defensively coerce to file.
+        actions._cached_config = {"ship_method": "nonsense"}
+        assert design_partner.get_ship_method() == "file"
+
+        # Missing key defaults to file.
+        actions._cached_config = {}
+        assert design_partner.get_ship_method() == "file"
+    finally:
+        actions._cached_config = original_cache
+
+    print("✓ get_ship_method accepts auto_paste (regression for chunk-22 bug)")
+
+
 def test_chunk_20_bug_long_design_opt_in_routes_correctly():
     """Regression — the exact 13-word transcript from logs/jarvis.err.log
     at 17:02:22 (chunk-20 routing bug). Before chunk 21 this fell off the
@@ -743,6 +783,7 @@ ALL_TESTS = [
     test_system_prompt_handles_show_me_how_to_build_carveout,
     test_system_prompt_handles_ambiguous_create_a_project,
     test_design_optin_fast_path,
+    test_get_ship_method_accepts_auto_paste,
     test_chunk_20_bug_long_design_opt_in_routes_correctly,
     test_dictation_routing_cases,
     test_dictation_precedence_over_design,
