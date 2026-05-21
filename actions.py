@@ -299,6 +299,25 @@ async def type_into_app(target: str, press_enter: bool = False, task_id: str | N
             await emit_error(task_id, "Type: missing text")
         return {"success": False, "confirmation": "I didn't catch what to type, sir."}
 
+    # Defensive reroute: when the LLM picks "Claude Code" / "Claude" as the
+    # target app, that's not a macOS app — it's a CLI running inside Cursor's
+    # integrated terminal. AppleScript `tell application "Claude Code"` fails
+    # silently and the text vanishes. Redirect to paste_into_cursor_claude
+    # which knows how to land it in the right Cursor window.
+    if app.lower() in ("claude code", "claude", "cursor"):
+        log.info(
+            "type_into_app: rerouting target=%r → paste_into_cursor_claude (text_len=%d)",
+            app, len(text),
+        )
+        result = await paste_into_cursor_claude(text, task_id=task_id)
+        if result.get("success"):
+            return {"success": True, "confirmation": "Sent to Claude Code, sir."}
+        reason = result.get("reason", "unknown")
+        return {
+            "success": False,
+            "confirmation": f"Couldn't reach the Claude pane, sir ({reason}).",
+        }
+
     # Activate the target app first so keystrokes land in the right place.
     if app:
         activate_script = f'tell application "{app}" to activate'

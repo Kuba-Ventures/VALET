@@ -297,6 +297,11 @@ DESIGN-PARTNER MODE (Phase 3):
 - [ACTION:SCRAP_DESIGN] — discard the active design. Returns state to IDLE. ONLY emit when a session is active. Use for "scrap this", "start over".
 - [ACTION:SHOW_DRAFT] — speak the assembled draft so far. ONLY emit when a session is active.
 - [ACTION:START_DICTATION] — engage dictation mode: the next user utterance is captured verbatim and pasted into Cursor's claude terminal after confirmation. ONLY emit when the user explicitly says one of: "dictate to claude", "tell claude directly", "send claude a message", "dictation mode", "skip design". Never infer dictation intent from build/feature requests — direct build requests go to PROMPT_PROJECT.
+- [ACTION:DISPATCH_TO_AGENT] agent_name ||| task_description — route a task directly to a named Claude Code sub-agent (general-purpose, Plan, Explore, debugger, docs-right, kuba-vault, style-steward, claude-code-guide, code-reviewer, security-review, etc.). Composes a dispatch-header prompt and pastes into the active Cursor claude pane. Use whenever the user names a sub-agent OR clearly asks to use one, even if they omit the literal word "agent". Examples:
+  "use the style-steward to clean up the m-dashes" → [ACTION:DISPATCH_TO_AGENT] style-steward ||| clean up the m-dashes
+  "ask debugger to look at the failing tests" → [ACTION:DISPATCH_TO_AGENT] debugger ||| look at the failing tests
+  "have Plan design the new auth flow" → [ACTION:DISPATCH_TO_AGENT] Plan ||| design the new auth flow
+  NEVER use [ACTION:SEND] with target "Claude Code" / "Claude" — that's a CLI, not a macOS app; the keystrokes go nowhere. Use DISPATCH_TO_AGENT for anything destined for the Claude Code session.
 - [ACTION:MERGE_BRANCH] — run smoke_test.sh then merge the current feature/* branch into main. ONLY emit when the user explicitly says "merge it" or similar and we're on a feature branch. Never auto-emit.
 - [ACTION:RESTART_SELF] — spawn the detached restarter (scripts/restart.sh). Use ONLY for "restart yourself" / "restart jarvis" / "kick yourself". Acknowledge before restart kills the current process.
 - [ACTION:LIST_PROJECTS] — read the authoritative list of projects from ~/Code/, ~/projects/, and the alias table. Emit this tag (no target) whenever the user asks what projects exist and you didn't fast-path it. Output gets spoken to the user.
@@ -904,7 +909,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2887,6 +2892,15 @@ async def generate_response(
     if last_response:
         dynamic_system += f'\n\nYOUR LAST RESPONSE (do not repeat this):\n"{last_response[:150]}"'
 
+    # Runtime self-introspection — live wake phrases, agent registry, etc.
+    # Lets JARVIS answer "what are your wake phrases?" without hallucinating
+    # (we used to say "only jarvis, sir" because the LLM had no idea).
+    try:
+        import self_knowledge
+        dynamic_system += "\n\n" + self_knowledge.get_self_knowledge_block()
+    except Exception as _e:
+        log.debug(f"self_knowledge injection failed: {_e}")
+
     # Use conversation history — keep the last 20 messages for context
     # (older conversation is captured in session_summary)
     messages = conversation_history[-20:]
@@ -4603,6 +4617,16 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_type(embedded_action["target"], press_enter=False))
                                 elif embedded_action["action"] == "send":
                                     asyncio.create_task(_execute_type(embedded_action["target"], press_enter=True))
+                                elif embedded_action["action"] == "dispatch_to_agent":
+                                    # LLM-emitted dispatch: target is "<agent> ||| <task>".
+                                    raw = embedded_action.get("target", "")
+                                    if "|||" in raw:
+                                        agent_name, _, task = raw.partition("|||")
+                                        asyncio.create_task(_execute_dispatch_to_agent(
+                                            ws, agent_name.strip(), task.strip(),
+                                        ))
+                                    else:
+                                        log.warning(f"dispatch_to_agent missing |||: {raw[:120]!r}")
                                 elif embedded_action["action"] == "create_event":
                                     asyncio.create_task(_execute_create_event(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "cancel_event":
