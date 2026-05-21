@@ -1391,6 +1391,84 @@ async def _execute_cancel_dictation(ws):
     await _speak(ws, "Cancelled, sir.")
 
 
+async def _execute_dispatch_to_agent(ws, agent_raw: str, task: str):
+    """Voice fast-path for "use the X agent to <task>".
+
+    Normalizes the loosely-recognized agent name against the live agent
+    list (so "general purpose" matches "general-purpose"). On hit, composes
+    the dispatch-header + task and pastes it into the active Cursor window.
+    On miss, lists available agents back to the user so they can retry.
+    """
+    import agents
+    available = agents.list_agents(Path(__file__).parent)
+    norm = agent_raw.lower().replace(" ", "-").replace("_", "-")
+
+    matched: Optional[dict] = None
+    # Pass 1: exact normalized match
+    for a in available:
+        if a["name"].lower() == norm:
+            matched = a
+            break
+    # Pass 2: case-insensitive raw match (handles "Plan" said as "plan")
+    if not matched:
+        for a in available:
+            if a["name"].lower() == agent_raw.lower():
+                matched = a
+                break
+    # Pass 3: substring (so "explore" matches "Explore")
+    if not matched:
+        for a in available:
+            if norm in a["name"].lower() or a["name"].lower() in norm:
+                matched = a
+                break
+
+    if not matched:
+        names = ", ".join(a["name"] for a in available[:6])
+        await _speak(ws, f"I don't know that agent, sir. Try one of: {names}.")
+        return
+
+    prompt = agents.format_dispatch_header(matched["name"]) + task
+    log.info(
+        "_execute_dispatch_to_agent: agent=%r task_len=%d → pasting",
+        matched["name"], len(task),
+    )
+    from actions import paste_into_cursor_claude
+    result = await paste_into_cursor_claude(prompt)
+    if result.get("success"):
+        await _speak(ws, f"Dispatched to the {matched['name']} agent, sir.")
+    else:
+        reason = result.get("reason", "unknown")
+        await _speak(ws, f"Couldn't reach Cursor to dispatch, sir — {reason}.")
+
+
+def _resolve_ship_prompt(session) -> tuple[str, Optional[str]]:
+    """Compose the final ship prompt + the agent it should dispatch to.
+
+    Reads `session.agent` (explicit pick from the design panel dropdown or
+    a voice "use the X agent" command). If unset, runs the keyword-based
+    auto-detect on the draft text — falls back to no agent prefix on miss.
+
+    Returns (final_prompt_with_optional_header, agent_name_or_None) so
+    callers can log which agent fired.
+    """
+    import design_partner, agents
+    final = design_partner.compose_final_prompt(session)
+
+    agent_name = (session.agent or "").strip() or None
+    if not agent_name:
+        try:
+            available = agents.list_agents(Path(__file__).parent)
+            agent_name = agents.auto_detect_agent(final, available)
+        except Exception as e:
+            log.debug(f"_resolve_ship_prompt: auto_detect_agent failed: {e}")
+            agent_name = None
+
+    if agent_name:
+        final = agents.format_dispatch_header(agent_name) + final
+
+    return final, agent_name
+
+
 async def _execute_ship_design(ws):
     """Phase 4 — DESIGNING → BUILDING. Compose final prompt + hand off.
 
@@ -1431,8 +1509,11 @@ async def _execute_ship_design(ws):
     # project is the formal "target".
     if not session.has_target:
         from actions import paste_into_cursor_claude
-        final_prompt = design_partner.compose_final_prompt(session)
-        log.info("_execute_ship_design: no-target paste, prompt_len=%d", len(final_prompt))
+        final_prompt, dispatch_agent = _resolve_ship_prompt(session)
+        log.info(
+            "_execute_ship_design: no-target paste, prompt_len=%d, agent=%r",
+            len(final_prompt), dispatch_agent,
+        )
         # No target selected → no window targeting; paste lands in whichever
         # Cursor window is currently active.
         result = await paste_into_cursor_claude(final_prompt)
@@ -1467,7 +1548,8 @@ async def _execute_ship_design(ws):
         )
         return
 
-    final_prompt = design_partner.compose_final_prompt(session)
+    final_prompt, dispatch_agent = _resolve_ship_prompt(session)
+    log.info("_execute_ship_design: with-target ship, agent=%r", dispatch_agent)
     method = design_partner.get_ship_method()
 
     if method == "auto_paste":
@@ -1638,7 +1720,8 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
     # directly into the matching Cursor window so the user can see Claude
     # Code pick it up live. Falls back to file-ship if the paste fails (so
     # the prompt isn't lost — they can copy from .jarvis/inbox/ manually).
-    final_prompt = design_partner.compose_final_prompt(session)
+    final_prompt, dispatch_agent = _resolve_ship_prompt(session)
+    log.info("_handle_self_mod_confirm: composing ship, agent=%r", dispatch_agent)
     from actions import paste_into_cursor_claude
     paste_result = await paste_into_cursor_claude(
         final_prompt,
@@ -3178,6 +3261,19 @@ async def api_cancel_task(task_id: str):
     return {"task_id": task_id, "status": "cancelled"}
 
 
+@app.get("/api/agents")
+async def api_list_agents():
+    """All Claude Code sub-agents JARVIS can dispatch to.
+
+    Sourced from <project>/.claude/agents/*.md, ~/.claude/agents/*.md, and
+    a builtin list. The frontend's design-panel agent dropdown reads this;
+    the voice "use the X agent" fast-path resolves names against it too.
+    """
+    import agents
+    project_path = Path(__file__).parent
+    return {"agents": agents.list_agents(project_path)}
+
+
 @app.get("/api/projects")
 async def api_list_projects():
     """All project directories under configured roots, plus alias entries.
@@ -3279,6 +3375,20 @@ _REGISTER_PROJECT_PATTERNS = [
         _action_re.IGNORECASE,
     ),
 ]
+
+# Dispatch-to-agent intent — "use the explore agent to find X" / "ask the
+# plan agent to design Y" / "have the debugger agent look at Z". Captures
+# the agent name (loose — STT may flatten hyphens to spaces) and the task.
+# The action handler normalizes the name and matches against the live
+# /api/agents result, so the user can say "general purpose agent" or
+# "general-purpose agent" interchangeably.
+_AGENT_DISPATCH_PATTERN = _action_re.compile(
+    r'^\s*(?:use|ask|have|tell)\s+the\s+'
+    r'(?P<agent>[\w\- ]+?)\s+(?:sub[-\s]?)?agent\s+'
+    r'(?:to\s+|for\s+|on\s+)?'
+    r'(?P<task>.+?)\s*\.?\s*$',
+    _action_re.IGNORECASE,
+)
 
 # Start-design intent — "let's design X" / "design a Y" / "spec X" / "plan a Z".
 # Captures the topic so we can spawn a session with it immediately.
@@ -3418,6 +3528,17 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
             return {"action": "start_design", "target": topic}
     if any(p in t for p in _DESIGN_OPTIN_PHRASES):
         return {"action": "start_design", "target": ""}
+
+    # ── (2.5) Sub-agent dispatch — exempt from word cap because real
+    # agent-dispatch utterances often run long ("use the explore agent to
+    # find every place that imports auth_helpers"). Routes to
+    # _execute_dispatch_to_agent which composes + pastes.
+    am = _AGENT_DISPATCH_PATTERN.match(text.strip())
+    if am:
+        agent_raw = am.group("agent").strip()
+        task = am.group("task").strip()
+        if agent_raw and task:
+            return {"action": "dispatch_to_agent", "agent": agent_raw, "task": task}
 
     # ── (3) Word-count gate for everything else.
     if len(words) > 12:
@@ -3957,6 +4078,26 @@ async def voice_handler(ws: WebSocket):
                     await ws.send_json({"type": "text", "text": response_text})
                 continue
 
+            # ── Manual agent attach for the active design session.
+            # Sent by the design panel's agent dropdown. Empty string / "auto"
+            # means let the ship handler auto-detect from draft content via
+            # agents.auto_detect_agent.
+            if msg.get("type") == "set_design_agent":
+                agent_name = (msg.get("agent") or "").strip()
+                if agent_name.lower() == "auto":
+                    agent_name = ""
+                try:
+                    import design_partner
+                    session = design_partner.get_for_ws(ws)
+                    if session is None:
+                        continue
+                    session.agent = agent_name or None
+                    await session.emit_state()
+                    log.info(f"set_design_agent: session={session.id} agent={agent_name!r}")
+                except Exception as e:
+                    log.error(f"set_design_agent failed: {e}")
+                continue
+
             # ── Manual target attach for the active design session.
             # Sent by the design panel's project dropdown so the user can
             # bypass voice project-resolution (which mishears hyphens,
@@ -4312,6 +4453,13 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "ship_design":
                             response_text = ""
                             asyncio.create_task(_execute_ship_design(ws))
+                        elif action["action"] == "dispatch_to_agent":
+                            response_text = ""
+                            asyncio.create_task(_execute_dispatch_to_agent(
+                                ws,
+                                action.get("agent", ""),
+                                action.get("task", ""),
+                            ))
                         elif action["action"] == "scrap_design":
                             response_text = ""
                             asyncio.create_task(_execute_scrap_design(ws))

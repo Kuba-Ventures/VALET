@@ -55,11 +55,18 @@ export interface DesignPanelHandle {
   onScrapClick(handler: () => void): void;
   onMergeClick(handler: () => void): void;
   onTargetSelect(handler: (path: string) => void): void;
+  onAgentSelect(handler: (agent: string) => void): void;
 }
 
 interface ProjectEntry {
   name: string;
   path: string;
+  source?: string;
+}
+
+interface AgentEntry {
+  name: string;
+  description: string;
   source?: string;
 }
 
@@ -76,7 +83,9 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   let scrapHandler: (() => void) | null = null;
   let mergeHandler: (() => void) | null = null;
   let targetSelectHandler: ((path: string) => void) | null = null;
+  let agentSelectHandler: ((agent: string) => void) | null = null;
   let projectsLoaded = false;
+  let agentsLoaded = false;
   let draggingFrom: { x: number; y: number; panelLeft: number; panelTop: number } | null = null;
 
   const root = ensureRootContainer(rootId);
@@ -121,6 +130,12 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
           <span class="dp-target-branch" data-dp-target-branch></span>
           <button class="dp-target-refresh" data-dp-target-refresh title="Re-scan projects">↻</button>
         </div>
+        <div class="dp-target" data-dp-agent-row>
+          <span class="dp-target-label">Agent</span>
+          <select class="dp-target-select" data-dp-agent-select>
+            <option value="" data-default>(auto — pick from draft content)</option>
+          </select>
+        </div>
         <div class="dp-actions">
           <button class="dp-btn dp-btn-scrap" data-dp-scrap>Scrap</button>
           <button class="dp-btn dp-btn-ship"  data-dp-ship title="Ship the draft to Cursor's claude terminal">Ship to Claude Code</button>
@@ -129,6 +144,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     </div>
   `;
 
+  const frameEl       = root.querySelector<HTMLElement>(".dp-frame")!;
   const topicEl       = root.querySelector<HTMLElement>("[data-dp-topic]")!;
   const badgeEl       = root.querySelector<HTMLElement>("[data-dp-badge]")!;
   const timelineEl    = root.querySelector<HTMLElement>("[data-dp-timeline]")!;
@@ -141,6 +157,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   const targetSelectEl = root.querySelector<HTMLSelectElement>("[data-dp-target-select]")!;
   const targetBranchEl = root.querySelector<HTMLElement>("[data-dp-target-branch]")!;
   const targetRefreshBtn = root.querySelector<HTMLButtonElement>("[data-dp-target-refresh]")!;
+  const agentSelectEl  = root.querySelector<HTMLSelectElement>("[data-dp-agent-select]")!;
   const buildTopicEl   = root.querySelector<HTMLElement>("[data-dp-build-topic]")!;
   const buildBranchEl  = root.querySelector<HTMLElement>("[data-dp-build-branch]")!;
   const buildScrapBtn  = root.querySelector<HTMLButtonElement>("[data-dp-build-scrap]")!;
@@ -160,6 +177,40 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     projectsLoaded = false;
     loadProjects();
   });
+  agentSelectEl.addEventListener("change", () => {
+    if (agentSelectHandler) agentSelectHandler(agentSelectEl.value);
+  });
+
+  async function loadAgents() {
+    try {
+      const res = await fetch("/api/agents");
+      const data = await res.json();
+      const list: AgentEntry[] = data.agents || [];
+      const prev = agentSelectEl.value;
+      const defaultOpt = agentSelectEl.querySelector<HTMLOptionElement>("option[data-default]");
+      agentSelectEl.innerHTML = "";
+      if (defaultOpt) agentSelectEl.appendChild(defaultOpt);
+      // Sort: project-local > user > builtin; alphabetical within source.
+      const order: Record<string, number> = { project: 0, user: 1, builtin: 2 };
+      list.sort((a, b) => {
+        const oa = order[a.source ?? "builtin"] ?? 9;
+        const ob = order[b.source ?? "builtin"] ?? 9;
+        if (oa !== ob) return oa - ob;
+        return a.name.localeCompare(b.name);
+      });
+      for (const a of list) {
+        const opt = document.createElement("option");
+        opt.value = a.name;
+        opt.textContent = a.name;
+        opt.title = a.description;
+        agentSelectEl.appendChild(opt);
+      }
+      if (prev) agentSelectEl.value = prev;
+      agentsLoaded = true;
+    } catch (err) {
+      console.warn("[designPanel] /api/agents failed", err);
+    }
+  }
 
   async function loadProjects() {
     try {
@@ -248,8 +299,9 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
 
   function show() {
     root.classList.add("visible");
-    // Lazy-load the project list the first time the panel becomes visible.
+    // Lazy-load project + agent lists the first time the panel becomes visible.
     if (!projectsLoaded) loadProjects();
+    if (!agentsLoaded) loadAgents();
   }
   function close() {
     root.classList.remove("visible");
@@ -270,8 +322,10 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     // Switch the panel between design layout (timeline + draft + target +
     // ship/scrap) and build layout (compact status + merge/scrap). The
     // building class is the single source of truth for which DOM children
-    // are visible — see designPanel.css `.dp-frame.building-mode`.
-    root.classList.toggle("building-mode", state === "BUILDING");
+    // are visible — see designPanel.css `.dp-frame.building-mode`. Toggled
+    // on the inner .dp-frame, NOT on #design-panel-root, so the CSS
+    // selector matches.
+    frameEl.classList.toggle("building-mode", state === "BUILDING");
   }
 
   function setTarget(_name: string, branch: string, hasTarget: boolean, path: string = "") {
@@ -355,6 +409,21 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
       const projectPath = (event.payload.project_path as string) || "";
       const branch = (event.payload.git_branch as string) || "";
       setTarget(projectName, branch, hasTarget, projectPath);
+      // Reflect the session's current agent pick in the dropdown so refreshing
+      // or switching tabs doesn't desync. Empty string = "(auto)".
+      const sessionAgent = (event.payload.agent as string) || "";
+      if (agentSelectEl.value !== sessionAgent) {
+        // If the agent isn't in the dropdown yet (race with /api/agents),
+        // add it on the fly so the value sticks.
+        const has = Array.from(agentSelectEl.options).some((o) => o.value === sessionAgent);
+        if (!has && sessionAgent) {
+          const opt = document.createElement("option");
+          opt.value = sessionAgent;
+          opt.textContent = sessionAgent;
+          agentSelectEl.appendChild(opt);
+        }
+        agentSelectEl.value = sessionAgent;
+      }
       // Populate the build view with the same context the design header
       // shows. After ship-it, the panel flips into building mode and this
       // is the info the user needs (topic + which branch is live).
@@ -397,6 +466,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     onScrapClick: (h) => { scrapHandler = h; },
     onMergeClick: (h) => { mergeHandler = h; },
     onTargetSelect: (h) => { targetSelectHandler = h; },
+    onAgentSelect: (h) => { agentSelectHandler = h; },
   };
 }
 

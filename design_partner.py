@@ -240,6 +240,11 @@ class DesignSession:
     feature_branch: Optional[str] = None
     pre_build_sha: Optional[str] = None
 
+    # Sub-agent dispatch — name of the Claude Code agent the ship-it prompt
+    # should route to. None / "" means no explicit pick (or "auto" — server
+    # then runs agents.auto_detect_agent at ship time).
+    agent: Optional[str] = None
+
     @property
     def project_name(self) -> str:
         return self.project_path.name if self.project_path else ""
@@ -291,6 +296,7 @@ class DesignSession:
                 "project_path": str(self.project_path) if self.project_path else "",
                 "has_target": self.has_target,
                 "git_branch": self.git_branch or "",
+                "agent": self.agent or "",
             },
         )
 

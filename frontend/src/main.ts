@@ -101,6 +101,9 @@ designPanel.onMergeClick(() => {
 designPanel.onTargetSelect((path) => {
   socket.send({ type: "set_design_target", path });
 });
+designPanel.onAgentSelect((agent) => {
+  socket.send({ type: "set_design_agent", agent });
+});
 
 // Reflect WS connection health in the central ERROR badge.
 socket.onConnectionChange((isConnected) => {
