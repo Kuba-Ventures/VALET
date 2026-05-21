@@ -205,10 +205,28 @@ class DraftPrompt:
 # DesignSession
 # ---------------------------------------------------------------------------
 
+def _git_branch_for(path: Path) -> Optional[str]:
+    """Read the current branch name from a project's .git/HEAD. Best-effort.
+
+    Returns None if no .git/HEAD or unparseable; short SHA for detached HEAD.
+    Cheap — single file read, no subprocess.
+    """
+    try:
+        head_file = path / ".git" / "HEAD"
+        if not head_file.exists():
+            return None
+        content = head_file.read_text().strip()
+        if content.startswith("ref: refs/heads/"):
+            return content.replace("ref: refs/heads/", "")
+        return content[:8]  # detached HEAD
+    except Exception:
+        return None
+
+
 @dataclass
 class DesignSession:
     id: str
-    project_path: Path
+    project_path: Optional[Path]                       # None when no project is open
     topic: str
     ws: Any                                            # WebSocket — used to emit design events
     state: SessionState = "DESIGNING"
@@ -217,6 +235,22 @@ class DesignSession:
     ready_to_ship: bool = False
     self_mod: bool = False
     started_at: float = field(default_factory=time.time)
+    # Phase 5 self-mod metadata — populated after the approval gate creates
+    # the feature branch. None on non-self-mod sessions.
+    feature_branch: Optional[str] = None
+    pre_build_sha: Optional[str] = None
+
+    @property
+    def project_name(self) -> str:
+        return self.project_path.name if self.project_path else ""
+
+    @property
+    def has_target(self) -> bool:
+        return self.project_path is not None
+
+    @property
+    def git_branch(self) -> Optional[str]:
+        return _git_branch_for(self.project_path) if self.project_path else None
 
     async def emit(self, event_type: str, title: str = "", detail: str = "",
                    status: str = "active", payload: Optional[dict] = None) -> None:
@@ -236,7 +270,12 @@ class DesignSession:
             log.warning(f"design_event send failed: {e}")
 
     async def emit_state(self) -> None:
-        """Push current state + draft + ready_to_ship to the panel."""
+        """Push current state + draft + target + ready_to_ship to the panel.
+
+        Includes project_name / project_path / git_branch so the panel can
+        render the ship target row from the same source of truth as the
+        Phase 4 ship-it handoff (they read the same `session.project_path`).
+        """
         await self.emit(
             "design.state_changed",
             title=self.state,
@@ -248,6 +287,10 @@ class DesignSession:
                 "self_mod": self.self_mod,
                 "draft_markdown": self.draft.render_markdown(),
                 "draft": asdict(self.draft),
+                "project_name": self.project_name,
+                "project_path": str(self.project_path) if self.project_path else "",
+                "has_target": self.has_target,
+                "git_branch": self.git_branch or "",
             },
         )
 
@@ -256,13 +299,27 @@ class DesignSession:
 
         Calls Opus with forced design_turn tool-use, applies the returned
         patch to the running draft, emits timeline events to the panel.
-        """
-        # Build system prompt: static text + project-specific warm context + draft snapshot.
-        from project_context import get as get_warm
-        warm = get_warm(self.project_path)
-        warm_block = warm.summary_for_prompt() if warm else f"# Project: {self.project_path.name}\n(no warm context loaded)"
 
-        system = _DESIGN_SYSTEM_PROMPT.replace("{project_name}", self.project_path.name)
+        If project_path is None (no project open at session start), Opus
+        designs abstractly — useful for sketching before assigning a target,
+        but the user must open a project before ship-it succeeds.
+        """
+        from project_context import get as get_warm
+        if self.project_path is None:
+            warm_block = (
+                "# Project: (none)\n"
+                "No project is currently open. Design abstractly. The user must "
+                "open a project before shipping; their ship button is disabled "
+                "until then. Prefer concrete file names/paths from prior project "
+                "conventions only when the user names a specific project."
+            )
+            project_token = "(no project yet)"
+        else:
+            warm = get_warm(self.project_path)
+            warm_block = warm.summary_for_prompt() if warm else f"# Project: {self.project_path.name}\n(no warm context loaded)"
+            project_token = self.project_path.name
+
+        system = _DESIGN_SYSTEM_PROMPT.replace("{project_name}", project_token)
         system += "\n\n# WARM CONTEXT\n" + warm_block
         system += f"\n\n# CURRENT DRAFT\n{self.draft.render_markdown()}"
 
@@ -271,7 +328,14 @@ class DesignSession:
 
         try:
             response = await anthropic_client.messages.create(
-                model="claude-opus-4-7",
+                # Temporary: Sonnet 4.6 while Opus 4.7 is returning 529
+                # Overloaded (2026-05-18 Anthropic-side incident, see logs
+                # around 18:00-18:04). Flip back to claude-opus-4-7 once
+                # Opus recovers; Sonnet is fine as the design-partner
+                # model — same skill family, slightly lower capability
+                # for nuanced product reasoning but more than adequate
+                # for the question/draft loop.
+                model="claude-sonnet-4-6",
                 max_tokens=2000,
                 system=system,
                 tools=[_DESIGN_TOOL],
@@ -373,16 +437,17 @@ def get_for_ws(ws) -> Optional[DesignSession]:
     return _active.get(id(ws))
 
 
-def start_for_ws(ws, project_path: Path, topic: str, self_mod: bool = False) -> DesignSession:
+def start_for_ws(ws, project_path: Optional[Path], topic: str, self_mod: bool = False) -> DesignSession:
     """Create + register a fresh design session for this WebSocket.
 
-    Stops any prior session on the same WS (rare — would mean "let's design Y"
-    while already in DESIGNING for X without a scrap/ship in between).
+    `project_path` may be None when no project is currently open; the session
+    starts anyway in "no target" mode (ship disabled, abstract design).
+    Stops any prior session on the same WS.
     """
     stop_for_ws(ws)
     session = DesignSession(
         id=str(uuid.uuid4())[:8],
-        project_path=Path(project_path),
+        project_path=Path(project_path) if project_path else None,
         topic=topic,
         ws=ws,
         self_mod=self_mod,
@@ -399,24 +464,153 @@ def stop_for_ws(ws) -> None:
 # SQLite persistence (write-only audit trail for shipped/scrapped sessions).
 # ---------------------------------------------------------------------------
 
-def persist(session: DesignSession, status: str, final_prompt: str = "") -> None:
+def persist(session: DesignSession, status: str, final_prompt: str = "",
+            ship_method: str = "", inbox_path: str = "") -> None:
     """Write a design_sessions row. Idempotent via INSERT OR REPLACE on session id."""
     from memory import _get_db
     conn = _get_db()
     conn.execute(
         """INSERT OR REPLACE INTO design_sessions
-           (id, topic, project_path, started_at, finished_at, final_prompt, status, self_mod)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (id, topic, project_path, started_at, finished_at, final_prompt, status, self_mod, ship_method, inbox_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session.id,
             session.topic,
-            str(session.project_path),
+            str(session.project_path) if session.project_path else "",
             session.started_at,
             time.time(),
             final_prompt,
             status,
             int(session.self_mod),
+            ship_method,
+            inbox_path,
         ),
     )
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — ship-it handoff
+# ---------------------------------------------------------------------------
+
+def compose_final_prompt(session: DesignSession) -> str:
+    """Assemble the prompt to hand to Claude Code.
+
+    Order (deliberate — matches what the Design Panel's draft pane has been
+    showing, so nothing in the shipped prompt surprises the user):
+
+      1. ## Task: <topic>
+      2. The DraftPrompt body (goal/context/constraints/acceptance/files/Qs).
+      3. ## Project warm context — from project_context.summary_for_prompt().
+      4. ## Surfaced files — explicit paths the user surfaced during design,
+         resolved to absolute paths under project_path when possible.
+    """
+    from project_context import get as get_warm
+
+    parts: list[str] = [f"## Task: {session.topic}", ""]
+    parts.append(session.draft.render_markdown())
+
+    if session.project_path:
+        warm = get_warm(session.project_path)
+        if warm:
+            parts.append("\n## Project warm context\n")
+            parts.append(warm.summary_for_prompt())
+
+    if session.draft.surfaced_files and session.project_path:
+        parts.append("\n## Surfaced file paths (absolute)\n")
+        for f in session.draft.surfaced_files:
+            p = Path(f)
+            if not p.is_absolute() and session.project_path:
+                p = session.project_path / f
+            parts.append(f"- `{p}`")
+
+    return "\n".join(parts).strip() + "\n"
+
+
+def ship_via_file(session: DesignSession, final_prompt: str) -> Path:
+    """Method A — write the composed prompt to <project>/.jarvis/inbox/<id>.md.
+
+    Returns the resolved file path. Caller is expected to surface the path
+    via voice + panel ("Prompt staged at … — paste into Cursor's claude
+    terminal to ship."). Safe, deterministic, no AppleScript fragility.
+    """
+    if not session.project_path:
+        raise ValueError("ship_via_file: session has no project_path")
+
+    inbox = session.project_path / ".jarvis" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    out = inbox / f"{session.id}.md"
+    header = (
+        f"<!-- JARVIS Design Session {session.id} — {session.topic}\n"
+        f"     Shipped at {time.strftime('%Y-%m-%d %H:%M:%S')} via ship_method=file\n"
+        f"     Paste this file's body into Cursor's claude terminal to dispatch. -->\n\n"
+    )
+    out.write_text(header + final_prompt)
+    log.info(f"ship_via_file: wrote {out}")
+    return out
+
+
+async def ship_via_applescript(session: DesignSession, final_prompt: str) -> bool:
+    """Method B — clipboard-paste into Cursor's frontmost terminal pane.
+
+    Brittle by design: assumes the user has focus on Cursor's claude terminal
+    when JARVIS triggers the paste. Caller is expected to have asked for
+    explicit voice confirmation ('ship it for real') before reaching here.
+
+    Returns True on AppleScript success, False otherwise. Does NOT verify
+    that the prompt actually landed in the right pane (Cursor's Electron
+    DOM isn't introspectable from System Events).
+    """
+    import asyncio as _asyncio
+    # Place on clipboard via pbcopy (handles newlines + quoting cleanly).
+    proc = await _asyncio.create_subprocess_exec(
+        "pbcopy",
+        stdin=_asyncio.subprocess.PIPE,
+    )
+    await proc.communicate(input=final_prompt.encode())
+    if proc.returncode != 0:
+        log.warning("ship_via_applescript: pbcopy failed")
+        return False
+
+    # Bring Cursor to front, paste, send return.
+    script = '''
+    tell application "Cursor" to activate
+    delay 0.6
+    tell application "System Events"
+        keystroke "v" using command down
+        delay 0.2
+        key code 36
+    end tell
+    '''
+    proc = await _asyncio.create_subprocess_exec(
+        "osascript", "-e", script,
+        stdout=_asyncio.subprocess.PIPE,
+        stderr=_asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        log.warning(f"ship_via_applescript: osascript failed: {stderr.decode()[:200]}")
+        return False
+    return True
+
+
+def get_ship_method() -> str:
+    """Read configured ship method. Default 'file'.
+
+    Valid: 'file' | 'applescript' | 'auto_paste'.
+
+    'auto_paste' (chunk 21) is the primary voice→Cursor path: pre-flight
+    checks Cursor is frontmost, then clipboard-pastes + presses Enter via
+    System Events. Pre-flight failure falls back to 'file' inside
+    _execute_ship_design. See docs/auto_paste_diagnosis.md (chunk 22) for
+    the bug history — the validator silently coerced unknown values for
+    one commit, masking the entire auto_paste path.
+    """
+    try:
+        from actions import _design_partner_config
+        cfg = _design_partner_config()
+        m = cfg.get("ship_method", "file")
+        return m if m in ("file", "applescript", "auto_paste") else "file"
+    except Exception:
+        return "file"

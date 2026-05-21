@@ -28,7 +28,32 @@ export type EventType =
   | "text_write"
   | "code_task"
   | "task_queued"
-  | "error";
+  | "error"
+  // Claude Code structured tool calls (from work_mode stream-json parser)
+  | "tool.file_read"
+  | "tool.file_write"
+  | "tool.file_edit"
+  | "tool.bash"
+  | "tool.web_search"
+  | "tool.web_fetch"
+  | "tool.glob"
+  | "tool.grep"
+  | "tool.task"
+  | "tool.thinking"
+  | "tool.result"
+  // Haiku-middleware structured result cards
+  | "result.web"
+  | "result.product"
+  | "result.location"
+  | "result.image"
+  | "result.markdown"
+  // Per-source preview card emitted during research (live), one per
+  // successful web_fetch. Distinct from `result.web` which is the
+  // model's final reading list summary.
+  | "result.research_source"
+  // Live counter — updates the panel header chip rather than appending
+  // a row. Payload carries {fetched, searched}.
+  | "research.progress";
 
 export interface ProcessEvent {
   id: string;
@@ -45,6 +70,13 @@ export interface ProcessPanel {
   handleEvent(event: ProcessEvent): void;
   close(): void;
   destroy(): void;
+  /** Toggle the "· design" indicator next to the panel title. Called from
+   *  main.ts when the design partner's state transitions in/out of DESIGNING. */
+  setDesignActive(active: boolean): void;
+  /** Toggle the "· dictation" indicator (amber). Distinct from · design
+   *  so the user knows their voice is being captured verbatim, not
+   *  routed through the design partner. */
+  setDictationActive(active: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +91,15 @@ const CODE_LINES_COLLAPSED = 20;
 // Factory
 // ---------------------------------------------------------------------------
 
+import { createFloatingPanelsLayer, type FloatingPanelsLayer } from "./floatingPanels";
+
 export function createProcessPanel(rootId: string = "process-panel-root"): ProcessPanel {
+  // Result cards (product/location/web/image/research_source) render as
+  // independent floating panels owned by this layer — not as rows inside
+  // the Process Panel. The Process Panel keeps only the live event log
+  // (searches, fetches, voice interjection breadcrumb, progress chip).
+  const floatingLayer: FloatingPanelsLayer = createFloatingPanelsLayer();
+
   // Per-task code-block elements so consecutive code_task events for the same
   // task append to a single terminal block rather than spawning new ones.
   const codeBlocks = new Map<string, { container: HTMLElement; lines: HTMLElement; expandBtn: HTMLButtonElement; collapsed: boolean; }>();
@@ -68,6 +108,15 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // task_start and task_done events.
   let activeTaskCount = 0;
   let dismissTimer: number | undefined;
+
+  // When design mode is active, this panel hides and drops events on the
+  // floor — the design panel owns the surface. Toggled via setDesignActive.
+  let designSuppressed = false;
+
+  // Pin state — when true, auto-dismiss is suspended. Persisted in
+  // localStorage. Auto-sets true on first result.* card so users can review.
+  const PIN_KEY = "jarvis.processPanel.pinned";
+  let pinned = readPinned();
 
   // Drag state.
   let draggingFrom: { x: number; y: number; panelLeft: number; panelTop: number } | null = null;
@@ -78,6 +127,10 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       <div class="pp-handle" data-pp-handle>
         <div class="pp-handle-grip"></div>
         <div class="pp-title">Process</div>
+        <span class="pp-design-indicator" data-pp-design-indicator hidden>· design</span>
+        <span class="pp-dictation-indicator" data-pp-dictation-indicator hidden>· dictation</span>
+        <div class="pp-progress" data-pp-progress hidden></div>
+        <button class="pp-pin" data-pp-pin title="Pin (disable auto-dismiss)" aria-pressed="${pinned}">${pinned ? "◉" : "◌"}</button>
         <button class="pp-close" data-pp-close title="Close">×</button>
       </div>
       <div class="pp-stream" data-pp-stream></div>
@@ -87,6 +140,28 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   const handle = root.querySelector<HTMLElement>("[data-pp-handle]")!;
   const stream = root.querySelector<HTMLElement>("[data-pp-stream]")!;
   const closeBtn = root.querySelector<HTMLElement>("[data-pp-close]")!;
+  const pinBtn = root.querySelector<HTMLButtonElement>("[data-pp-pin]")!;
+  const progressChip = root.querySelector<HTMLElement>("[data-pp-progress]")!;
+  const designIndicator = root.querySelector<HTMLElement>("[data-pp-design-indicator]")!;
+  const dictationIndicator = root.querySelector<HTMLElement>("[data-pp-dictation-indicator]")!;
+
+  pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(); });
+
+  function readPinned(): boolean {
+    try { return localStorage.getItem(PIN_KEY) === "1"; } catch { return false; }
+  }
+  function writePinned(v: boolean) {
+    try { localStorage.setItem(PIN_KEY, v ? "1" : "0"); } catch {}
+  }
+  function setPinned(v: boolean) {
+    pinned = v;
+    pinBtn.textContent = v ? "◉" : "◌";
+    pinBtn.setAttribute("aria-pressed", String(v));
+    pinBtn.title = v ? "Unpin (allow auto-dismiss)" : "Pin (disable auto-dismiss)";
+    writePinned(v);
+    if (v) cancelDismiss();
+  }
+  function togglePin() { setPinned(!pinned); }
 
   restorePosition();
 
@@ -162,16 +237,41 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // -----------------------------------------------------------------------
 
   function show() {
+    if (designSuppressed) return;  // design mode owns the surface
     cancelDismiss();
     root.classList.add("visible");
   }
 
   function scheduleDismiss() {
     cancelDismiss();
+    if (pinned) return;  // pin button held: never auto-dismiss
     dismissTimer = window.setTimeout(() => {
       closeAndClear();
     }, DISMISS_AFTER_DONE_MS);
   }
+
+  /** Schedule auto-dismiss only if the user has no floating cards still
+   *  open. While cards float above the panel the Process Panel stays
+   *  visible (quiet) so the user can read what's there; once the last
+   *  card is dismissed the timer fires. */
+  function maybeScheduleDismiss() {
+    if (floatingLayer.cardCount() > 0) {
+      cancelDismiss();
+      return;
+    }
+    scheduleDismiss();
+  }
+
+  // Re-evaluate auto-dismiss whenever a floating card mounts or unmounts.
+  // Mounting cancels any pending dismiss (cards just arrived, user is
+  // reading); the last unmount, if tasks are done, schedules dismiss.
+  floatingLayer.onChange((count) => {
+    if (count > 0) {
+      cancelDismiss();
+    } else if (activeTaskCount === 0) {
+      scheduleDismiss();
+    }
+  });
 
   function cancelDismiss() {
     if (dismissTimer !== undefined) {
@@ -197,11 +297,38 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // -----------------------------------------------------------------------
 
   function handleEvent(event: ProcessEvent) {
+    // While design mode is active the design panel is the only surface the
+    // user wants to see; drop process events on the floor rather than
+    // rendering behind/beside it.
+    if (designSuppressed) return;
+
     // First event of any kind shows the panel.
     show();
 
+    // Cards no longer live inside this panel — they spawn as independent
+    // floating panels (see floatingPanels.ts). The old auto-pin-on-result.*
+    // behavior was for the in-panel rendering path and is no longer
+    // relevant; auto-dismiss now defers on its own while floating cards
+    // are still up (gated below in the task_done branch).
+
     if (event.type === "task_start") {
+      // Increment BEFORE dismissing prior cards. The dismiss can drop the
+      // floating card count to 0, which triggers the onChange dismiss
+      // scheduler; keeping activeTaskCount > 0 prevents the panel from
+      // auto-dismissing during the same tick.
       activeTaskCount++;
+
+      // Rule 2 (chunk 18): on a fresh research task_start, instantly clear
+      // every floating panel from any previous research task. All floating
+      // panels are research-originated by construction, so a blanket
+      // "not this task" predicate is correct. Non-research task_starts
+      // (browse, build, project_lookup, …) leave existing cards alone.
+      const isResearchTask = (event.title || "").startsWith("Researching:");
+      if (isResearchTask) {
+        floatingLayer.dismissPriorResearchCards(event.task_id);
+      }
+
+      floatingLayer.resetLayout();
       renderEventRow(event);
       return;
     }
@@ -216,7 +343,26 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
         startRow.classList.remove("pp-status-active");
         startRow.classList.add(`pp-status-${event.status}`);
       }
-      if (activeTaskCount === 0) scheduleDismiss();
+
+      // Rule 1 (chunk 18): on every task_done, dismiss source-preview
+      // cards belonging to the completing task. Source cards are only
+      // emitted by research, so on a non-research task_done this is a
+      // safe no-op. Task-ID scoped so a concurrent research task's
+      // sources survive.
+      floatingLayer.dismissResearchSources(event.task_id);
+
+      // Clear the progress chip when all tasks finish so the next session
+      // doesn't show stale counts.
+      if (activeTaskCount === 0) {
+        hideProgressChip();
+        maybeScheduleDismiss();
+      }
+      return;
+    }
+
+    if (event.type === "research.progress") {
+      // Header chip update — no row insertion.
+      updateProgressChip(event);
       return;
     }
 
@@ -228,9 +374,39 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     renderEventRow(event);
   }
 
+  function updateProgressChip(event: ProcessEvent) {
+    const p = (event.payload || {}) as Record<string, unknown>;
+    const fetched = Number(p.fetched ?? 0);
+    const searched = Number(p.searched ?? 0);
+    if (fetched === 0 && searched === 0) {
+      hideProgressChip();
+      return;
+    }
+    const parts: string[] = [];
+    if (fetched > 0) parts.push(`${fetched} source${fetched === 1 ? "" : "s"}`);
+    if (searched > 0) parts.push(`${searched} search${searched === 1 ? "" : "es"}`);
+    progressChip.textContent = parts.join(" · ");
+    progressChip.hidden = false;
+  }
+
+  function hideProgressChip() {
+    progressChip.hidden = true;
+    progressChip.textContent = "";
+  }
+
   function renderEventRow(event: ProcessEvent) {
+    // Haiku-middleware structured cards render via a dedicated path with
+    // richer layout (image, price, address, links) than the standard row.
+    if (String(event.type).startsWith("result.")) {
+      renderResultCard(event);
+      return;
+    }
+
     const row = document.createElement("div");
-    row.className = `pp-event pp-event-${event.type} pp-status-${event.status}`;
+    // Convert "tool.file_read" → "tool_file_read" so the dot doesn't split
+    // into two CSS class names.
+    const typeClass = String(event.type).replace(/\./g, "_");
+    row.className = `pp-event pp-event-${typeClass} pp-status-${event.status}`;
     row.dataset.taskId = event.task_id;
     row.dataset.eventId = event.id;
 
@@ -288,6 +464,195 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
 
     // Newest at top.
     stream.insertBefore(row, stream.firstChild);
+  }
+
+  /** Build a card's content DOM (without outer chrome). Used by the
+   *  floating-panels layer to mount each card as an independent panel.
+   *  result.markdown is special-cased — it stays in the Process Panel
+   *  stream as a collapsible details block, not a floating card. */
+  function buildCardContent(event: ProcessEvent): HTMLElement {
+    const kind = String(event.type).replace(/^result\./, "");
+    const card = document.createElement("div");
+    card.className = `pp-card pp-card-${kind}`;
+    card.dataset.taskId = event.task_id;
+    card.dataset.eventId = event.id;
+
+    populateCardContent(card, event, kind);
+    return card;
+  }
+
+  function renderResultCard(event: ProcessEvent) {
+    const kind = String(event.type).replace(/^result\./, "");
+
+    // Non-markdown cards become independent floating panels — they're
+    // owned by the floating layer, not the Process Panel's stream.
+    if (kind !== "markdown") {
+      floatingLayer.mountCard(event, () => buildCardContent(event));
+      return;
+    }
+
+    // Markdown card: collapsible "Full response" block, stays in the
+    // Process Panel as the live log's tail summary. Not a floating panel.
+    const card = document.createElement("div");
+    card.className = `pp-card pp-card-${kind}`;
+    card.dataset.taskId = event.task_id;
+    card.dataset.eventId = event.id;
+    const md = (event.payload?.markdown as string) || event.detail || "";
+    const det = document.createElement("details");
+    det.className = "pp-card-md-details";
+    const sum = document.createElement("summary");
+    sum.textContent = "Full response";
+    det.appendChild(sum);
+    const pre = document.createElement("pre");
+    pre.className = "pp-card-md-pre";
+    pre.textContent = md;
+    det.appendChild(pre);
+    card.appendChild(det);
+    stream.appendChild(card);  // markdown appends (tail), not prepend
+  }
+
+  function populateCardContent(card: HTMLElement, event: ProcessEvent, kind: string) {
+    // Live per-source preview card emitted during research — compact
+    // horizontal layout: thumbnail left, title + snippet right, hostname
+    // chip on top. Renders separately from the final result.* card pipeline
+    // so it can use a different visual idiom.
+    if (kind === "research_source") {
+      const p = (event.payload || {}) as Record<string, unknown>;
+      const url = (p.url as string) || "";
+      const title = (p.title as string) || event.title || (p.hostname as string) || url;
+      const hostname = (p.hostname as string) || "";
+      const ogImage = (p.og_image_url as string) || "";
+      const snippet = (p.snippet as string) || event.detail || "";
+
+      const thumb = document.createElement("div");
+      thumb.className = "pp-source-thumb";
+      if (ogImage) {
+        const img = document.createElement("img");
+        img.src = ogImage;
+        img.alt = title;
+        img.referrerPolicy = "no-referrer";
+        img.loading = "lazy";
+        img.addEventListener("error", () => {
+          // Fall back to a hostname-initial monogram if the image 404s.
+          img.remove();
+          thumb.classList.add("pp-source-thumb-mono");
+          thumb.textContent = (hostname || "?").slice(0, 1).toUpperCase();
+        });
+        thumb.appendChild(img);
+      } else {
+        thumb.classList.add("pp-source-thumb-mono");
+        thumb.textContent = (hostname || "?").slice(0, 1).toUpperCase();
+      }
+      card.appendChild(thumb);
+
+      const body = document.createElement("div");
+      body.className = "pp-source-body";
+
+      if (hostname) {
+        const host = document.createElement("div");
+        host.className = "pp-source-host";
+        host.textContent = hostname;
+        body.appendChild(host);
+      }
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "pp-source-title";
+      if (url) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = title;
+        titleEl.appendChild(a);
+      } else {
+        titleEl.textContent = title;
+      }
+      body.appendChild(titleEl);
+
+      if (snippet) {
+        const snip = document.createElement("div");
+        snip.className = "pp-source-snippet";
+        snip.textContent = snippet;
+        body.appendChild(snip);
+      }
+
+      card.appendChild(body);
+      return;
+    }
+
+    // (markdown branch handled in renderResultCard before reaching here.)
+
+    const p = (event.payload || {}) as Record<string, unknown>;
+    const title = (p.title as string) || event.title;
+    const summary = (p.summary as string) || event.detail || "";
+    const sourceUrl = (p.source_url as string) || "";
+    const imageUrl = (p.image_url as string) || "";
+    const price = (p.price as string) || "";
+    const address = (p.address as string) || "";
+
+    // Header: title (+ price chip for product)
+    const head = document.createElement("div");
+    head.className = "pp-card-head";
+    const titleEl = document.createElement("div");
+    titleEl.className = "pp-card-title";
+    titleEl.textContent = title;
+    head.appendChild(titleEl);
+    if (price && kind === "product") {
+      const priceEl = document.createElement("div");
+      priceEl.className = "pp-card-price";
+      priceEl.textContent = price;
+      head.appendChild(priceEl);
+    }
+    card.appendChild(head);
+
+    // Image (product / image card)
+    if ((kind === "product" || kind === "image") && imageUrl) {
+      const img = document.createElement("img");
+      img.className = "pp-card-image";
+      img.src = imageUrl;
+      img.alt = title;
+      img.referrerPolicy = "no-referrer";
+      img.loading = "lazy";
+      img.addEventListener("click", () => openLightbox(imageUrl));
+      img.addEventListener("error", () => { img.style.display = "none"; });
+      card.appendChild(img);
+    }
+
+    // Summary
+    if (summary) {
+      const sum = document.createElement("div");
+      sum.className = "pp-card-summary";
+      sum.textContent = summary;
+      card.appendChild(sum);
+    }
+
+    // Address (location card) — text + Maps link (no static-map image:
+    // would need a map provider API key, not configured tonight).
+    if (kind === "location" && address) {
+      const addr = document.createElement("div");
+      addr.className = "pp-card-address";
+      addr.textContent = address;
+      card.appendChild(addr);
+      const mapsLink = document.createElement("a");
+      mapsLink.className = "pp-card-link";
+      mapsLink.href = `https://maps.apple.com/?q=${encodeURIComponent(address)}`;
+      mapsLink.target = "_blank";
+      mapsLink.rel = "noopener noreferrer";
+      mapsLink.textContent = "Open in Maps ↗";
+      card.appendChild(mapsLink);
+    }
+
+    // Source link (everyone except location)
+    if (sourceUrl && kind !== "location") {
+      const link = document.createElement("a");
+      link.className = "pp-card-link";
+      link.href = sourceUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      const display = sourceUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+      link.textContent = (display.length > 48 ? display.slice(0, 45) + "…" : display) + " ↗";
+      card.appendChild(link);
+    }
   }
 
   function appendCodeLine(event: ProcessEvent) {
@@ -364,6 +729,26 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     }
   });
 
+  function setDesignActive(active: boolean) {
+    // While design mode is active the design panel is the sole surface — the
+    // process panel hides entirely and ignores incoming events until design
+    // ends. (Previously this just toggled a "· design" chip on the header.)
+    designSuppressed = active;
+    designIndicator.hidden = true;  // chip retired — no design surfacing here
+    if (active) {
+      closeAndClear();
+    }
+  }
+
+  function setDictationActive(active: boolean) {
+    // Mirror of setDesignActive for dictation. Amber chip rather than
+    // cyan so the two modes are visually distinguishable at a glance.
+    dictationIndicator.hidden = !active;
+    if (active) {
+      show();
+    }
+  }
+
   return {
     handleEvent,
     close: closeAndClear,
@@ -371,6 +756,8 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       cancelDismiss();
       root.remove();
     },
+    setDesignActive,
+    setDictationActive,
   };
 }
 

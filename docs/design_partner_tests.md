@@ -189,3 +189,55 @@ _Populated when Phase 4 lands._
 ## Phase 5 — Self-modification (pending)
 
 _Populated when Phase 5 lands._
+
+## Research mute test (chunk 11 — issue #4)
+
+Verifies that background noise during a long research run cannot derail
+the task. Without the mute, ambient speech ("lazy method so his part 3
+the full stop is how I run my AI…") got transcribed and dispatched to
+the LLM mid-research, causing Jarvis to "answer" the TV instead of
+finishing the user's actual query.
+
+### Setup
+1. Start backend + frontend. Confirm `[STARTUP] commit=…` in
+   `logs/jarvis.err.log` matches the expected commit.
+2. Make sure the mic is hot — say "can you hear me" and verify a
+   `User: can you hear me` line appears in the log.
+
+### Test A — ambient transcripts are dropped
+1. Say: "show me the three best fishing poles for backyard ponds in
+   Virginia".
+2. While research is running (panel chip says "1 search · 0 sources"
+   and is incrementing), play TV/podcast audio at conversational volume
+   for ~60 seconds.
+3. **Verify in `logs/jarvis.err.log`:**
+   - One or more lines `Suppressed during research (no cancel keyword): '…'`
+     for each ambient transcript.
+   - No `LLM error`, no extra `JARVIS: …` lines from ambient (only the
+     final research summary).
+   - Panel keeps updating from the research stream (search/fetch events,
+     source-preview cards). The orb does not switch to thinking state
+     for any of the ambient transcripts.
+
+### Test B — cancel-word allowlist
+1. Say: "show me the three best fishing poles for backyard ponds in
+   Virginia".
+2. While research is running, say "cancel" (or "stop", "nevermind",
+   "never mind").
+3. **Verify:**
+   - `logs/jarvis.err.log`: `Research cancel triggered by transcript: …`.
+   - Jarvis speaks "Cancelled, sir." within ~2 seconds.
+   - The Process Panel task transitions to `task_done` (status=done).
+   - No final product cards spawn (research aborted before completion).
+   - Floating panels already spawned during research remain visible
+     (user-dismissed only).
+4. After the task aborts, say "what time is it" — verify normal action
+   routing resumes (the mute lifts when the task completes).
+
+### Test C — false positives (acceptable but worth eyeballing)
+1. Begin a research query.
+2. While running, say "I want to stop by the store later".
+3. **Verify:** this *will* trigger cancel (the literal word "stop"
+   appears). This is the intentional v1 tradeoff — the allowlist is
+   substring match, not utterance intent. If false-cancel rate is too
+   high in real use, revisit the matcher.

@@ -102,8 +102,9 @@ export function createWakeWord(
     // during JARVIS's own TTS doesn't drop us out of an in-progress conversation.
     pause() { voiceInput.pause(); },
     resume() { voiceInput.resume(); },
-    // reset() = "go back to needing the wake phrase". Called by the Sleeping
-    // toggle so flipping Sleeping → Active always starts in passive mode.
+    // reset() = "go back to needing the wake phrase". No longer called from
+    // the Sleeping toggle (which now preserves active state so demos can
+    // pause mid-conversation), but kept for explicit teardown (e.g. setName).
     reset() { goPassive(); },
     setName(name: string) {
       const next = normalizeName(name);

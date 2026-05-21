@@ -84,7 +84,17 @@ function buildPanelHTML(): string {
         <p>Welcome to JARVIS. Let's get you set up.</p>
       </div>
 
+      <!-- Tab nav — User Settings sits first as the primary tab. Hidden
+           during first-time setup wizard so the linear flow isn't interrupted. -->
+      <nav class="settings-tabs" id="settings-tabs">
+        <button class="settings-tab active" data-tab="user" id="tab-btn-user">User Settings</button>
+        <button class="settings-tab" data-tab="computer" id="tab-btn-computer">Computer Settings</button>
+      </nav>
+
       <div class="settings-body">
+
+        <!-- ─── COMPUTER SETTINGS TAB ───────────────────────────────── -->
+        <div class="settings-tab-content" data-tab="computer" id="tab-content-computer">
 
         <!-- API Keys -->
         <section class="settings-section" id="section-api-keys">
@@ -121,7 +131,7 @@ function buildPanelHTML(): string {
           </div>
         </section>
 
-        <!-- Connection Status -->
+        <!-- Connection Status (Computer) -->
         <section class="settings-section" id="section-status">
           <h3>Connection Status</h3>
           <div class="status-grid">
@@ -132,6 +142,24 @@ function buildPanelHTML(): string {
             <div class="status-row"><span class="status-dot" id="status-server"></span><span>Server</span><span class="status-detail" id="status-server-detail"></span></div>
           </div>
         </section>
+
+        <!-- System Info (Computer) -->
+        <section class="settings-section" id="section-sysinfo">
+          <h3>System Info</h3>
+          <div class="sysinfo-grid">
+            <div class="sysinfo-row"><span class="sysinfo-label">Memory entries</span><span id="sysinfo-memory">--</span></div>
+            <div class="sysinfo-row"><span class="sysinfo-label">Tasks</span><span id="sysinfo-tasks">--</span></div>
+            <div class="sysinfo-row"><span class="sysinfo-label">Server port</span><span id="sysinfo-port">--</span></div>
+            <div class="sysinfo-row"><span class="sysinfo-label">Uptime</span><span id="sysinfo-uptime">--</span></div>
+          </div>
+        </section>
+
+        </div>
+        <!-- ─── /COMPUTER SETTINGS TAB ──────────────────────────────── -->
+
+
+        <!-- ─── USER SETTINGS TAB (primary / default-active) ────────── -->
+        <div class="settings-tab-content active" data-tab="user" id="tab-content-user">
 
         <!-- Connected Accounts -->
         <section class="settings-section" id="section-accounts">
@@ -206,16 +234,9 @@ function buildPanelHTML(): string {
           </div>
         </section>
 
-        <!-- System Info -->
-        <section class="settings-section" id="section-sysinfo">
-          <h3>System Info</h3>
-          <div class="sysinfo-grid">
-            <div class="sysinfo-row"><span class="sysinfo-label">Memory entries</span><span id="sysinfo-memory">--</span></div>
-            <div class="sysinfo-row"><span class="sysinfo-label">Tasks</span><span id="sysinfo-tasks">--</span></div>
-            <div class="sysinfo-row"><span class="sysinfo-label">Server port</span><span id="sysinfo-port">--</span></div>
-            <div class="sysinfo-row"><span class="sysinfo-label">Uptime</span><span id="sysinfo-uptime">--</span></div>
-          </div>
-        </section>
+        </div>
+        <!-- ─── /USER SETTINGS TAB ──────────────────────────────────── -->
+
 
         <!-- Setup Navigation (first-time only) -->
         <div class="setup-nav" id="setup-nav" style="display:none">
@@ -364,7 +385,20 @@ function applyBioSummary(summary: string, updated: string, sourceCount: number) 
   if (updatedEl) updatedEl.textContent = updated ? `updated ${formatRelativeTime(updated)}` : "never updated";
 }
 
+function activateTab(name: "computer" | "user") {
+  document.querySelectorAll<HTMLElement>(".settings-tab").forEach((el) => {
+    el.classList.toggle("active", el.dataset.tab === name);
+  });
+  document.querySelectorAll<HTMLElement>(".settings-tab-content").forEach((el) => {
+    el.classList.toggle("active", el.dataset.tab === name);
+  });
+}
+
 function wireEvents() {
+  // Tab switching
+  document.getElementById("tab-btn-computer")?.addEventListener("click", () => activateTab("computer"));
+  document.getElementById("tab-btn-user")?.addEventListener("click", () => activateTab("user"));
+
   // Close
   document.getElementById("settings-close")?.addEventListener("click", closeSettings);
   document.getElementById("settings-backdrop")?.addEventListener("click", closeSettings);
@@ -495,6 +529,15 @@ function enterSetupMode() {
   const nav = document.getElementById("setup-nav");
   if (nav) nav.style.display = "flex";
 
+  // Hide the tab nav while the wizard takes over. The wizard shows
+  // sections by id directly; the tab system would just get in the way.
+  // Also surface BOTH tab panels so the wizard can show any section.
+  const tabs = document.getElementById("settings-tabs");
+  if (tabs) tabs.style.display = "none";
+  document.querySelectorAll<HTMLElement>(".settings-tab-content").forEach((el) => {
+    el.classList.add("active");
+  });
+
   // Hide sections except API keys
   showSetupStep(0);
 }
@@ -535,6 +578,11 @@ async function advanceSetup() {
       const el = document.getElementById(id);
       if (el) el.style.display = "";
     });
+
+    // Restore the tab nav and default back to User Settings (primary tab).
+    const tabs = document.getElementById("settings-tabs");
+    if (tabs) tabs.style.display = "";
+    activateTab("user");
 
     closeSettings();
     return;

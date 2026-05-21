@@ -14,10 +14,137 @@ import json
 import logging
 import shutil
 from pathlib import Path
+from typing import Any
 
-from process_events import emit_code_task
+from process_events import emit_code_task, emit_tool_event
 
 log = logging.getLogger("jarvis.work_mode")
+
+# --- Stream-json parsing --------------------------------------------------
+#
+# `claude -p --output-format stream-json --verbose` emits one JSON object
+# per line. We map the structured events to typed `tool.*` process-panel
+# events so the panel renders a vertical list of intermediate tool calls
+# instead of opaque "claude working…" output.
+#
+# Any line that is NOT valid JSON, or any event type we don't recognize,
+# falls through to the existing emit_code_task path — preserves the text
+# fallback and protects against Claude Code format drift. (See the
+# parse_stream_line unit test at the bottom of this file.)
+
+# Map Claude Code tool names to (event_type, parameter_extractor) tuples.
+# Each extractor takes the tool input dict and returns a short human-readable
+# string (≤60 chars handled by the panel renderer).
+def _read_param(inp: dict) -> str:
+    return _short_path(inp.get("file_path", ""))
+def _write_param(inp: dict) -> str:
+    return _short_path(inp.get("file_path", ""))
+def _edit_param(inp: dict) -> str:
+    return _short_path(inp.get("file_path", ""))
+def _bash_param(inp: dict) -> str:
+    cmd = inp.get("command", "")
+    return cmd if len(cmd) < 80 else cmd[:77] + "…"
+def _web_search_param(inp: dict) -> str:
+    return str(inp.get("query", ""))
+def _web_fetch_param(inp: dict) -> str:
+    return str(inp.get("url", ""))
+def _glob_param(inp: dict) -> str:
+    return str(inp.get("pattern", ""))
+def _grep_param(inp: dict) -> str:
+    p = inp.get("pattern", "")
+    path = inp.get("path", "")
+    return f"{p}  in  {_short_path(path)}" if path else p
+def _task_param(inp: dict) -> str:
+    return str(inp.get("description") or inp.get("subagent_type") or "subagent")
+
+_TOOL_MAP: dict[str, tuple[str, Any]] = {
+    "Read":      ("tool.file_read",  _read_param),
+    "Write":     ("tool.file_write", _write_param),
+    "Edit":      ("tool.file_edit",  _edit_param),
+    "Bash":      ("tool.bash",       _bash_param),
+    "WebSearch": ("tool.web_search", _web_search_param),
+    "WebFetch":  ("tool.web_fetch",  _web_fetch_param),
+    "Glob":      ("tool.glob",       _glob_param),
+    "Grep":      ("tool.grep",       _grep_param),
+    "Task":      ("tool.task",       _task_param),
+}
+
+
+def _short_path(p: str) -> str:
+    """Compact a file path: prefer basename, prepend parent dir when ambiguous."""
+    if not p:
+        return ""
+    parts = p.rstrip("/").split("/")
+    if len(parts) >= 2:
+        return f"{parts[-2]}/{parts[-1]}"
+    return parts[-1]
+
+
+def parse_stream_line(line: str) -> list[dict]:
+    """Parse a single stream-json line, return list of structured panel events.
+
+    Each event: {"event_type": "tool.X", "title": str, "detail": str, "payload": {...}}.
+    Empty list = nothing to surface (unknown event type or non-event line).
+    Returns [] (no exception) on parse failure — caller falls back to text.
+    """
+    s = line.strip()
+    if not s:
+        return []
+    try:
+        obj = json.loads(s)
+    except Exception:
+        return []  # Caller falls back to emit_code_task
+
+    if not isinstance(obj, dict):
+        return []
+
+    t = obj.get("type")
+    events: list[dict] = []
+
+    if t == "assistant":
+        for block in (obj.get("message") or {}).get("content", []) or []:
+            if not isinstance(block, dict):
+                continue
+            bt = block.get("type")
+            if bt == "tool_use":
+                name = block.get("name", "")
+                inp = block.get("input", {}) or {}
+                event_type, extractor = _TOOL_MAP.get(name, (f"tool.{name.lower()}", lambda _i: ""))
+                try:
+                    detail = extractor(inp)
+                except Exception:
+                    detail = ""
+                events.append({
+                    "event_type": event_type,
+                    "title": name,
+                    "detail": detail,
+                    "payload": {"input": inp},
+                })
+            elif bt == "thinking":
+                thinking = (block.get("thinking") or "").strip()
+                if thinking:
+                    events.append({
+                        "event_type": "tool.thinking",
+                        "title": "thinking",
+                        "detail": thinking[:80] + ("…" if len(thinking) > 80 else ""),
+                        "payload": {"text": thinking},
+                    })
+            # 'text' blocks are the assistant's free reply — kept out of the
+            # tool stream; caller surfaces those via emit_code_task fallback.
+
+    elif t == "result":
+        # Terminal summary — duration + cost. Useful as a panel footer.
+        cost = obj.get("total_cost_usd")
+        ms = obj.get("duration_ms")
+        events.append({
+            "event_type": "tool.result",
+            "title": "claude done",
+            "detail": f"{ms}ms" + (f", ${cost:.4f}" if isinstance(cost, (int, float)) else ""),
+            "payload": {"duration_ms": ms, "cost_usd": cost},
+        })
+
+    # system / rate_limit_event / user / unknown → no panel event, no error.
+    return events
 
 SESSION_FILE = Path(__file__).parent / "data" / "active_session.json"
 
@@ -57,15 +184,20 @@ class WorkSession:
         self._status = "idle"
         log.info(f"Work mode started: {self._project_name} ({working_dir})")
 
-    async def send(self, user_text: str, task_id: str | None = None) -> str:
+    async def send(self, user_text: str, task_id: str | None = None,
+                   anthropic_client: Any = None) -> str:
         """Send a message to claude -p and get the full response.
 
         First message in a session: fresh claude -p
         Subsequent messages: claude -p --continue (resumes last session in dir)
 
-        If `task_id` is given, stdout is streamed line-by-line as code_task
-        events on the process bus so the process panel can render a live
-        terminal block while claude runs.
+        If `task_id` is given, stdout is streamed as tool.* events on the
+        process bus (plus fallback code_task for unparsed lines).
+
+        If both `task_id` AND `anthropic_client` are given, runs the
+        post-completion Haiku middleware to extract structured result cards
+        (web / product / location / image) from the response and tool
+        results — emits result.* events for the panel.
         """
         claude_path = shutil.which("claude")
         if not claude_path:
@@ -73,7 +205,8 @@ class WorkSession:
 
         cmd = [
             claude_path, "-p",
-            "--output-format", "text",
+            "--output-format", "stream-json",
+            "--verbose",                       # required with stream-json under -p
             "--dangerously-skip-permissions",
         ]
 
@@ -93,10 +226,15 @@ class WorkSession:
             )
 
             collected_lines: list[str] = []
+            assistant_text_parts: list[str] = []
+            tool_result_snippets: list[str] = []
 
             async def _drain_stdout():
-                """Read stdout line-by-line. Each non-empty line becomes a
-                code_task event so the panel can show live progress."""
+                """Read stream-json line-by-line. For each line:
+                  - Parse → typed tool.* events if recognized.
+                  - Extract assistant text blocks into the response buffer.
+                  - Unrecognized / non-JSON → fall through to emit_code_task
+                    so nothing is ever lost from the panel."""
                 assert process.stdout is not None
                 while True:
                     line = await process.stdout.readline()
@@ -104,12 +242,64 @@ class WorkSession:
                         break
                     decoded = line.decode(errors="replace").rstrip("\n")
                     collected_lines.append(decoded)
-                    if task_id and decoded:
+                    if not decoded:
+                        continue
+
+                    # Try structured parse first.
+                    events = parse_stream_line(decoded)
+
+                    # Extract assistant.text blocks (canonical response) AND
+                    # user.tool_result snippets (middleware context).
+                    try:
+                        obj = json.loads(decoded)
+                        if isinstance(obj, dict):
+                            if obj.get("type") == "assistant":
+                                for blk in (obj.get("message") or {}).get("content", []) or []:
+                                    if isinstance(blk, dict) and blk.get("type") == "text":
+                                        txt = blk.get("text", "")
+                                        if txt:
+                                            assistant_text_parts.append(txt)
+                            elif obj.get("type") == "user":
+                                msg = obj.get("message") or {}
+                                content = msg.get("content")
+                                if isinstance(content, list):
+                                    for blk in content:
+                                        if isinstance(blk, dict) and blk.get("type") == "tool_result":
+                                            c = blk.get("content", "")
+                                            if isinstance(c, str) and c:
+                                                tool_result_snippets.append(c)
+                                            elif isinstance(c, list):
+                                                # tool_result can be a list of content blocks
+                                                for sub in c:
+                                                    if isinstance(sub, dict) and sub.get("type") == "text":
+                                                        tool_result_snippets.append(sub.get("text", ""))
+                    except Exception:
+                        pass
+
+                    if not task_id:
+                        continue
+
+                    if events:
+                        for ev in events:
+                            try:
+                                await emit_tool_event(
+                                    task_id,
+                                    ev["event_type"],
+                                    ev["title"],
+                                    detail=ev.get("detail", ""),
+                                    payload=ev.get("payload") or {},
+                                )
+                            except Exception:
+                                # Best-effort: emit failure must not crash the
+                                # read loop or the claude subprocess.
+                                pass
+                    else:
+                        # Fallback path: unknown line type OR non-JSON OR
+                        # event types we don't surface yet. Keep raw text
+                        # available so nothing's lost.
                         try:
                             await emit_code_task(task_id, decoded)
                         except Exception:
-                            # Never let an emit failure crash the read loop;
-                            # the panel is best-effort, the claude run is not.
                             pass
 
             async def _write_stdin():
@@ -134,7 +324,13 @@ class WorkSession:
                 self._status = "timeout"
                 return "That's taking longer than expected, sir. The operation timed out."
 
-            response = "\n".join(collected_lines).strip()
+            # Prefer the structured assistant.text concatenation as the
+            # canonical response. Fall back to raw lines if no text blocks
+            # were parsed (defensive against format drift).
+            if assistant_text_parts:
+                response = "".join(assistant_text_parts).strip()
+            else:
+                response = "\n".join(collected_lines).strip()
             self._message_count += 1
             self._status = "done"
 
@@ -146,6 +342,39 @@ class WorkSession:
                 return f"Hit a problem, sir: {error}"
 
             log.info(f"Claude Code response for {self._project_name} ({len(response)} chars)")
+
+            # Emit the full response as a `result.markdown` panel event so the
+            # panel always has the canonical text — cards (if extracted) render
+            # above it as a richer UI layer. Belt-and-suspenders: markdown is
+            # the source of truth, cards are opportunistic.
+            if task_id and response and len(response) > 150:
+                try:
+                    await emit_tool_event(
+                        task_id,
+                        "result.markdown",
+                        "Claude response",
+                        detail=response[:300],
+                        payload={"markdown": response},
+                    )
+                except Exception:
+                    pass
+
+            # Post-completion middleware: extract structured result cards
+            # via Haiku. Fire-and-forget — never blocks the return path.
+            if task_id and anthropic_client and response:
+                try:
+                    import claude_middleware
+                    asyncio.create_task(
+                        claude_middleware.extract_and_emit(
+                            response_text=response,
+                            tool_result_snippets=tool_result_snippets,
+                            task_id=task_id,
+                            anthropic_client=anthropic_client,
+                        )
+                    )
+                except Exception as e:
+                    log.warning(f"middleware spawn failed: {e}")
+
             return response
 
         except Exception as e:

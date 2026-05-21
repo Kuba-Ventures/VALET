@@ -35,6 +35,48 @@ html, body {
   z-index: 10;
 }
 
+/* JARVIS's most-recent spoken reply, rendered as a persistent caption so the
+   user can re-read instructions/commands after the TTS has finished. Sits
+   above the diag transcript and below the orb. Click-to-dismiss; otherwise
+   persists until the next reply arrives. */
+#jarvis-reply {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(640px, 80vw);
+  padding: 10px 16px;
+  color: rgba(190, 175, 255, 0.92);
+  background: rgba(20, 14, 48, 0.55);
+  border: 1px solid rgba(110, 92, 255, 0.28);
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: center;
+  letter-spacing: 0.2px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 0 24px rgba(110, 92, 255, 0.12);
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  cursor: pointer;
+  z-index: 10;
+}
+#jarvis-reply.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+#jarvis-reply::before {
+  content: "JARVIS";
+  display: block;
+  font-size: 9px;
+  letter-spacing: 3px;
+  color: rgba(110, 92, 255, 0.7);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
 /* Diagnostic panel — live mic / recognizer / transcript state.
    Centered beneath the orb, directly above the status text.
    Toggle with Cmd+D. */
@@ -337,9 +379,48 @@ body.wake-sleeping #orb-canvas {
   letter-spacing: 0.5px;
 }
 
+/* Settings tabs — two-tab layout splitting machine state from user state.
+   Hidden during the first-time setup wizard so the linear flow isn't
+   interrupted by tab switching. */
+.settings-tabs {
+  display: flex;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0 24px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.settings-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: rgba(255, 255, 255, 0.4);
+  padding: 12px 18px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+.settings-tab:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+.settings-tab.active {
+  color: rgba(190, 175, 255, 0.95);
+  border-bottom-color: rgba(124, 104, 240, 0.7);
+}
+.settings-tab-content {
+  display: none;
+}
+.settings-tab-content.active {
+  display: block;
+}
+
 .settings-body {
   padding: 8px 0;
   flex: 1;
+  overflow-y: auto;
 }
 
 .settings-section {

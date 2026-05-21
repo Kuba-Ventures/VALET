@@ -29,6 +29,17 @@ let isSleeping = localStorage.getItem(WAKE_STATE_KEY) === "sleeping";
 
 const statusEl = document.getElementById("status-text")!;
 const errorEl = document.getElementById("error-text")!;
+const replyEl = document.getElementById("jarvis-reply")!;
+
+function showReply(text: string) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return;
+  replyEl.textContent = trimmed;
+  replyEl.classList.add("visible");
+}
+replyEl.addEventListener("click", () => {
+  replyEl.classList.remove("visible");
+});
 
 let _errorHideTimer: number | undefined;
 function showError(msg: string) {
@@ -83,6 +94,12 @@ designPanel.onShipClick(() => {
 });
 designPanel.onScrapClick(() => {
   socket.send({ type: "transcript", text: "scrap this", isFinal: true });
+});
+designPanel.onMergeClick(() => {
+  socket.send({ type: "transcript", text: "merge it", isFinal: true });
+});
+designPanel.onTargetSelect((path) => {
+  socket.send({ type: "set_design_target", path });
 });
 
 // Reflect WS connection health in the central ERROR badge.
@@ -193,8 +210,11 @@ socket.onMessage((msg) => {
       console.warn("[audio] no data received, returning to idle");
       transition("idle");
     }
-    // Log text for debugging
-    if (msg.text) console.log("[JARVIS]", msg.text);
+    // Show reply as a persistent caption (TTS audio is ephemeral; the text is not).
+    if (msg.text) {
+      console.log("[JARVIS]", msg.text);
+      showReply(msg.text as string);
+    }
   } else if (type === "status") {
     const state = msg.state as string;
     if (state === "thinking" && currentState !== "thinking") {
@@ -207,8 +227,9 @@ socket.onMessage((msg) => {
       transition("idle");
     }
   } else if (type === "text") {
-    // Text fallback when TTS fails
+    // Text-only path (TTS failed or skipped) — still surface it to the user.
     console.log("[JARVIS]", msg.text);
+    if (msg.text) showReply(msg.text as string);
   } else if (type === "task_spawned") {
     console.log("[task]", "spawned:", msg.task_id, msg.prompt);
   } else if (type === "task_complete") {
@@ -223,7 +244,24 @@ socket.onMessage((msg) => {
   } else if (type === "design_event") {
     // Design-partner emissions — drive the Design Panel beside the orb.
     const event = msg.event as DesignEvent | undefined;
-    if (event) designPanel.handleEvent(event);
+    if (event) {
+      designPanel.handleEvent(event);
+      // Mirror the design-session state into the Process Panel header so
+      // the user can tell at a glance that voice turns are routing through
+      // Opus's design partner rather than the default action router.
+      if (event.type === "design.state_changed") {
+        const state = (event.payload as Record<string, unknown> | undefined)?.state;
+        processPanel.setDesignActive(state === "DESIGNING");
+      }
+    }
+  } else if (type === "dictation_event") {
+    // Mode 2 (chunk 21) — toggle the amber · dictation chip whenever the
+    // backend transitions in/out of capturing_prompt / confirming. Any
+    // state other than those two means dictation is inactive.
+    const event = msg.event as { state?: string } | undefined;
+    const state = event?.state ?? "idle";
+    const active = state === "capturing_prompt" || state === "confirming";
+    processPanel.setDictationActive(active);
   }
 });
 
@@ -377,9 +415,12 @@ function reconcileWakeControl() {
   // thinking or speaking, wake stays paused — it'll resume naturally when
   // audio playback finishes and the state returns to idle.
   if (isSleeping) {
-    // Hard deactivation: drop out of any active conversation and stop the mic.
-    // Re-enabling will require the wake phrase again.
-    wake.reset();
+    // Soft deactivation: pause the mic but preserve the wake module's
+    // active flag. The user toggled sleep on purpose (e.g. mid-design to
+    // narrate to a client during a demo); when they toggle back, they
+    // should pick up where they left off without re-saying "ok jarvis".
+    // The backend design session lives on id(ws) and the WS stays open
+    // through sleep, so all conversational context survives.
     wake.pause();
   } else if (currentState === "idle" || currentState === "listening") {
     wake.resume();

@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -50,6 +51,7 @@ from process_events import (
     emit_code_task,
     emit_error,
     emit_task_queued,
+    emit_tool_event,
 )
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
@@ -67,9 +69,55 @@ from memory import (
 from notes_access import get_recent_notes, read_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
+from page_preview import fetch_page_preview
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
+
+
+def _log_startup_banner() -> None:
+    """First log line on every server boot. Survives stale-process debugging.
+
+    Emits a single grep-friendly line:
+      [STARTUP] commit=<sha7> branch=<name> started_at=<iso8601> pid=<pid>
+
+    If git lookups fail for any reason (not a repo, git missing) the field
+    falls back to '?'. The banner never raises.
+    """
+    import datetime
+    import subprocess as _sp
+
+    def _git(args: list[str]) -> str:
+        try:
+            out = _sp.run(
+                ["git", "-C", os.path.dirname(os.path.abspath(__file__))] + args,
+                capture_output=True, text=True, timeout=2,
+            )
+            return out.stdout.strip() or "?"
+        except Exception:
+            return "?"
+
+    commit = _git(["rev-parse", "--short=7", "HEAD"])
+    branch = _git(["rev-parse", "--abbrev-ref", "HEAD"])
+    # Ignore runtime log files in the dirty check — they're tracked but
+    # constantly being written by the server itself, so they would always
+    # trigger +dirty and turn the flag into noise. We use git pathspec
+    # exclusions here rather than parsing porcelain output, since strip()
+    # in _git would eat leading status whitespace on the first line.
+    dirty_raw = _git([
+        "status", "--porcelain",
+        "--", ":(exclude)logs/", ":(exclude)data/logs/",
+    ])
+    dirty_flag = "+dirty" if (dirty_raw and dirty_raw != "?") else ""
+    started_at = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    log.info(
+        "[STARTUP] commit=%s%s branch=%s started_at=%s pid=%d",
+        commit, dirty_flag, branch, started_at, os.getpid(),
+    )
+
+
+_log_startup_banner()
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -200,7 +248,19 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
-- [ACTION:RESEARCH] detailed research brief — when user wants real research with real data. Claude Code will browse the web, find real listings/data, and create a report document. Give it a detailed brief of what to find.
+- [ACTION:RESEARCH] brief — when the user asks an informational question. You search the web natively (web_search + web_fetch on Opus) and the answer renders as result cards in the Process Panel plus a short spoken summary. NEVER produces a file, folder, project, or report document. Do NOT slugify the user's words into a folder name. Pass the question through as the brief.
+
+RESEARCH vs BUILD — distinguish by the user's verb at the front of the request, not by any word that appears later:
+  Research verbs ("show me", "find me", "what are", "what's the best", "tell me about", "research", "look up", "compare", "how much", "where can I", "who makes") → [ACTION:RESEARCH]
+  Build verbs ("build", "create a project", "make me an app", "new project", "spin up a", "scaffold", "start a project") → [ACTION:BUILD] or [ACTION:NEW_PROJECT]
+  Examples:
+    "show me the three best fishing poles" → [ACTION:RESEARCH] three best fishing poles for backyard ponds
+    "find me good coffee shops near Martinsville VA" → [ACTION:RESEARCH] best coffee shops near Martinsville VA
+    "what's the latest on the SEC ETF rulings" → [ACTION:RESEARCH] latest SEC ETF rulings
+    "show me HOW TO build a recipe tracker" → [ACTION:RESEARCH] how to build a recipe tracker (the verb is "show me" — user wants information, not for you to build it)
+    "build me a recipe tracker" → planning flow → [ACTION:BUILD] (verb is "build", user wants the thing built)
+    "create a project called fishing-poles" → if the intent is clearly to start coding, [ACTION:NEW_PROJECT] fishing-poles; if it's ambiguous (no follow-up context, sounds like it could be a research bookmark), ask "Do you want me to scaffold a new project, sir, or research fishing poles?" — never silently slugify into a folder.
+  If genuinely ambiguous, ASK before assuming build intent.
 - [ACTION:OPEN_TERMINAL] — ONLY for spawning a fresh macOS Terminal.app window running Claude Code. NEVER use this for Cursor, VS Code, Xcode, iTerm, Warp, or any other app. Those go through OPEN_APP.
 - [ACTION:OPEN_APP] target — open a macOS app by name OR a folder in Finder. Use for ANY local-system "open X" request that isn't a web URL. This is the DEFAULT for "open X" / "launch X" / "fire up X". NEVER use [ACTION:BROWSE] for local paths or apps, and NEVER use [ACTION:OPEN_TERMINAL] for non-Terminal apps.
   "open Cursor" / "launch Cursor" / "fire up Cursor" → [ACTION:OPEN_APP] Cursor
@@ -232,9 +292,13 @@ DESIGN-PARTNER MODE (Phase 3):
 - [ACTION:START_DESIGN] topic — open a design conversation. JARVIS becomes the design partner; subsequent turns route through Opus until the user ships or scraps. Use for "let's design X", "plan a Y", "spec a Z", "I want to design something for…".
   "let's design a daily rollup" → [ACTION:START_DESIGN] daily rollup
   "plan a feature for client onboarding" → [ACTION:START_DESIGN] client onboarding
+  DESIGN-vs-BUILD DISCRIMINATION (critical): if {user_name} says he wants to talk through, discuss, brainstorm, or design something BEFORE building it, emit [ACTION:START_DESIGN] and let the design panel collect the topic. Do NOT emit [ACTION:PROMPT_PROJECT] or [ACTION:REMEMBER] in that case. A direct build request ("add a footer that says copyright 2026", "fix the login bug", "yes please add that to the code") still emits the appropriate build/dispatch action — only stated design intent triggers START_DESIGN. When in doubt and the user did not use design-intent words, dispatch the build action; START_DESIGN is the opt-in path, not the default.
 - [ACTION:SHIP_DESIGN] — finalize the active design and hand it to Claude Code (Phase 4). ONLY emit when a design session is active. Use for "ship it", "send it", "build it".
 - [ACTION:SCRAP_DESIGN] — discard the active design. Returns state to IDLE. ONLY emit when a session is active. Use for "scrap this", "start over".
 - [ACTION:SHOW_DRAFT] — speak the assembled draft so far. ONLY emit when a session is active.
+- [ACTION:START_DICTATION] — engage dictation mode: the next user utterance is captured verbatim and pasted into Cursor's claude terminal after confirmation. ONLY emit when the user explicitly says one of: "dictate to claude", "tell claude directly", "send claude a message", "dictation mode", "skip design". Never infer dictation intent from build/feature requests — direct build requests go to PROMPT_PROJECT.
+- [ACTION:MERGE_BRANCH] — run smoke_test.sh then merge the current feature/* branch into main. ONLY emit when the user explicitly says "merge it" or similar and we're on a feature branch. Never auto-emit.
+- [ACTION:RESTART_SELF] — spawn the detached restarter (scripts/restart.sh). Use ONLY for "restart yourself" / "restart jarvis" / "kick yourself". Acknowledge before restart kills the current process.
 - [ACTION:LIST_PROJECTS] — read the authoritative list of projects from ~/Code/, ~/projects/, and the alias table. Emit this tag (no target) whenever the user asks what projects exist and you didn't fast-path it. Output gets spoken to the user.
 
 PROJECTS ARE AUTHORITATIVE — DO NOT FABRICATE:
@@ -840,7 +904,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1078,6 +1142,17 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
         await _speak(ws, "Cancelled, sir.")
         return True
 
+    # Phase 4: AppleScript ship confirmation routes to its dedicated handler
+    # before the alias/register paths so its phrases take priority.
+    if offer["kind"] == "ship_confirm":
+        return await _handle_ship_confirm(transcript, ws)
+
+    # Phase 5: self-mod approval gate. ONLY "confirmed" proceeds. Anything
+    # else (including 'yes' / 'do it' / 'ship it') is treated as decline
+    # — this is the most-restrictive confirmation in the codebase.
+    if offer["kind"] == "self_mod_confirm":
+        return await _handle_self_mod_confirm(transcript, ws)
+
     if offer["kind"] == "alias_remove":
         if (t in confirm_words or any(t.startswith(w + " ") for w in confirm_words)
                 or "remove" in t or "delete" in t or "drop" in t):
@@ -1129,74 +1204,562 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
 
 
 async def _execute_start_design(topic: str, ws):
-    """Open a design conversation rooted at the active project (or the project the user names).
+    """Open a design conversation rooted at whatever project is currently active.
+
+    If no project is open, the session starts with no target — Opus designs
+    abstractly and the Design Panel disables the Ship button until a project
+    is opened.
+
+    If `topic` is empty (the user opted into design mode via a generic phrase
+    like "design mode" or "talk about a feature"), the session still starts
+    immediately so subsequent turns route through Opus, but Jarvis speaks a
+    prompt asking for the topic instead of acknowledging it. The next user
+    turn becomes the first design-conversation message and Opus picks up
+    from there.
 
     Future turns route to `design_session.handle_turn()` via the voice_handler
     DESIGNING branch — Haiku is bypassed entirely until ship/scrap.
     """
     import design_partner, project_context
 
-    # Determine the project context. Prefer the active warm-loaded project;
-    # fall back to the JARVIS repo so the user can always design something
-    # without first opening a project.
     active_ctx = project_context.get_active()
-    if active_ctx:
-        project_path = active_ctx.project_path
-    else:
-        project_path = Path(__file__).resolve().parent
-        log.info(f"start_design: no active project, defaulting to {project_path}")
+    project_path = active_ctx.project_path if active_ctx else None
+    raw_topic = (topic or "").strip()
+    topic_was_empty = not raw_topic
+    topic_clean = raw_topic or "untitled design"
 
-    topic_clean = (topic or "").strip() or "untitled design"
-    self_mod = (project_path.resolve() == Path(__file__).resolve().parent.resolve())
+    self_mod = bool(
+        project_path
+        and project_path.resolve() == Path(__file__).resolve().parent.resolve()
+    )
 
     session = design_partner.start_for_ws(ws, project_path, topic_clean, self_mod=self_mod)
-    log.info(f"design_partner: session {session.id} started on {project_path} (topic={topic_clean!r}, self_mod={self_mod})")
+    target_desc = str(project_path) if project_path else "(no project)"
+    log.info(
+        f"design_partner: session {session.id} started on {target_desc} "
+        f"(topic={topic_clean!r}, self_mod={self_mod}, prompted_for_topic={topic_was_empty})"
+    )
 
     await session.emit_state()
     await session.emit("design.topic_set", title=topic_clean, status="done",
-                        payload={"project_path": str(project_path)})
+                        payload={"project_path": str(project_path) if project_path else ""})
 
-    msg = (
-        f"Right, sir — let's design '{topic_clean}'."
-        if not self_mod
-        else f"Right, sir — let's design '{topic_clean}' for myself. I'll be careful."
-    )
+    if topic_was_empty:
+        # Explicit opt-in via _DESIGN_OPTIN_PHRASES — user hasn't named a
+        # topic yet. Ask for one. The next user utterance routes through the
+        # DESIGNING branch (voice_handler) directly to Opus, which will
+        # absorb it as the first design-conversation message.
+        msg = "What would you like to design, sir?"
+    elif not project_path:
+        msg = f"Right, sir — designing '{topic_clean}' in the abstract. Open a project before shipping."
+    elif self_mod:
+        msg = f"Right, sir — let's design '{topic_clean}' for myself. I'll be careful."
+    else:
+        msg = f"Right, sir — let's design '{topic_clean}' for {project_path.name}."
     await _speak(ws, msg)
 
 
-async def _execute_ship_design(ws):
-    """Transition DESIGNING → BUILDING and hand the prompt off (Phase 4 owns the actual pipe).
+async def _execute_start_dictation(ws):
+    """Mode 2 (chunk 21) — open dictation mode.
 
-    For Phase 3, persists the finalized draft to design_sessions, emits the
-    state transition, and parks BUILDING. Phase 4 will replace the parked
-    behavior with the actual handoff into Cursor's claude pane.
+    Verifies a project is open (dictation needs a target). Sets the
+    voice_handler's dictation_phase to "capturing_prompt" so the next
+    user utterance is captured verbatim as the prompt rather than
+    routed through the normal action pipeline. Speaks the entry line
+    and flips the Process Panel's · dictation indicator on.
+
+    The phase is owned by voice_handler — it lives on the ws object
+    via setattr (no nicer option for cross-call state without a class
+    rewrite). Cleared on confirm/cancel or on a fresh dictation start.
     """
-    import design_partner
+    import project_context
+
+    active_ctx = project_context.get_active()
+    project_path = active_ctx.project_path if active_ctx else None
+    if project_path is None:
+        await _speak(
+            ws,
+            "Which project should I dictate to, sir? Open one first, then say it again.",
+        )
+        return
+
+    # Stash state on ws so the transcript handler can find it next turn.
+    ws.dictation_phase = "capturing_prompt"
+    ws.dictation_captured_prompt = ""
+    ws.dictation_project_path = str(project_path)
+
+    log.info(
+        "dictation: opened for project=%s — awaiting prompt utterance",
+        project_path.name,
+    )
+
+    # Push the panel indicator on via a dedicated WS event the frontend
+    # mirrors into Process Panel header chrome. (See main.ts hook.)
+    try:
+        await ws.send_json({
+            "type": "dictation_event",
+            "event": {"state": "capturing_prompt", "project": project_path.name},
+        })
+    except Exception:
+        pass
+
+    await _speak(ws, "Dictating to Claude Code, sir. What would you like to say?")
+
+
+async def _execute_confirm_dictation(ws, prompt: str):
+    """Mode 2 — user confirmed; auto-paste to Cursor's claude terminal.
+
+    Uses the same paste_into_cursor_claude helper as design ship-it
+    (Mode 1). On pre-flight failure (Cursor not focused), falls back to
+    writing .jarvis/inbox/<task_id>.md so the user still has the prompt
+    staged.
+
+    Clears ws.dictation_* state on exit (success OR failure).
+    """
+    from actions import paste_into_cursor_claude
+    import uuid
+
+    project_path_str = getattr(ws, "dictation_project_path", "")
+    project_path = Path(project_path_str) if project_path_str else None
+
+    # Wipe state up front so an error path doesn't leave a half-active
+    # dictation session.
+    ws.dictation_phase = None
+    ws.dictation_captured_prompt = ""
+    try:
+        ws.dictation_project_path = ""
+    except Exception:
+        pass
+    try:
+        await ws.send_json({"type": "dictation_event", "event": {"state": "idle"}})
+    except Exception:
+        pass
+
+    result = await paste_into_cursor_claude(prompt)
+
+    if result.get("success"):
+        log.info("dictation: paste succeeded (prompt_len=%d)", len(prompt))
+        await _speak(ws, "Sent, sir.")
+        return
+
+    # Fallback path — write the prompt to .jarvis/inbox/<id>.md so the
+    # user can paste manually. Mirrors the chunk-21 Mode 1 fallback.
+    reason = result.get("reason", "unknown")
+    detail = result.get("detail", "")
+    log.warning(
+        "dictation paste failed (reason=%s, detail=%s) — staging file fallback",
+        reason, detail[:120],
+    )
+
+    inbox_path = None
+    if project_path:
+        try:
+            inbox_dir = project_path / ".jarvis" / "inbox"
+            inbox_dir.mkdir(parents=True, exist_ok=True)
+            stem = uuid.uuid4().hex[:8]
+            inbox_path = inbox_dir / f"dictation-{stem}.md"
+            inbox_path.write_text(prompt + "\n", encoding="utf-8")
+        except Exception as e:
+            log.error("dictation fallback write failed: %s", e)
+            inbox_path = None
+
+    if reason == "cursor_not_focused":
+        front = result.get("frontmost", "another app")
+        msg = (f"Prompt staged, sir — {front} was in focus, not Cursor. "
+               f"Paste manually when ready.")
+    else:
+        msg = "Prompt staged, sir — paste manually if Cursor wasn't ready."
+    if inbox_path is None:
+        msg = ("Couldn't paste OR stage, sir — Cursor wasn't focused and "
+               "I had no project to fall back to.")
+    await _speak(ws, msg)
+
+
+async def _execute_cancel_dictation(ws):
+    """Mode 2 — user said cancel/scrap/nevermind. Drop the dictation state
+    and speak an acknowledgment. No file write, no paste."""
+    ws.dictation_phase = None
+    ws.dictation_captured_prompt = ""
+    try:
+        ws.dictation_project_path = ""
+    except Exception:
+        pass
+    try:
+        await ws.send_json({"type": "dictation_event", "event": {"state": "idle"}})
+    except Exception:
+        pass
+    await _speak(ws, "Cancelled, sir.")
+
+
+async def _execute_ship_design(ws):
+    """Phase 4 — DESIGNING → BUILDING. Compose final prompt + hand off.
+
+    Two dispatch methods, picked by config/design_partner.json#ship_method:
+
+      file        — write to <project>/.jarvis/inbox/<id>.md, speak the path,
+                    transition to BUILDING. Safe, deterministic, default.
+      applescript — bring Cursor to front, ask for explicit voice confirmation
+                    ("ship it for real"), then clipboard-paste + Enter into
+                    whatever pane has focus. Brittle — confirmation gate is
+                    NOT optional.
+
+    Phase 5 self-mod approval gate: when session.self_mod is True, we DON'T
+    ship immediately. Instead we stage a "self_mod_confirm" pending offer
+    and require the explicit voice word "confirmed" before any composition
+    or dispatch happens. NOT optional per the plan.
+    """
+    import design_partner, self_mod
 
     session = design_partner.get_for_ws(ws)
     if session is None:
+        log.info("_execute_ship_design: no active session on ws")
         await _speak(ws, "No design to ship, sir.")
         return
+
+    log.info(
+        "_execute_ship_design: session=%s has_target=%s draft_empty=%s self_mod=%s",
+        session.id, session.has_target, session.draft.is_empty(), session.self_mod,
+    )
 
     if session.draft.is_empty():
         await _speak(ws, "The draft is empty, sir — nothing to ship yet.")
         return
 
-    final_prompt = session.draft.render_markdown()
+    # No-target fast path: paste the draft straight into Cursor's claude
+    # terminal without project bookkeeping. The user explicitly wants to ship
+    # a prompt into whatever Cursor pane is in focus, even when no JARVIS
+    # project is the formal "target".
+    if not session.has_target:
+        from actions import paste_into_cursor_claude
+        final_prompt = design_partner.compose_final_prompt(session)
+        log.info("_execute_ship_design: no-target paste, prompt_len=%d", len(final_prompt))
+        # No target selected → no window targeting; paste lands in whichever
+        # Cursor window is currently active.
+        result = await paste_into_cursor_claude(final_prompt)
+        log.info("_execute_ship_design: paste result=%s", result)
+        if result.get("success"):
+            session.mark_building()
+            await session.emit_state()
+            await _speak(ws, "Sent to Claude Code, sir.")
+        else:
+            reason = result.get("reason", "unknown")
+            detail = result.get("detail", "")
+            if reason == "cursor_unavailable":
+                await _speak(ws, "Couldn't reach Cursor, sir — make sure it's running.")
+            elif reason == "cursor_focus_lost":
+                await _speak(ws, "Cursor wouldn't take focus, sir — try again.")
+            else:
+                await _speak(ws, f"Couldn't paste, sir — {detail[:120] or reason}.")
+        return
+
+    # ── Phase 5 approval gate for self-modifications ──
+    # Belt-and-suspenders: check both the session's self_mod flag AND the
+    # path identity (in case the flag got out of sync somehow).
+    if session.self_mod or self_mod.is_jarvis_repo(session.project_path):
+        ws.pending_offer = {
+            "kind": "self_mod_confirm",
+            "session_id": session.id,
+        }
+        await _speak(
+            ws,
+            "I'm about to modify myself, sir. Say 'confirmed' to proceed, "
+            "anything else to cancel."
+        )
+        return
+
+    final_prompt = design_partner.compose_final_prompt(session)
+    method = design_partner.get_ship_method()
+
+    if method == "auto_paste":
+        # Chunk 21 Mode 1: bring Cursor to front (pre-flight checks it's
+        # already frontmost), clipboard-paste the prompt, press Enter. The
+        # helper handles clipboard save/restore so the user's clipboard
+        # isn't clobbered. On any pre-flight or AppleScript failure, fall
+        # back to the file path — the prompt is staged at .jarvis/inbox/
+        # so the user can paste manually.
+        # Pass the project path so paste_into_cursor_claude can pick the
+        # right Cursor window across multi-window setups (multi-monitor).
+        from actions import paste_into_cursor_claude
+        result = await paste_into_cursor_claude(
+            final_prompt,
+            target_project_path=str(session.project_path) if session.project_path else None,
+        )
+
+        if result.get("success"):
+            session.mark_building()
+            await session.emit_state()
+            design_partner.persist(
+                session, status="building",
+                final_prompt=final_prompt, ship_method="auto_paste",
+            )
+            await _speak(ws, "Sent to Claude Code, sir.")
+            return
+
+        # Pre-flight or paste failed — fall through to file fallback with
+        # an explanatory voice line.
+        reason = result.get("reason", "unknown")
+        detail = result.get("detail", "")
+        log.warning(
+            "auto_paste failed (reason=%s, detail=%s) — falling back to file ship",
+            reason, detail[:120],
+        )
+        try:
+            out = design_partner.ship_via_file(session, final_prompt)
+        except Exception as e:
+            log.error(f"ship_via_file fallback also failed: {e}")
+            await _speak(ws, f"Couldn't stage the prompt, sir: {str(e)[:120]}")
+            return
+
+        session.mark_building()
+        await session.emit_state()
+        design_partner.persist(
+            session, status="building",
+            final_prompt=final_prompt, ship_method="auto_paste_fallback_file",
+            inbox_path=str(out),
+        )
+
+        if reason == "cursor_not_focused":
+            front = result.get("frontmost", "another app")
+            await _speak(
+                ws,
+                f"Prompt staged, sir — {front} was in focus, not Cursor. "
+                f"Paste manually when ready.",
+            )
+        else:
+            await _speak(
+                ws,
+                "Prompt staged, sir — paste manually if Cursor wasn't ready.",
+            )
+        return
+
+    if method == "applescript":
+        # Two-step: prep + voice confirmation via the existing pending_offer
+        # infrastructure. The actual paste happens after the user says
+        # "ship it for real" — handled in _handle_pending_offer.
+        ws.pending_offer = {
+            "kind": "ship_confirm",
+            "session_id": session.id,
+            "final_prompt": final_prompt,
+            "project_path": str(session.project_path),
+        }
+        await _speak(
+            ws,
+            f"Bringing Cursor forward, sir. Focus the claude terminal pane, "
+            f"then say 'ship it for real' to paste. Cancel by saying 'never mind'."
+        )
+        # Pre-focus Cursor so the user can confirm focus immediately.
+        try:
+            import asyncio as _aio
+            await _aio.create_subprocess_exec(
+                "osascript", "-e", 'tell application "Cursor" to activate',
+                stdout=_aio.subprocess.DEVNULL, stderr=_aio.subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        return
+
+    # Default: file method
+    try:
+        out = design_partner.ship_via_file(session, final_prompt)
+    except Exception as e:
+        log.error(f"ship_via_file failed: {e}")
+        await _speak(ws, f"Couldn't stage the prompt, sir: {str(e)[:120]}")
+        return
+
     session.mark_building()
     await session.emit_state()
-    design_partner.persist(session, status="building", final_prompt=final_prompt)
+    design_partner.persist(
+        session, status="building",
+        final_prompt=final_prompt, ship_method="file",
+        inbox_path=str(out),
+    )
 
-    # Phase 4 replaces this — for now we just acknowledge and park.
+    rel = out.relative_to(session.project_path) if session.project_path else out
     await _speak(
         ws,
-        "Shipping now, sir. The handoff into Cursor's terminal is the Phase 4 piece — "
-        "for now the draft is saved and the panel has the final text."
+        f"Prompt staged at {rel}, sir. Paste it into Cursor's claude terminal to ship."
     )
 
 
+async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
+    """Pending-offer handler for the Phase 5 self-mod approval gate.
+
+    ONLY accepts the literal word "confirmed" (allowing surrounding filler
+    like "yes confirmed" or "confirmed please"). Anything else cancels —
+    'yes' alone is NOT enough, by design.
+    """
+    offer = getattr(ws, "pending_offer", None)
+    if not offer or offer.get("kind") != "self_mod_confirm":
+        return False
+
+    t = transcript.lower().strip()
+    import re as _conf_re
+    confirmed = bool(_conf_re.search(r"\bconfirmed\b", t))
+    if not confirmed:
+        await _speak(ws, "Cancelled, sir. Self-mod requires the word 'confirmed'.")
+        return True
+
+    import design_partner, self_mod
+
+    session = None
+    for s in design_partner._active.values():
+        if s.id == offer["session_id"]:
+            session = s
+            break
+    if session is None:
+        await _speak(ws, "I lost the session, sir — try again.")
+        return True
+
+    # Auto-snapshot any in-flight work on the current branch so the user's
+    # changes are never lost AND assert_clean_tree() inside
+    # create_feature_branch never blocks them. Runtime log noise + scratch
+    # dirs are now .gitignored, so most ships will hit the no-op path.
+    snapshot_sha = None
+    try:
+        snapshot_sha = self_mod.commit_wip_snapshot(session.topic)
+    except Exception as e:
+        log.error(f"commit_wip_snapshot failed: {e}")
+        await _speak(ws, f"Couldn't snapshot the dirty tree, sir: {str(e)[:160]}")
+        return True
+    if snapshot_sha:
+        log.info(f"_handle_self_mod_confirm: snapshotted dirty tree as {snapshot_sha[:8]}")
+
+    try:
+        branch, pre_sha = self_mod.create_feature_branch(session.topic)
+    except RuntimeError as e:
+        await _speak(ws, f"Couldn't branch: {str(e)[:200]}")
+        return True
+
+    # Record branch info on the session so 'merge it' can find it later.
+    session.feature_branch = branch
+    session.pre_build_sha = pre_sha
+
+    # Compose + dispatch. Branch is already created; now paste the prompt
+    # directly into the matching Cursor window so the user can see Claude
+    # Code pick it up live. Falls back to file-ship if the paste fails (so
+    # the prompt isn't lost — they can copy from .jarvis/inbox/ manually).
+    final_prompt = design_partner.compose_final_prompt(session)
+    from actions import paste_into_cursor_claude
+    paste_result = await paste_into_cursor_claude(
+        final_prompt,
+        target_project_path=str(session.project_path),
+    )
+    log.info("_handle_self_mod_confirm: paste result=%s", paste_result)
+
+    if paste_result.get("success"):
+        session.mark_building()
+        await session.emit_state()
+        design_partner.persist(
+            session, status="building",
+            final_prompt=final_prompt, ship_method="auto_paste-self-mod",
+        )
+        await _speak(
+            ws,
+            f"Branched to {branch}, sir, and sent to Claude Code. "
+            f"Say 'merge it' when you're ready to fold into main, "
+            f"or 'scrap it' to abandon the branch."
+        )
+        return True
+
+    # Paste failed — fall back to file ship so the prompt isn't lost.
+    log.warning(
+        "_handle_self_mod_confirm: paste failed (reason=%s), falling back to file ship",
+        paste_result.get("reason"),
+    )
+    try:
+        out = design_partner.ship_via_file(session, final_prompt)
+    except Exception as e:
+        await _speak(ws, f"Self-mod ship failed: {str(e)[:200]}")
+        return True
+
+    session.mark_building()
+    await session.emit_state()
+    design_partner.persist(
+        session, status="building",
+        final_prompt=final_prompt, ship_method="auto_paste_fallback_file-self-mod",
+        inbox_path=str(out),
+    )
+
+    rel = out.relative_to(session.project_path) if session.project_path else out
+    reason = paste_result.get("reason", "unknown")
+    await _speak(
+        ws,
+        f"Branched to {branch}, sir. Paste failed ({reason}) — prompt staged at {rel}. "
+        f"Watch claude work in Cursor; say 'merge it' when you're ready to fold into main, "
+        f"or 'scrap it' to abandon the branch."
+    )
+    return True
+
+
+async def _handle_ship_confirm(transcript: str, ws) -> bool:
+    """Pending-offer handler for AppleScript ship method.
+
+    Triggered after _execute_ship_design (method=applescript) staged the
+    prompt and asked for voice confirmation. Recognizes:
+      'ship it for real' / 'do it' / 'paste it' / 'go ahead' → paste
+      cancel words (handled by _handle_pending_offer upstream) → drop offer
+
+    Returns True if handled (offer consumed), False otherwise.
+    """
+    offer = getattr(ws, "pending_offer", None)
+    if not offer or offer.get("kind") != "ship_confirm":
+        return False
+
+    t = transcript.lower().strip()
+    confirm = (
+        "ship it for real" in t or t == "for real" or
+        "paste it" in t or t == "do it" or "go ahead" in t
+    )
+    if not confirm:
+        return False
+
+    import design_partner
+    session = None
+    for s in design_partner._active.values():
+        if s.id == offer["session_id"]:
+            session = s
+            break
+    if session is None:
+        await _speak(ws, "I lost the session, sir — try again.")
+        return True
+
+    ok = await design_partner.ship_via_applescript(session, offer["final_prompt"])
+    if not ok:
+        await _speak(ws, "AppleScript paste failed, sir — falling back to file method.")
+        try:
+            out = design_partner.ship_via_file(session, offer["final_prompt"])
+            design_partner.persist(
+                session, status="building",
+                final_prompt=offer["final_prompt"],
+                ship_method="applescript-fallback-file",
+                inbox_path=str(out),
+            )
+            session.mark_building()
+            await session.emit_state()
+            await _speak(ws, f"Staged at .jarvis/inbox/{out.name} instead.")
+        except Exception as e:
+            log.error(f"applescript fallback file write failed: {e}")
+        return True
+
+    session.mark_building()
+    await session.emit_state()
+    design_partner.persist(
+        session, status="building",
+        final_prompt=offer["final_prompt"], ship_method="applescript",
+        inbox_path="",
+    )
+    await _speak(ws, "Pasted, sir.")
+    return True
+
+
 async def _execute_scrap_design(ws):
-    """DESIGNING → IDLE. Drops the draft and the design conversation history."""
+    """DESIGNING → IDLE. Drops the draft and the design conversation history.
+
+    Once the session has transitioned to BUILDING (shipped), scrap is a
+    no-op + clarification — the inbox file (if any) is the user's now and
+    JARVIS doesn't delete it. To clean up an in-progress build the user
+    deletes the inbox file manually.
+    """
     import design_partner
 
     session = design_partner.get_for_ws(ws)
@@ -1204,11 +1767,57 @@ async def _execute_scrap_design(ws):
         await _speak(ws, "No design to scrap, sir.")
         return
 
+    if session.state == "BUILDING":
+        await _speak(ws, "That one already shipped, sir — the inbox file is yours to keep or delete.")
+        return
+
     design_partner.persist(session, status="scrapped", final_prompt=session.draft.render_markdown())
     session.scrap()
     await session.emit_state()
     design_partner.stop_for_ws(ws)
     await _speak(ws, "Scrapped, sir. Clean slate.")
+
+
+async def _execute_merge_branch(ws):
+    """Phase 5 — run smoke_test.sh then merge the current feature/* branch into main.
+
+    Refuses if not on a feature/* branch. Refuses if smoke fails (without
+    auto-resetting — user decides what to do with a failed feature branch).
+    Never deletes the feature branch after merge.
+    """
+    import self_mod
+    cur = self_mod.current_branch()
+    if not cur.startswith("feature/"):
+        await _speak(ws, f"Not on a feature branch, sir — currently on {cur}. Nothing to merge.")
+        return
+
+    await _speak(ws, "Running smoke test, sir.")
+    result = await self_mod.run_smoke_test(timeout_sec=120)
+    if not result["success"]:
+        last = (result["stdout"] + result["stderr"]).splitlines()
+        tail = " ".join(last[-3:])[:300] if last else "no output"
+        await _speak(ws, f"Smoke failed, sir — staying on {cur}. Tail: {tail}")
+        log.warning(f"smoke fail on merge_branch:\nstdout:\n{result['stdout']}\nstderr:\n{result['stderr']}")
+        return
+
+    merge = self_mod.merge_to_main(cur)
+    if merge["success"]:
+        await _speak(ws, f"Smoke passed. {merge['message']} You may want to restart yourself.")
+    else:
+        await _speak(ws, f"Smoke passed but merge failed: {merge['message'][:200]}")
+
+
+async def _execute_restart_self(ws):
+    """Phase 5 — spawn the detached restarter. Speaks confirmation BEFORE the
+    restarter kills the current process (otherwise the speech doesn't make it
+    to the user)."""
+    import self_mod
+    await _speak(ws, "Restarting in a couple seconds, sir.")
+    # Give the TTS time to actually send before the restarter pkills us.
+    await asyncio.sleep(0.8)
+    result = self_mod.restart_self()
+    if not result["success"]:
+        await _speak(ws, f"Restart failed: {result['message'][:200]}")
 
 
 async def _execute_show_draft(ws):
@@ -1384,86 +1993,6 @@ async def _execute_browse(target: str):
             await emit_error(task_id, "Browse failed", detail=str(e)[:200])
 
 
-async def _execute_research(target: str, ws=None):
-    """Execute research via claude -p in background. Opens report and speaks when done."""
-    async with process_bus.task_context(f"Researching: {target[:60]}") as task_id:
-        try:
-            name = _generate_project_name(target)
-            path = str(Path.home() / "Desktop" / name)
-            os.makedirs(path, exist_ok=True)
-            await emit_step(task_id, "Project folder ready", detail=path)
-
-            prompt = (
-                f"{target}\n\n"
-                f"Research this thoroughly. Find REAL data — not made-up examples.\n"
-                f"Create a well-designed HTML file called `report.html` in the current directory.\n"
-                f"Dark theme, clean typography, organized sections, real links and sources.\n"
-                f"The working directory is: {path}"
-            )
-
-            log.info(f"Research started via claude -p in {path}")
-            await emit_step(task_id, "Claude Code researching…", status="active")
-
-            process = await asyncio.create_subprocess_exec(
-                "claude", "-p", "--output-format", "text", "--dangerously-skip-permissions",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=path,
-            )
-
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=prompt.encode()),
-                timeout=300,
-            )
-
-            result = stdout.decode().strip()
-            log.info(f"Research complete ({len(result)} chars)")
-            await emit_step(task_id, f"Research returned {len(result)} chars", status="done")
-
-            recently_built.append({"name": name, "path": path, "time": time.time()})
-
-            # Find and open any HTML report
-            report = Path(path) / "report.html"
-            if not report.exists():
-                # Check for any HTML file
-                html_files = list(Path(path).glob("*.html"))
-                if html_files:
-                    report = html_files[0]
-
-            if report.exists():
-                await emit_browser_action(task_id, "open report", url=f"file://{report}")
-                await open_browser(f"file://{report}")
-                log.info(f"Opened {report.name} in browser")
-
-            # Notify via voice if WebSocket still connected
-            if ws:
-                try:
-                    notify_text = f"Research is complete, sir. Report is open in your browser."
-                    audio = await synthesize_speech(notify_text)
-                    if audio:
-                        await ws.send_json({"type": "status", "state": "speaking"})
-                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": notify_text})
-                        await ws.send_json({"type": "status", "state": "idle"})
-                        log.info(f"JARVIS: {notify_text}")
-                except Exception:
-                    pass  # WebSocket might be gone
-
-        except asyncio.TimeoutError:
-            log.error("Research timed out after 5 minutes")
-            await emit_error(task_id, "Research timed out", detail="claude -p exceeded 5 minute budget")
-            if ws:
-                try:
-                    audio = await synthesize_speech("Research timed out, sir. It was taking too long.")
-                    if audio:
-                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": "Research timed out, sir."})
-                except Exception:
-                    pass
-        except Exception as e:
-            log.error(f"Research execution failed: {e}")
-            await emit_error(task_id, "Research failed", detail=str(e)[:200])
-
-
 async def _focus_terminal_window(project_name: str):
     """Bring a Terminal window matching the project name to front."""
     escaped = project_name.replace('"', '\\"')
@@ -1571,9 +2100,10 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
             dispatch_registry.update_status(dispatch_id, "building")
             await emit_step(task_id, "Claude Code working…", status="active")
 
-            # Run claude -p in background. WorkSession.send() emits code_task
-            # events as it streams stdout (see work_mode.py).
-            full_response = await dispatch.send(prompt, task_id=task_id)
+            # Run claude -p in background. WorkSession.send() emits tool.*
+            # events as it streams stdout (see work_mode.py + claude_middleware.py
+            # — middleware extracts result.* cards via Haiku after completion).
+            full_response = await dispatch.send(prompt, task_id=task_id, anthropic_client=anthropic_client)
             await dispatch.stop()
 
             # Auto-open any localhost URLs from response
@@ -1659,44 +2189,486 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
                 pass
 
 
-async def self_work_and_notify(session: WorkSession, prompt: str, ws):
-    """Run claude -p in background and notify via voice when done.
+# Match any http(s) URL appearing in a code_execution.input.code Python
+# source. Excludes whitespace, quotes, angle brackets, and the closing
+# paren that often follows the URL in code. Stripping is done at the
+# caller because trailing punctuation (`,`, `.`, `)`) is common in code
+# but should not be part of the URL.
+_CODE_URL_RE = re.compile(r'https?://[^\s"\'<>)]+')
 
-    Used by the [ACTION:RESEARCH] dispatch path (and the legacy "fix yourself"
-    work-mode prompt). Wrapped in a process-panel task so users see live
-    stdout streaming from the claude -p subprocess.
+
+def _extract_urls_from_code(code: str) -> list[str]:
+    """Pull URLs out of a code_execution Python source string in order of
+    appearance. Trailing code punctuation is stripped. Returns a list with
+    duplicates preserved — the model may legitimately fetch the same URL
+    twice across iterations."""
+    if not code:
+        return []
+    urls: list[str] = []
+    for m in _CODE_URL_RE.findall(code):
+        clean = m.rstrip(",.;:)\"'")
+        if clean.startswith(("http://", "https://")):
+            urls.append(clean)
+    return urls
+
+
+async def _emit_research_source_card(task_id: str, url: str, snippet: str) -> None:
+    """Fire-and-forget: fetch preview metadata, emit result.research_source.
+
+    Never raises. If the preview fetch fails, the card still renders with
+    hostname-only metadata and the snippet text.
     """
-    async with process_bus.task_context(f"Researching: {prompt[:60]}") as task_id:
-        try:
-            await emit_step(task_id, "Claude Code working…", status="active")
-            full_response = await session.send(prompt, task_id=task_id)
-            log.info(f"Background work complete ({len(full_response)} chars)")
+    try:
+        preview = await fetch_page_preview(url)
+        title = preview.get("title") or preview.get("hostname") or url
+        await emit_tool_event(
+            task_id,
+            "result.research_source",
+            title[:120],
+            detail=(snippet or "")[:300],
+            status="done",
+            payload={
+                "url": url,
+                "title": preview.get("title"),
+                "hostname": preview.get("hostname"),
+                "og_image_url": preview.get("og_image_url"),
+                "snippet": (snippet or "")[:500],
+            },
+        )
+    except Exception as e:
+        log.debug(f"emit_research_source_card failed for {url}: {e}")
 
-            # Summarize and speak
-            if anthropic_client and full_response:
+
+def _extract_fetch_snippet(content) -> str:
+    """Pull a short snippet from a web_fetch_tool_result.content list.
+
+    The result content is typically a list of structured items; we look
+    for any item with a `.text` attribute (or `text` key) and return the
+    first ~300 chars of the first non-empty one.
+    """
+    if not isinstance(content, list):
+        return ""
+    for item in content:
+        txt = getattr(item, "text", None)
+        if txt is None and isinstance(item, dict):
+            txt = item.get("text")
+        if txt:
+            s = str(txt).strip()
+            # Take the first paragraph; collapse internal whitespace.
+            first = re.split(r"\n\s*\n", s, maxsplit=1)[0]
+            return re.sub(r"\s+", " ", first)[:500]
+    return ""
+
+
+async def _execute_native_research(target: str, ws=None):
+    """Native research path — Opus 4.7 with server-side web_search + web_fetch.
+
+    No subprocess. No folder. Tool calls stream to the Process Panel as
+    tool.web_search / tool.web_fetch events. The completed response runs
+    through the existing Haiku card-extraction middleware so result.web /
+    result.product / result.location / result.image cards land in the panel.
+    A short voice summary is spoken via TTS.
+
+    Filesystem-readonly by design — see docs/research_routing_diagnosis.md.
+    """
+    log.info("native_research invoked: query=%r ws=%s", target[:160], "yes" if ws else "no")
+    async with process_bus.task_context(f"Researching: {target[:60]}") as task_id:
+        if anthropic_client is None:
+            log.warning("native_research bypassed via fallback: reason=no_anthropic_client")
+            await emit_error(task_id, "Research unavailable", detail="ANTHROPIC_API_KEY not configured.")
+            return
+
+        # Per-request 10-minute timeout. Default client timeout is 20s, but
+        # server-side web_search + web_fetch agentic loops can easily run
+        # for minutes — non-streamed requests at the SDK default hit the
+        # docs.anthropic.com/en/api/errors#long-requests timeout. with_options
+        # clones the client without mutating the shared global.
+        client = anthropic_client.with_options(timeout=600.0, max_retries=1)
+
+        system_prompt = (
+            f"You are JARVIS, {USER_NAME}'s assistant. {USER_NAME} asked a research "
+            "question. Use web_search and web_fetch to find real, current information — "
+            "real product names, prices, addresses, source URLs. Never invent listings.\n\n"
+            "LOCALE: the user is in the United States. Prices must be in USD ($). If "
+            "a source quotes a non-USD price (£, €, ¥, etc.), either convert to a "
+            "reasonable USD equivalent or OMIT the price field entirely — never "
+            "display the foreign currency. Addresses and locations should likewise "
+            "prefer US sources when the query has no geographic constraint.\n\n"
+            "REQUIRED RESEARCH PROCEDURE — non-negotiable:\n"
+            "1. Start with one or two web_search calls to identify candidate sources.\n"
+            "2. Then web_fetch the 3-5 most relevant URLs from the search results. "
+            "DO NOT synthesize your answer from search snippets alone — snippets are "
+            "shallow and often missing the prices, specs, addresses, and metadata the "
+            "user wants. The depth comes from fetching the actual pages.\n"
+            "3. Only after fetching, write your final response.\n\n"
+            "JARVIS's UI relies on web_fetch events to render source-preview cards "
+            "(thumbnail + page title + snippet) and to extract product images from "
+            "fetched pages. Skipping web_fetch leaves the UI empty of imagery and "
+            "robs {user} of the visual context they expect. Always fetch.\n\n"
+            "Your response renders as result cards in a visual panel plus a short "
+            "spoken summary. You are NOT writing a file, document, or report. Do not "
+            "say 'I will create a report' or 'see the attached document'. Reply in "
+            "concise prose mentioning specific items the panel can extract as cards "
+            "(products with prices, locations with addresses, web sources with URLs). "
+            "Always include the source URL for each item you mention so cards can "
+            "link back."
+        ).replace("{user}", USER_NAME)
+
+        messages: list[dict] = [{"role": "user", "content": target}]
+        tools = [
+            {"type": "web_search_20260209", "name": "web_search"},
+            {"type": "web_fetch_20260209", "name": "web_fetch"},
+        ]
+
+        assistant_text_parts: list[str] = []
+        tool_result_snippets: list[str] = []
+        seen_search_ids: set[str] = set()
+        seen_fetch_ids: set[str] = set()
+        # FIFO queue of URLs parsed out of code_execution.input.code blocks.
+        # With the _20260209 web_fetch tool version, the actual URL the
+        # model is fetching lives in the Python source the model writes
+        # inside a code_execution call (e.g. `for u in urls: await
+        # web_fetch({"url": u})`); the standalone web_fetch tool_use blocks
+        # that follow have input={}. So we extract URLs from each
+        # code_execution block as it closes and pop the next URL when each
+        # web_fetch block closes. Order-matched: the model executes the
+        # web_fetch calls in the order URLs appear in the code.
+        # See docs/streaming_hang_diagnosis.md → Finding A.
+        pending_fetch_urls: list[str] = []
+        # tool_use_id → URL — populated when a web_fetch server_tool_use
+        # block closes; consumed when its matching web_fetch_tool_result
+        # arrives so the source-preview card can be emitted with the right URL.
+        fetch_url_by_id: dict[str, str] = {}
+        searches = 0
+        fetches = 0
+
+        # Mid-research voice interjection — fires once if research hasn't
+        # finished within 25s. Done-event signals an early return so the
+        # interjection task can no-op cleanly.
+        done_event = asyncio.Event()
+
+        async def _maybe_interject() -> None:
+            try:
+                await asyncio.wait_for(done_event.wait(), timeout=25.0)
+                # Finished before the timer — no interjection needed.
+                return
+            except asyncio.TimeoutError:
+                pass
+            if not ws:
+                return
+            try:
+                msg = "Still gathering, sir."
+                audio = await synthesize_speech(msg)
+                if audio:
+                    await ws.send_json({"type": "status", "state": "speaking"})
+                    await ws.send_json({
+                        "type": "audio",
+                        "data": base64.b64encode(audio).decode(),
+                        "text": msg,
+                    })
+                    await ws.send_json({"type": "status", "state": "idle"})
+                    log.info(f"JARVIS: {msg}")
+            except Exception as e:
+                log.debug(f"mid-research interjection failed: {e}")
+
+        interjection_task = asyncio.create_task(_maybe_interject())
+
+        async def _emit_progress() -> None:
+            await emit_tool_event(
+                task_id, "research.progress", "Research progress",
+                detail=f"read {fetches} source{'s' if fetches != 1 else ''}, "
+                       f"{searches} search{'es' if searches != 1 else ''}",
+                status="active",
+                payload={"fetched": fetches, "searched": searches},
+            )
+
+        await emit_step(task_id, "Searching the web…", status="active")
+
+        try:
+            # Server-side agent loop wrapped in streaming. Each turn opens a
+            # stream context; we react to content_block events as they arrive
+            # so panel events appear live rather than after the whole turn.
+            # If a turn ends with stop_reason="pause_turn" we open another
+            # stream to resume.
+            #
+            # Visibility layer (chunk 16): every stream event is logged at
+            # INFO so a silent stall is visible in logs/jarvis.err.log.
+            # A 60s watchdog (wait_for around iterator.__anext__) aborts
+            # the stream loudly if no event arrives within that window —
+            # SSE can silently disconnect, and without this the symptom
+            # was "POST 200, then nothing for 6 minutes" (see
+            # docs/streaming_hang_diagnosis.md).
+            STREAM_IDLE_TIMEOUT_S = 60.0
+            DELTA_HEARTBEAT_INTERVAL_S = 5.0
+            for turn_idx in range(6):  # cap resumes to avoid runaway
+                # Per-stream state: partial tool-use input JSON keyed by
+                # content-block index (the SDK delivers input_json deltas
+                # per index, then content_block_stop at index closure).
+                pending_tool_use: dict[int, dict] = {}
+                final_message = None
+                log.info("stream_event turn=%d open (model=claude-opus-4-7, msgs=%d)",
+                         turn_idx, len(messages))
+
+                async with client.messages.stream(
+                    model="claude-opus-4-7",
+                    max_tokens=8192,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=tools,
+                ) as stream:
+                    iterator = stream.__aiter__()
+                    delta_count = 0
+                    last_heartbeat = time.monotonic()
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(
+                                iterator.__anext__(),
+                                timeout=STREAM_IDLE_TIMEOUT_S,
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            log.error(
+                                "stream_event WATCHDOG: silent for %.0fs — aborting "
+                                "(turn=%d, deltas_so_far=%d, search=%d, fetch=%d)",
+                                STREAM_IDLE_TIMEOUT_S, turn_idx, delta_count,
+                                searches, fetches,
+                            )
+                            raise RuntimeError("stream_silent_timeout")
+
+                        et = getattr(event, "type", None)
+
+                        if et == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            btype = getattr(block, "type", None)
+                            bname = getattr(block, "name", "") if btype == "server_tool_use" else ""
+                            bid_log = getattr(block, "id", "") if btype == "server_tool_use" else ""
+                            log.info(
+                                "stream_event content_block_start index=%s type=%s name=%s id=%s",
+                                event.index, btype, bname, bid_log,
+                            )
+                            if btype == "server_tool_use":
+                                # Input streams via input_json_delta. Stash
+                                # name+id and accumulate until block_stop.
+                                pending_tool_use[event.index] = {
+                                    "id": getattr(block, "id", "") or "",
+                                    "name": getattr(block, "name", "") or "",
+                                    "partial_json": "",
+                                }
+                            elif btype == "web_search_tool_result":
+                                # Results arrive whole at content_block_start
+                                # — collect snippets for middleware context.
+                                results = getattr(block, "content", None)
+                                result_count = len(results) if isinstance(results, list) else 0
+                                log.info("stream_event web_search_tool_result results=%d", result_count)
+                                if isinstance(results, list):
+                                    for r in results:
+                                        rtype = getattr(r, "type", None)
+                                        if rtype == "web_search_result":
+                                            url = getattr(r, "url", "") or ""
+                                            title = getattr(r, "title", "") or ""
+                                            if title or url:
+                                                tool_result_snippets.append(f"{title}\n{url}")
+                            elif btype == "web_fetch_tool_result":
+                                rc = getattr(block, "content", None)
+                                rc_count = len(rc) if isinstance(rc, list) else 0
+                                tu_id = getattr(block, "tool_use_id", "") or ""
+                                log.info("stream_event web_fetch_tool_result tool_use_id=%s parts=%d",
+                                         tu_id, rc_count)
+                                if isinstance(rc, list):
+                                    for r in rc:
+                                        txt = getattr(r, "text", None)
+                                        if txt:
+                                            tool_result_snippets.append(str(txt)[:2000])
+                                # Emit a source-preview card for this URL.
+                                # Spawned as a task so the (capped 1.5s)
+                                # preview fetch doesn't slow the stream
+                                # consumer.
+                                fetched_url = fetch_url_by_id.get(tu_id, "")
+                                if fetched_url:
+                                    snippet = _extract_fetch_snippet(rc)
+                                    asyncio.create_task(
+                                        _emit_research_source_card(task_id, fetched_url, snippet)
+                                    )
+
+                        elif et == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            dtype = getattr(delta, "type", None)
+                            delta_count += 1
+                            now = time.monotonic()
+                            if now - last_heartbeat >= DELTA_HEARTBEAT_INTERVAL_S:
+                                log.info(
+                                    "stream_event delta_heartbeat count=%d "
+                                    "(rate=%.1f/s, last_type=%s)",
+                                    delta_count, delta_count / max(0.1, now - last_heartbeat),
+                                    dtype,
+                                )
+                                last_heartbeat = now
+                            if dtype == "input_json_delta":
+                                pending = pending_tool_use.get(event.index)
+                                if pending is not None:
+                                    pending["partial_json"] += getattr(delta, "partial_json", "") or ""
+                            elif dtype == "text_delta":
+                                txt = getattr(delta, "text", "") or ""
+                                if txt:
+                                    assistant_text_parts.append(txt)
+
+                        elif et == "content_block_stop":
+                            pending = pending_tool_use.pop(event.index, None)
+                            if pending is None:
+                                log.info("stream_event content_block_stop index=%s (non-tool)",
+                                         event.index)
+                                continue
+                            try:
+                                inp = json.loads(pending["partial_json"] or "{}")
+                            except Exception:
+                                inp = {}
+                            bid = pending["id"]
+                            name = pending["name"]
+                            log.info(
+                                "stream_event content_block_stop index=%s tool_use name=%s id=%s input=%r",
+                                event.index, name, bid, inp,
+                            )
+                            if name == "code_execution":
+                                # Dynamic filtering wraps web_fetch in
+                                # Python that the model writes here. Pull
+                                # URL literals out of the code and FIFO-
+                                # queue them so the web_fetch blocks that
+                                # follow can show real URLs in the panel
+                                # and feed source-preview cards.
+                                code = inp.get("code", "") if isinstance(inp, dict) else ""
+                                extracted = _extract_urls_from_code(code)
+                                if extracted:
+                                    pending_fetch_urls.extend(extracted)
+                                    log.info(
+                                        "code_execution queued %d URL(s) (queue_depth=%d)",
+                                        len(extracted), len(pending_fetch_urls),
+                                    )
+                            elif name == "web_search" and bid not in seen_search_ids:
+                                seen_search_ids.add(bid)
+                                searches += 1
+                                query = inp.get("query", "") if isinstance(inp, dict) else ""
+                                await emit_tool_event(
+                                    task_id, "tool.web_search", "WebSearch",
+                                    detail=query[:120],
+                                    payload={"query": query},
+                                )
+                                await _emit_progress()
+                            elif name == "web_fetch" and bid not in seen_fetch_ids:
+                                seen_fetch_ids.add(bid)
+                                fetches += 1
+                                # _20260209 puts the URL inside the
+                                # preceding code_execution block — input is
+                                # empty here. Pop from the FIFO queue we
+                                # built when those blocks closed. Fall
+                                # back to whatever the SDK gave us so we
+                                # don't break if Anthropic changes the
+                                # shape and starts populating input again.
+                                direct_url = inp.get("url", "") if isinstance(inp, dict) else ""
+                                if direct_url:
+                                    url = direct_url
+                                elif pending_fetch_urls:
+                                    url = pending_fetch_urls.pop(0)
+                                    log.info(
+                                        "web_fetch claimed queued URL (remaining=%d): %s",
+                                        len(pending_fetch_urls), url[:120],
+                                    )
+                                else:
+                                    url = ""
+                                    log.warning(
+                                        "web_fetch with no input and empty URL queue — "
+                                        "panel row will be URL-less"
+                                    )
+                                if url:
+                                    fetch_url_by_id[bid] = url
+                                await emit_tool_event(
+                                    task_id, "tool.web_fetch", "WebFetch",
+                                    detail=url[:120],
+                                    payload={"url": url},
+                                )
+                                await _emit_progress()
+
+                        elif et == "message_stop":
+                            log.info("stream_event message_stop")
+
+                    final_message = await stream.get_final_message()
+                    log.info(
+                        "stream_event turn=%d closed stop_reason=%s in_tokens=%s out_tokens=%s",
+                        turn_idx, getattr(final_message, "stop_reason", "?"),
+                        getattr(final_message.usage, "input_tokens", "?"),
+                        getattr(final_message.usage, "output_tokens", "?"),
+                    )
+
+                track_usage(final_message)
+                messages.append({"role": "assistant", "content": final_message.content})
+
+                if final_message.stop_reason == "pause_turn":
+                    # API hit its server-side iteration limit; resume by
+                    # opening another stream. No extra user message needed.
+                    continue
+                break
+
+            response_text = "".join(assistant_text_parts).strip()
+            # Signal the mid-research interjection task to cancel; emit a
+            # final progress update so the panel chip reads the final count.
+            done_event.set()
+            await _emit_progress()
+            await emit_step(
+                task_id,
+                f"Research complete — {searches} search(es), {fetches} fetch(es)",
+                detail=f"{len(response_text)} chars",
+                status="done",
+            )
+
+            # Card extraction — re-use the existing middleware unmodified.
+            if response_text and anthropic_client:
+                try:
+                    import claude_middleware
+                    asyncio.create_task(
+                        claude_middleware.extract_and_emit(
+                            response_text=response_text,
+                            tool_result_snippets=tool_result_snippets,
+                            task_id=task_id,
+                            anthropic_client=anthropic_client,
+                        )
+                    )
+                except Exception as e:
+                    log.warning(f"native research middleware spawn failed: {e}")
+
+            # Short voice summary via Haiku.
+            if ws and response_text:
                 try:
                     summary = await anthropic_client.messages.create(
                         model="claude-haiku-4-5-20251001",
-                        max_tokens=100,
-                        system="You are JARVIS. Summarize what you just completed in 1 sentence. First person — 'I built', 'I set up'. No markdown. Never say 'Claude Code'.",
-                        messages=[{"role": "user", "content": f"Claude Code completed:\n{full_response[:2000]}"}],
+                        max_tokens=80,
+                        system=(
+                            "You are JARVIS. In ONE sentence, British butler tone, "
+                            "first person, summarize the research finding for voice. "
+                            "No markdown. End with 'sir' when natural."
+                        ),
+                        messages=[{"role": "user", "content": response_text[:2000]}],
                     )
                     msg = summary.content[0].text
-                except Exception:
-                    msg = "Work is complete, sir."
-
-                try:
                     audio = await synthesize_speech(msg)
                     if audio:
                         await ws.send_json({"type": "status", "state": "speaking"})
-                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+                        await ws.send_json({
+                            "type": "audio",
+                            "data": base64.b64encode(audio).decode(),
+                            "text": msg,
+                        })
                         await ws.send_json({"type": "status", "state": "idle"})
                         log.info(f"JARVIS: {msg}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning(f"research voice summary failed: {e}")
         except Exception as e:
-            log.error(f"Background work failed: {e}")
-            await emit_error(task_id, "Background work failed", detail=str(e)[:200])
+            log.error(f"Native research failed: {e}", exc_info=True)
+            await emit_error(task_id, "Research failed", detail=str(e)[:200])
+        finally:
+            # Always signal so the interjection task exits even on error.
+            done_event.set()
+            if not interjection_task.done():
+                interjection_task.cancel()
 
 
 # Smart greeting — track last greeting to avoid re-greeting on reconnect
@@ -2208,9 +3180,37 @@ async def api_cancel_task(task_id: str):
 
 @app.get("/api/projects")
 async def api_list_projects():
-    global cached_projects
-    cached_projects = await scan_projects()
-    return {"projects": cached_projects}
+    """All project directories under configured roots, plus alias entries.
+
+    Unlike `scan_projects()` (used for LLM context), this does NOT filter
+    out non-git directories — the design panel's target dropdown needs to
+    surface every project folder, even unversioned scratch dirs, so the
+    user can ship a prompt to anything in ~/Code.
+    """
+    projects = []
+    for entry in list_projects():
+        path = Path(entry["path"])
+        if not path.is_dir():
+            continue
+        # Best-effort branch lookup; "" if not a git repo.
+        branch = ""
+        head_file = path / ".git" / "HEAD"
+        try:
+            if head_file.exists():
+                head_content = head_file.read_text().strip()
+                if head_content.startswith("ref: refs/heads/"):
+                    branch = head_content.replace("ref: refs/heads/", "")
+                else:
+                    branch = head_content[:8]  # detached HEAD
+        except Exception:
+            pass
+        projects.append({
+            "name": entry["name"],
+            "path": str(path),
+            "branch": branch,
+            "source": entry.get("source", "fs"),
+        })
+    return {"projects": projects}
 
 
 # -- Fast Action Detection (no LLM call) -----------------------------------
@@ -2289,6 +3289,56 @@ _START_DESIGN_PATTERN = _action_re.compile(
     _action_re.IGNORECASE,
 )
 
+# Explicit design-mode opt-in phrases. Substring match, case-insensitive.
+# Matched AFTER _START_DESIGN_PATTERN so an utterance with a topic ("let's
+# design a recipe tracker") still captures the topic. These phrases trigger
+# START_DESIGN with no target — Jarvis prompts for the topic next turn.
+# See docs/design_handoff_diagnosis.md — Option C.
+_DESIGN_OPTIN_PHRASES = (
+    "design mode",
+    "talk about a feature",
+    "discuss a change",
+    "let's design",
+    "lets design",
+    "brainstorm a feature",
+    "plan a feature",
+    "think about adding",
+    "design before we build",
+)
+
+# Dictation-mode opt-in phrases. Substring match, case-insensitive.
+# Take precedence over design phrases (a single utterance containing
+# BOTH a dictation phrase and a design phrase routes to dictation —
+# the user explicitly chose the bypass). One utterance per session.
+# See chunk 21 spec.
+_DICTATION_OPTIN_PHRASES = (
+    "dictate to claude",
+    "tell claude directly",
+    "send claude a message",
+    "dictation mode",
+    "skip design",
+)
+
+# Confirmation / cancellation phrases used by the dictation confirm step.
+_DICTATION_CONFIRM_PHRASES = (
+    "send it", "send this", "yes send", "confirmed", "confirm",
+    "yes please", "go ahead", "ship it", "fire it off",
+)
+_DICTATION_CANCEL_PHRASES = (
+    "scrap", "cancel", "nevermind", "never mind", "abort",
+    "don't send", "do not send", "no don't", "forget it",
+)
+
+_MERGE_BRANCH_PHRASES = {
+    "merge it", "merge this", "merge the branch", "merge that branch",
+    "okay merge it", "ok merge it", "go ahead and merge", "let's merge it",
+    "lets merge it",
+}
+_RESTART_SELF_PHRASES = {
+    "restart yourself", "restart jarvis", "kick yourself", "reboot yourself",
+    "bounce yourself", "restart the server", "kick the server",
+}
+
 # In-design fast-action phrases — only matched when a session is active.
 _SHIP_DESIGN_PHRASES = {
     "ship it", "ship this", "send it", "ok build it", "okay build it",
@@ -2333,18 +3383,47 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     Everything else goes to the LLM which uses [ACTION:X] tags when it decides
     to act based on conversational understanding.
 
-    When `ws` is provided AND has an active design session, design-mode
-    fast-actions (ship/scrap/show-draft) are enabled. Outside a design session
-    those phrases are passed through to the normal pipeline.
+    Routing precedence (chunk 21):
+      1. Dictation opt-in phrases  — highest priority. The user explicitly
+         opted out of design and into "speak verbatim to Claude Code". A
+         transcript containing BOTH a dictation phrase and a design phrase
+         routes to dictation (user picked the bypass on purpose).
+      2. Design opt-in phrases (regex + substring) — second priority. These
+         are explicit design-intent signals and ARE allowed past the
+         word-count gate below; without that exemption, the chunk-20 bug
+         from 17:02:22 ("let's talk about a feature I want to add to
+         Jarvis Dash Main", 13 words) would still slip through to the LLM.
+      3. Word-count gate — everything below this gate is restricted to
+         short, command-shaped utterances (≤ 12 words). Long messages are
+         conversation, not commands, and route to the LLM router.
+      4. In-session ship/scrap/show-draft (only when a design session is
+         active on this ws). Phrases are tiny so the cap is not in play.
+      5. Everything else.
     """
     t = text.lower().strip()
     words = t.split()
 
-    # Only trigger on SHORT, clear commands (< 12 words)
+    # ── (1) Dictation mode opt-in — highest precedence, exempt from word cap.
+    if any(p in t for p in _DICTATION_OPTIN_PHRASES):
+        return {"action": "start_dictation"}
+
+    # ── (2) Design-mode opt-in — exempt from word cap so naturally-phrased
+    # intent like "let's talk about a feature I want to add to X" still
+    # routes correctly. Regex path captures a topic; substring path doesn't
+    # and falls through to the topic-prompt.
+    m = _START_DESIGN_PATTERN.match(text.strip())
+    if m:
+        topic = m.group("topic").strip()
+        if topic and topic.lower() not in {"tomorrow", "today", "this", "that", "it", "something"}:
+            return {"action": "start_design", "target": topic}
+    if any(p in t for p in _DESIGN_OPTIN_PHRASES):
+        return {"action": "start_design", "target": ""}
+
+    # ── (3) Word-count gate for everything else.
     if len(words) > 12:
         return None  # Long messages are conversation, not commands
 
-    # ── Design-mode commands (only when a session is active on this ws) ──
+    # ── (4) In-design fast-actions (only when a session is active on ws).
     if ws is not None:
         import design_partner
         if design_partner.get_for_ws(ws) is not None:
@@ -2354,15 +3433,6 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                 return {"action": "scrap_design"}
             if t in _SHOW_DRAFT_PHRASES or any(t.startswith(p + " ") for p in _SHOW_DRAFT_PHRASES):
                 return {"action": "show_draft"}
-
-    # Start-design intent — match against ORIGINAL text (preserves capitalized topic words)
-    m = _START_DESIGN_PATTERN.match(text.strip())
-    if m:
-        topic = m.group("topic").strip()
-        # Filter out single-word topics that are likely other intents misrouting
-        # (e.g. "plan tomorrow" should hit calendar planning, not design).
-        if topic and topic.lower() not in {"tomorrow", "today", "this", "that", "it", "something"}:
-            return {"action": "start_design", "target": topic}
 
     # Close / dismiss the process panel. Fast-path so JARVIS responds
     # instantly without round-tripping through the LLM.
@@ -2454,6 +3524,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if any(p in t for p in ["refresh context", "refresh the context", "reload context",
                              "reload the context", "re-read context", "rescan context"]):
         return {"action": "refresh_context"}
+
+    # Phase 5 self-mod ops — merge it / restart yourself. Both gated to
+    # exact-phrase matches (no LLM round-trip).
+    if t in _MERGE_BRANCH_PHRASES or any(t.startswith(p + " ") for p in _MERGE_BRANCH_PHRASES):
+        return {"action": "merge_branch"}
+    if t in _RESTART_SELF_PHRASES or any(t.startswith(p + " ") for p in _RESTART_SELF_PHRASES):
+        return {"action": "restart_self"}
 
     # Usage / cost check
     if any(p in t for p in ["usage", "how much have you cost", "how much am i spending",
@@ -2723,60 +3800,6 @@ async def handle_browse(text: str, target: str) -> str:
     return "Searching for that, sir."
 
 
-async def handle_research(text: str, target: str, client: anthropic.AsyncAnthropic) -> str:
-    """Deep research with Opus — write results to HTML, open in browser."""
-    try:
-        research_response = await client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=2000,
-            system=f"You are JARVIS, researching a topic for {USER_NAME}. Be thorough, organized, and cite sources where possible.",
-            messages=[{"role": "user", "content": f"Research this thoroughly:\n\n{target}"}],
-        )
-        research_text = research_response.content[0].text
-
-        import html as _html
-        html_content = f"""<!DOCTYPE html>
-<html><head>
-<meta charset="utf-8">
-<title>JARVIS Research: {_html.escape(target[:60])}</title>
-<style>
-body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; line-height: 1.7; }}
-h1 {{ color: #0ea5e9; font-size: 1.4em; border-bottom: 1px solid #222; padding-bottom: 10px; }}
-h2 {{ color: #38bdf8; font-size: 1.1em; margin-top: 24px; }}
-a {{ color: #0ea5e9; }}
-pre {{ background: #111; padding: 12px; border-radius: 6px; overflow-x: auto; }}
-code {{ background: #111; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }}
-blockquote {{ border-left: 3px solid #0ea5e9; margin-left: 0; padding-left: 16px; color: #aaa; }}
-</style>
-</head><body>
-<h1>Research: {_html.escape(target[:80])}</h1>
-<div>{research_text.replace(chr(10), '<br>')}</div>
-<hr style="border-color:#222;margin-top:40px">
-<p style="color:#555;font-size:0.8em">Researched by JARVIS using Claude Opus &bull; {datetime.now().strftime('%B %d, %Y %I:%M %p')}</p>
-</body></html>"""
-
-        results_file = Path.home() / "Desktop" / ".jarvis_research.html"
-        results_file.write_text(html_content)
-
-        browser_name = "firefox" if "firefox" in text.lower() else "chrome"
-        await open_browser(f"file://{results_file}", browser_name)
-
-        # Short voice summary via Haiku
-        summary = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=80,
-            system="Summarize this research in ONE sentence for voice. No markdown.",
-            messages=[{"role": "user", "content": research_text[:2000]}],
-        )
-        return summary.content[0].text + " Full results are in your browser, sir."
-
-    except Exception as e:
-        log.error(f"Research failed: {e}")
-        from urllib.parse import quote
-        await open_browser(f"https://www.google.com/search?q={quote(target)}")
-        return "Pulled up a search for that, sir."
-
-
 # -- Session Summary (Three-Tier Memory) -----------------------------------
 
 async def _update_session_summary(
@@ -2808,6 +3831,18 @@ Write an updated summary in 2-4 sentences capturing the key topics, decisions, a
 
 # -- WebSocket Voice Handler -----------------------------------------------
 
+# Substring-match allowlist used to abort a running long-task (e.g. native
+# research) when ambient transcripts otherwise interrupt the agent. See
+# docs/design_partner_tests.md → "Research mute test" for the live protocol.
+_RESEARCH_CANCEL_WORDS = ("cancel", "stop", "nevermind", "never mind")
+
+
+def _is_cancel_phrase(user_text: str) -> bool:
+    t = user_text.lower()
+    return any(w in t for w in _RESEARCH_CANCEL_WORDS)
+
+
+
 @app.websocket("/ws/voice")
 async def voice_handler(ws: WebSocket):
     """
@@ -2832,6 +3867,23 @@ async def voice_handler(ws: WebSocket):
     # Response cancellation — when new input arrives, cancel current response
     _current_response_id = 0
     _cancel_response = False
+
+    # Long-running native research task — set when an [ACTION:RESEARCH] is
+    # dispatched, cleared (.done()) when the task completes. Used by the
+    # transcript intercept below to suppress ambient speech and honor only
+    # the cancel-word allowlist while research is in flight.
+    active_research_task: Optional[asyncio.Task] = None
+
+    # Dictation mode state (chunk 21 Mode 2). Two phases:
+    #   "capturing_prompt"   — waiting for the user's next utterance to
+    #                          become the prompt that's sent to Cursor.
+    #   "confirming"         — prompt is captured; waiting for the user
+    #                          to confirm or cancel. captured_prompt
+    #                          holds the verbatim text.
+    # When phase is None, dictation is inactive and transcripts route
+    # normally.
+    dictation_phase: Optional[str] = None
+    dictation_captured_prompt: str = ""
 
     # Audio collision prevention — track when user last spoke
     voice_state = {"last_user_time": 0.0}
@@ -2905,6 +3957,32 @@ async def voice_handler(ws: WebSocket):
                     await ws.send_json({"type": "text", "text": response_text})
                 continue
 
+            # ── Manual target attach for the active design session.
+            # Sent by the design panel's project dropdown so the user can
+            # bypass voice project-resolution (which mishears hyphens,
+            # confuses "main" with "maine", etc.) and pick the build target
+            # by hand. No-op if no design session is active on this WS.
+            if msg.get("type") == "set_design_target":
+                target_path = (msg.get("path") or "").strip()
+                if not target_path:
+                    continue
+                try:
+                    import design_partner
+                    session = design_partner.get_for_ws(ws)
+                    if session is None:
+                        await _speak(ws, "No design session active, sir — say 'let's design' first.")
+                        continue
+                    p = Path(target_path).expanduser().resolve()
+                    if not p.exists() or not p.is_dir():
+                        await _speak(ws, f"That path isn't a directory, sir: {p}")
+                        continue
+                    session.project_path = p
+                    await session.emit_state()
+                    await _speak(ws, f"Target set to {p.name}, sir.")
+                except Exception as e:
+                    log.error(f"set_design_target failed: {e}")
+                continue
+
             if msg.get("type") != "transcript" or not msg.get("isFinal"):
                 continue
 
@@ -2921,6 +3999,90 @@ async def voice_handler(ws: WebSocket):
 
             voice_state["last_user_time"] = time.time()
             log.info(f"User: {user_text}")
+
+            # ── Dictation mode capture/confirm intercept (chunk 21 Mode 2).
+            # When ws is in a dictation phase, the user's utterance is the
+            # prompt body (or a confirm/cancel) — NOT a routable command. We
+            # short-circuit the entire action pipeline.
+            current_phase = getattr(ws, "dictation_phase", None)
+            if current_phase == "capturing_prompt":
+                t_lower = user_text.lower()
+                if any(p in t_lower for p in _DICTATION_CANCEL_PHRASES):
+                    asyncio.create_task(_execute_cancel_dictation(ws))
+                    continue
+                # Capture verbatim, move to confirm phase, read back.
+                ws.dictation_captured_prompt = user_text
+                ws.dictation_phase = "confirming"
+                try:
+                    await ws.send_json({
+                        "type": "dictation_event",
+                        "event": {"state": "confirming", "prompt": user_text},
+                    })
+                except Exception:
+                    pass
+                # Bound the read-back so a runaway transcript isn't spoken
+                # in full; user can still review the full text in the panel.
+                preview = user_text if len(user_text) <= 240 else user_text[:235] + "…"
+                await _speak(ws, f"Got it: \"{preview}\" Send this, sir?")
+                continue
+            if current_phase == "confirming":
+                t_lower = user_text.lower()
+                if any(p in t_lower for p in _DICTATION_CANCEL_PHRASES):
+                    asyncio.create_task(_execute_cancel_dictation(ws))
+                    continue
+                if any(p in t_lower for p in _DICTATION_CONFIRM_PHRASES):
+                    prompt = getattr(ws, "dictation_captured_prompt", "") or ""
+                    asyncio.create_task(_execute_confirm_dictation(ws, prompt))
+                    continue
+                # Ambiguous reply — re-prompt without leaving confirming.
+                await _speak(
+                    ws,
+                    'Sorry, sir — say "send it" to confirm or "cancel" to scrap.',
+                )
+                continue
+
+            # Mute action routing while native research is in flight. Without
+            # this, ambient transcripts (TV, conversation) get dispatched to
+            # the LLM mid-research and Jarvis tries to "answer" them — which
+            # was the source of every "got lost during research" report.
+            # Only the cancel-word allowlist passes through; everything else
+            # is logged and dropped silently.
+            if active_research_task is not None and not active_research_task.done():
+                if _is_cancel_phrase(user_text):
+                    log.info(f"Research cancel triggered by transcript: {user_text!r}")
+                    active_research_task.cancel()
+                    try:
+                        await asyncio.wait_for(active_research_task, timeout=2.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+                    except Exception as e:
+                        log.warning(f"research cancel cleanup failed: {e}")
+                    active_research_task = None
+                    try:
+                        cancel_msg = "Cancelled, sir."
+                        cancel_audio = await synthesize_speech(cancel_msg)
+                        if cancel_audio:
+                            await ws.send_json({"type": "status", "state": "speaking"})
+                            await ws.send_json({
+                                "type": "audio",
+                                "data": base64.b64encode(cancel_audio).decode(),
+                                "text": cancel_msg,
+                            })
+                        await ws.send_json({"type": "status", "state": "idle"})
+                        log.info(f"JARVIS: {cancel_msg}")
+                    except Exception as e:
+                        log.warning(f"cancel-speech failed: {e}")
+                    continue
+                # Not a cancel phrase — log and drop. STT keeps running so
+                # the user can still issue a cancel, but no LLM/action call
+                # fires for this transcript.
+                log.info(f"Suppressed during research (no cancel keyword): {user_text!r}")
+                try:
+                    await ws.send_json({"type": "status", "state": "idle"})
+                except Exception:
+                    pass
+                continue
+
             await ws.send_json({"type": "status", "state": "thinking"})
 
             # If a pending alias offer is waiting (register-on-miss or remove-
@@ -3144,6 +4306,9 @@ async def voice_handler(ws: WebSocket):
                             response_text = ""  # _execute_start_design speaks
                             topic = action.get("target", "")
                             asyncio.create_task(_execute_start_design(topic, ws))
+                        elif action["action"] == "start_dictation":
+                            response_text = ""  # _execute_start_dictation speaks
+                            asyncio.create_task(_execute_start_dictation(ws))
                         elif action["action"] == "ship_design":
                             response_text = ""
                             asyncio.create_task(_execute_ship_design(ws))
@@ -3153,6 +4318,12 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "show_draft":
                             response_text = ""
                             asyncio.create_task(_execute_show_draft(ws))
+                        elif action["action"] == "merge_branch":
+                            response_text = ""
+                            asyncio.create_task(_execute_merge_branch(ws))
+                        elif action["action"] == "restart_self":
+                            response_text = ""
+                            asyncio.create_task(_execute_restart_self(ws))
                         elif action["action"] == "check_usage":
                             response_text = get_usage_summary()
                         else:
@@ -3233,13 +4404,21 @@ async def voice_handler(ws: WebSocket):
                                 elif embedded_action["action"] == "browse":
                                     asyncio.create_task(_execute_browse(embedded_action["target"]))
                                 elif embedded_action["action"] == "research":
-                                    # Research enters work mode too
-                                    name = _generate_project_name(embedded_action["target"])
-                                    path = str(Path.home() / "Desktop" / name)
-                                    os.makedirs(path, exist_ok=True)
-                                    await work_session.start(path)
-                                    asyncio.create_task(
-                                        self_work_and_notify(work_session, embedded_action["target"], ws)
+                                    # Native research — Opus 4.7 + server-side
+                                    # web_search/web_fetch tools. No folder, no
+                                    # subprocess, no Cursor handoff. Results
+                                    # render as cards in the Process Panel and
+                                    # are spoken as a short summary via TTS.
+                                    # See docs/research_routing_diagnosis.md.
+                                    log.info("research dispatch: routing to native handler (target=%r)",
+                                             embedded_action["target"][:160])
+                                    # Capture the task handle so the transcript
+                                    # intercept above can (a) suppress ambient
+                                    # transcripts during the long-running call
+                                    # and (b) honor cancel/stop/nevermind to
+                                    # abort it cleanly.
+                                    active_research_task = asyncio.create_task(
+                                        _execute_native_research(embedded_action["target"], ws)
                                     )
                                 elif embedded_action["action"] == "open_terminal":
                                     asyncio.create_task(_execute_open_terminal())
@@ -3256,12 +4435,18 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_refresh_context(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "start_design":
                                     asyncio.create_task(_execute_start_design(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "start_dictation":
+                                    asyncio.create_task(_execute_start_dictation(ws))
                                 elif embedded_action["action"] == "ship_design":
                                     asyncio.create_task(_execute_ship_design(ws))
                                 elif embedded_action["action"] == "scrap_design":
                                     asyncio.create_task(_execute_scrap_design(ws))
                                 elif embedded_action["action"] == "show_draft":
                                     asyncio.create_task(_execute_show_draft(ws))
+                                elif embedded_action["action"] == "merge_branch":
+                                    asyncio.create_task(_execute_merge_branch(ws))
+                                elif embedded_action["action"] == "restart_self":
+                                    asyncio.create_task(_execute_restart_self(ws))
                                 elif embedded_action["action"] == "delete_file":
                                     asyncio.create_task(delete_file(embedded_action["target"]))
                                 elif embedded_action["action"] == "applescript":

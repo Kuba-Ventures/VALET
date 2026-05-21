@@ -121,6 +121,18 @@ class ProcessEventBus:
         ))
         try:
             yield task_id
+        except asyncio.CancelledError:
+            # User-initiated cancel (e.g. "stop" / "cancel" during research) —
+            # not an error. Still need to emit task_done so the frontend's
+            # active-task counter unwinds and auto-dismiss can fire.
+            await self.emit(Event(
+                type=EventType.TASK_DONE.value,
+                task_id=task_id,
+                title=title,
+                detail="cancelled",
+                status=EventStatus.DONE.value,
+            ))
+            raise
         except Exception as e:
             await self.emit(Event(
                 type=EventType.ERROR.value,
@@ -267,6 +279,25 @@ async def emit_context_event(task_id: str, stage: str, title: str,
     """
     await bus.emit(Event(
         type=f"context.{stage}",
+        task_id=task_id,
+        title=title,
+        detail=detail,
+        status=status,
+        payload=payload or {},
+    ))
+
+
+async def emit_tool_event(task_id: str, event_type: str, title: str,
+                          detail: str = "", status: str = "done",
+                          payload: dict[str, Any] | None = None) -> None:
+    """Emit a structured Claude Code tool-call event for the Process Panel.
+
+    `event_type` is the full type string (e.g. "tool.file_read", "tool.bash",
+    "tool.web_search", "tool.thinking", "tool.result"). The Process Panel
+    renders each as a discrete row with an icon + title + truncated detail.
+    """
+    await bus.emit(Event(
+        type=event_type,
         task_id=task_id,
         title=title,
         detail=detail,
