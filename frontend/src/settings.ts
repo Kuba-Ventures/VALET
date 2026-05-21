@@ -219,7 +219,7 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-field">
-            <label>About You — written by JARVIS</label>
+            <label>About You, written by JARVIS</label>
             <div class="bio-summary" id="bio-summary-display">JARVIS hasn't built your profile yet. Click Regenerate after a few conversations.</div>
             <div class="bio-meta">
               <span id="bio-source-count">0 notes</span>
@@ -353,7 +353,7 @@ function applyGoogleStatus(connected: boolean, email: string, credsPresent: bool
   if (disconnectBtn) disconnectBtn.style.display = connected ? "" : "none";
   if (hint) {
     if (!credsPresent) {
-      hint.textContent = "Missing google_credentials.json — download OAuth client JSON (Desktop app) from Google Cloud Console and place it at the project root.";
+      hint.textContent = "Missing google_credentials.json. Download the OAuth client JSON (Desktop app) from Google Cloud Console and place it at the project root.";
       hint.classList.add("warn");
       if (connectBtn) connectBtn.disabled = true;
     } else if (connected) {

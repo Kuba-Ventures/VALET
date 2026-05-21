@@ -56,6 +56,7 @@ export interface DesignPanelHandle {
   onMergeClick(handler: () => void): void;
   onTargetSelect(handler: (path: string) => void): void;
   onAgentSelect(handler: (agent: string) => void): void;
+  tryAutoCloseIfIdle(): void;
 }
 
 interface ProjectEntry {
@@ -125,7 +126,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
         <div class="dp-target" data-dp-target-row>
           <span class="dp-target-label">Target</span>
           <select class="dp-target-select" data-dp-target-select>
-            <option value="" data-default>(no project — will paste into Cursor)</option>
+            <option value="" data-default>(no project: will paste into Cursor)</option>
           </select>
           <span class="dp-target-branch" data-dp-target-branch></span>
           <button class="dp-target-refresh" data-dp-target-refresh title="Re-scan projects">↻</button>
@@ -133,7 +134,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
         <div class="dp-target" data-dp-agent-row>
           <span class="dp-target-label">Agent</span>
           <select class="dp-target-select" data-dp-agent-select>
-            <option value="" data-default>(auto — pick from draft content)</option>
+            <option value="" data-default>(auto: pick from draft content)</option>
           </select>
         </div>
         <div class="dp-actions">
@@ -228,7 +229,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
         const opt = document.createElement("option");
         opt.value = "";
         opt.dataset.default = "";
-        opt.textContent = "(no project — will paste into Cursor)";
+        opt.textContent = "(no project: will paste into Cursor)";
         targetSelectEl.appendChild(opt);
       }
       // Sort: alias-source first (recent + remembered), then fs-scan.
@@ -467,6 +468,14 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     onMergeClick: (h) => { mergeHandler = h; },
     onTargetSelect: (h) => { targetSelectHandler = h; },
     onAgentSelect: (h) => { agentSelectHandler = h; },
+    /** Called from main.ts when JARVIS returns to idle. Closes the panel
+     * ONLY if no design conversation is active — i.e. state is IDLE.
+     * BUILDING-mode panels stay visible so the user keeps seeing the
+     * spinner + merge/scrap buttons; DESIGNING-mode panels stay because
+     * the conversation is still live. */
+    tryAutoCloseIfIdle: () => {
+      if (currentState === "IDLE") close();
+    },
   };
 }
 

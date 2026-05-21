@@ -110,7 +110,7 @@ socket.onConnectionChange((isConnected) => {
   if (isConnected) {
     hideError();
   } else {
-    showError("Backend not connected — reconnecting…");
+    showError("Backend not connected. Reconnecting…");
   }
 });
 
@@ -152,7 +152,7 @@ const wake = createWakeWord(
       if (sent) {
         transition("thinking");
       } else {
-        showError("Backend not connected — reconnecting…");
+        showError("Backend not connected. Reconnecting…");
         transition("idle");
       }
     },
@@ -191,7 +191,32 @@ audioPlayer.onFinished(() => {
   // user can tell the assistant is still hot. Drops back to "idle" only when
   // the wake module has been put back to passive (e.g. via Sleeping toggle).
   transition(wake.isActive() ? "listening" : "idle");
+  // Audio finishing means JARVIS just wrapped a reply — schedule panel
+  // auto-close. Cancelled instantly if more events / audio arrive.
+  scheduleIdleAutoClose();
 });
+
+// ---------------------------------------------------------------------------
+// Panel auto-close on idle
+// ---------------------------------------------------------------------------
+// User asked: when JARVIS finishes a turn, don't leave the process / design
+// panels lingering on screen. Trigger on either (a) audio playback finishing
+// or (b) the server sending status=idle. Cancel on any new activity.
+const IDLE_AUTO_CLOSE_MS = 1800;
+let _idleCloseTimer: number | undefined;
+function scheduleIdleAutoClose() {
+  cancelIdleAutoClose();
+  _idleCloseTimer = window.setTimeout(() => {
+    processPanel.tryAutoClose();
+    designPanel.tryAutoCloseIfIdle();
+  }, IDLE_AUTO_CLOSE_MS);
+}
+function cancelIdleAutoClose() {
+  if (_idleCloseTimer !== undefined) {
+    window.clearTimeout(_idleCloseTimer);
+    _idleCloseTimer = undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // WebSocket messages
@@ -199,6 +224,9 @@ audioPlayer.onFinished(() => {
 
 socket.onMessage((msg) => {
   const type = msg.type as string;
+
+  // Any inbound message is fresh activity — cancel a pending idle-close.
+  cancelIdleAutoClose();
 
   if (type === "audio") {
     const audioData = msg.data as string;
@@ -220,6 +248,14 @@ socket.onMessage((msg) => {
     }
   } else if (type === "status") {
     const state = msg.state as string;
+    // When JARVIS returns to idle, schedule a brief delay then auto-close
+    // any lingering process / design panels. Cancelled if anything new
+    // happens before the timer fires (new transcript, new audio, new event).
+    if (state === "idle") {
+      scheduleIdleAutoClose();
+    } else {
+      cancelIdleAutoClose();
+    }
     if (state === "thinking" && currentState !== "thinking") {
       transition("thinking");
     } else if (state === "working") {

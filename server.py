@@ -1443,7 +1443,7 @@ async def _execute_dispatch_to_agent(ws, agent_raw: str, task: str):
         await _speak(ws, f"Dispatched to the {matched['name']} agent, sir.")
     else:
         reason = result.get("reason", "unknown")
-        await _speak(ws, f"Couldn't reach Cursor to dispatch, sir — {reason}.")
+        await _speak(ws, f"Couldn't reach Cursor to dispatch, sir. {reason}.")
 
 
 def _resolve_ship_prompt(session) -> tuple[str, Optional[str]]:
@@ -1505,7 +1505,7 @@ async def _execute_ship_design(ws):
     )
 
     if session.draft.is_empty():
-        await _speak(ws, "The draft is empty, sir — nothing to ship yet.")
+        await _speak(ws, "The draft is empty, sir. Nothing to ship yet.")
         return
 
     # No-target fast path: paste the draft straight into Cursor's claude
@@ -1531,11 +1531,11 @@ async def _execute_ship_design(ws):
             reason = result.get("reason", "unknown")
             detail = result.get("detail", "")
             if reason == "cursor_unavailable":
-                await _speak(ws, "Couldn't reach Cursor, sir — make sure it's running.")
+                await _speak(ws, "Couldn't reach Cursor, sir. Make sure it's running.")
             elif reason == "cursor_focus_lost":
-                await _speak(ws, "Cursor wouldn't take focus, sir — try again.")
+                await _speak(ws, "Cursor wouldn't take focus, sir. Try again.")
             else:
-                await _speak(ws, f"Couldn't paste, sir — {detail[:120] or reason}.")
+                await _speak(ws, f"Couldn't paste, sir. {detail[:120] or reason}.")
         return
 
     # ── Phase 5 approval gate for self-modifications ──
@@ -1694,7 +1694,7 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
             session = s
             break
     if session is None:
-        await _speak(ws, "I lost the session, sir — try again.")
+        await _speak(ws, "I lost the session, sir. Try again.")
         return True
 
     # Auto-snapshot any in-flight work on the current branch so the user's
@@ -1808,12 +1808,12 @@ async def _handle_ship_confirm(transcript: str, ws) -> bool:
             session = s
             break
     if session is None:
-        await _speak(ws, "I lost the session, sir — try again.")
+        await _speak(ws, "I lost the session, sir. Try again.")
         return True
 
     ok = await design_partner.ship_via_applescript(session, offer["final_prompt"])
     if not ok:
-        await _speak(ws, "AppleScript paste failed, sir — falling back to file method.")
+        await _speak(ws, "AppleScript paste failed, sir. Falling back to file method.")
         try:
             out = design_partner.ship_via_file(session, offer["final_prompt"])
             design_partner.persist(
@@ -1856,7 +1856,7 @@ async def _execute_scrap_design(ws):
         return
 
     if session.state == "BUILDING":
-        await _speak(ws, "That one already shipped, sir — the inbox file is yours to keep or delete.")
+        await _speak(ws, "That one already shipped, sir. The inbox file is yours to keep or delete.")
         return
 
     design_partner.persist(session, status="scrapped", final_prompt=session.draft.render_markdown())
@@ -1876,7 +1876,7 @@ async def _execute_merge_branch(ws):
     import self_mod
     cur = self_mod.current_branch()
     if not cur.startswith("feature/"):
-        await _speak(ws, f"Not on a feature branch, sir — currently on {cur}. Nothing to merge.")
+        await _speak(ws, f"Not on a feature branch, sir. Currently on {cur}. Nothing to merge.")
         return
 
     await _speak(ws, "Running smoke test, sir.")
@@ -1884,7 +1884,7 @@ async def _execute_merge_branch(ws):
     if not result["success"]:
         last = (result["stdout"] + result["stderr"]).splitlines()
         tail = " ".join(last[-3:])[:300] if last else "no output"
-        await _speak(ws, f"Smoke failed, sir — staying on {cur}. Tail: {tail}")
+        await _speak(ws, f"Smoke failed, sir. Staying on {cur}. Tail: {tail}")
         log.warning(f"smoke fail on merge_branch:\nstdout:\n{result['stdout']}\nstderr:\n{result['stderr']}")
         return
 
@@ -3493,11 +3493,23 @@ _LIST_PROJECTS_PATTERN = _action_re.compile(
 # Reserved app names that "open X" should route to OPEN_APP, not OPEN_PROJECT.
 # Keeps "open cursor" / "open chrome" / "open terminal" out of the project resolver.
 _OPEN_APP_NAMES = {
+    # Native macOS apps
     "cursor", "chrome", "google chrome", "firefox", "safari", "terminal",
     "iterm", "iterm2", "warp", "vscode", "visual studio code", "code",
     "finder", "slack", "spotify", "notes", "mail", "messages", "calendar",
     "discord", "zoom", "obsidian", "xcode", "settings", "system settings",
     "desktop", "downloads", "documents", "music", "photos", "preview",
+    # Google web apps — STT picks these up as "open my X" all the time
+    "google", "gmail", "google mail", "google calendar", "google docs",
+    "google drive", "google sheets", "google slides", "google meet",
+    "calendar app",
+    # Other common web apps users open by voice
+    "youtube", "github", "linear", "notion", "figma", "claude", "chatgpt",
+    "openai", "anthropic", "console",
+    # JARVIS's own UI surfaces — keep "open the design panel" / "open the
+    # process panel" from being misrouted as a project lookup.
+    "design panel", "process panel", "settings panel", "the design panel",
+    "the process panel", "the settings panel",
 }
 
 
@@ -4125,7 +4137,7 @@ async def voice_handler(ws: WebSocket):
                     import design_partner
                     session = design_partner.get_for_ws(ws)
                     if session is None:
-                        await _speak(ws, "No design session active, sir — say 'let's design' first.")
+                        await _speak(ws, "No design session active, sir. Say 'let's design' first.")
                         continue
                     p = Path(target_path).expanduser().resolve()
                     if not p.exists() or not p.is_dir():

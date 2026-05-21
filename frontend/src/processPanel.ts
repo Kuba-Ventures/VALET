@@ -73,6 +73,7 @@ export interface ProcessPanel {
   /** Toggle the "· design" indicator next to the panel title. Called from
    *  main.ts when the design partner's state transitions in/out of DESIGNING. */
   setDesignActive(active: boolean): void;
+  tryAutoClose(): void;
   /** Toggle the "· dictation" indicator (amber). Distinct from · design
    *  so the user knows their voice is being captured verbatim, not
    *  routed through the design partner. */
@@ -758,6 +759,16 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     },
     setDesignActive,
     setDictationActive,
+    /** External-trigger auto-close. Honors the pin (so a user who clicked
+     * pin keeps the panel up), and resets activeTaskCount so a stuck
+     * task_start (e.g. one whose task_done was dropped on a WS reconnect)
+     * can never wedge the panel open forever. Called from main.ts when
+     * JARVIS returns to idle. */
+    tryAutoClose: () => {
+      if (pinned) return;
+      activeTaskCount = 0;
+      closeAndClear();
+    },
   };
 }
 
