@@ -1167,7 +1167,106 @@ async def _frontmost_app_name() -> str:
     return ""
 
 
-async def paste_into_cursor_claude(prompt: str, task_id: str | None = None) -> dict:
+async def _list_cursor_window_names() -> list[str]:
+    """All Cursor window titles, one per line. Empty list on any AppleScript
+    error. Window names look like "<file> — <project-name>" or just
+    "<project-name>" when no editor tab is active.
+    """
+    script = (
+        'tell application "System Events"\n'
+        '    tell process "Cursor"\n'
+        '        try\n'
+        '            set out to ""\n'
+        '            repeat with w in (every window)\n'
+        '                set out to out & (name of w) & linefeed\n'
+        '            end repeat\n'
+        '            return out\n'
+        '        on error\n'
+        '            return ""\n'
+        '        end try\n'
+        '    end tell\n'
+        'end tell'
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        if proc.returncode != 0:
+            return []
+        names = [n.strip() for n in stdout.decode().splitlines() if n.strip()]
+        return names
+    except Exception as e:
+        log.debug(f"_list_cursor_window_names failed: {e}")
+        return []
+
+
+def _match_cursor_window(window_names: list[str], project_basename: str) -> str | None:
+    """Pick the window whose name best identifies the target project.
+
+    Strategy: case-insensitive match against the project basename. Prefer
+    endswith (Cursor's "<file> — <project>" pattern), fall back to substring
+    contains. Returns the window name verbatim (so AppleScript can match it
+    back), or None if no candidate matched.
+    """
+    needle = project_basename.lower().strip()
+    if not needle:
+        return None
+    # Pass 1: window names that end with the project basename (covers
+    # both "<file> — <project>" and bare "<project>" titles).
+    for name in window_names:
+        if name.lower().endswith(needle):
+            return name
+    # Pass 2: substring contains.
+    for name in window_names:
+        if needle in name.lower():
+            return name
+    return None
+
+
+async def _raise_cursor_window(window_name: str) -> bool:
+    """Bring the named Cursor window to the front via AXRaise.
+
+    AppleScript-quotes the window name (doubles internal quotes), then
+    issues `perform action "AXRaise"`. Returns True on success.
+    """
+    safe = window_name.replace("\\", "\\\\").replace('"', '\\"')
+    script = (
+        'tell application "System Events"\n'
+        '    tell process "Cursor"\n'
+        '        try\n'
+        f'            perform action "AXRaise" of (first window whose name is "{safe}")\n'
+        '            return "ok"\n'
+        '        on error errMsg\n'
+        '            return "err:" & errMsg\n'
+        '        end try\n'
+        '    end tell\n'
+        'end tell'
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        out = stdout.decode().strip()
+        ok = out == "ok"
+        if not ok:
+            log.warning("_raise_cursor_window(%r) failed: %s", window_name, out[:160])
+        return ok
+    except Exception as e:
+        log.debug(f"_raise_cursor_window exception: {e}")
+        return False
+
+
+async def paste_into_cursor_claude(
+    prompt: str,
+    task_id: str | None = None,
+    target_project_path: str | None = None,
+) -> dict:
     """Auto-paste a prompt into Cursor's active claude terminal pane.
 
     Used by both design ship-it (chunk 21 Mode 1) and dictation
@@ -1195,20 +1294,72 @@ async def paste_into_cursor_claude(prompt: str, task_id: str | None = None) -> d
       {"success": False, "reason": "...", "detail": ".."}  — caller falls back
     Never raises. All telemetry goes to logs/jarvis.err.log via log.
     """
-    # ── (1) Pre-flight: is Cursor the frontmost app? ────────────────────
-    frontmost = await _frontmost_app_name()
-    if frontmost.lower() != "cursor":
-        log.warning(
-            "paste_into_cursor_claude pre-flight failed: frontmost=%r (need 'Cursor')",
-            frontmost,
+    # ── (0) Optional window targeting. If a project path is supplied, look
+    # for a Cursor window whose title identifies that project and AXRaise
+    # it BEFORE activating Cursor — so when activation flips Cursor to the
+    # front, the correct window (and its claude pane) is the one we paste
+    # into. Falls back gracefully on no-match.
+    if target_project_path:
+        project_basename = Path(target_project_path).name
+        window_names = await _list_cursor_window_names()
+        matched = _match_cursor_window(window_names, project_basename)
+        log.info(
+            "paste_into_cursor_claude: project=%r → matched window=%r (from %d candidates)",
+            project_basename, matched, len(window_names),
         )
-        return {
-            "success": False,
-            "reason": "cursor_not_focused",
-            "frontmost": frontmost,
-            "detail": f"Frontmost app is {frontmost!r}; expected 'Cursor'. "
-                       "User needs to click into Cursor's claude pane before ship-it.",
-        }
+        if matched:
+            await _raise_cursor_window(matched)
+            # Brief beat so the raise takes effect before activate fires.
+            await asyncio.sleep(0.15)
+
+    # ── (1) Pre-flight: bring Cursor forward if it isn't already. ──────
+    # The typical caller is the design ship-it button OR a voice "ship it"
+    # spoken to the JARVIS browser tab — in both cases Chrome (not Cursor)
+    # is frontmost. Rather than refuse, we activate Cursor and re-check.
+    # Only fail if Cursor.app isn't installed/launchable.
+    # Save the original frontmost so we can return focus after pasting
+    # ("stealth paste") — user is reading JARVIS in Chrome and shouldn't
+    # be yanked into Cursor every time they ship.
+    original_frontmost = await _frontmost_app_name()
+    frontmost = original_frontmost
+    log.info("paste_into_cursor_claude: frontmost=%r (will activate Cursor if not already)", frontmost)
+    if frontmost.lower() != "cursor":
+        try:
+            activate = await asyncio.create_subprocess_exec(
+                "osascript", "-e", 'tell application "Cursor" to activate',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, activate_err = await asyncio.wait_for(activate.communicate(), timeout=3.0)
+            if activate.returncode != 0:
+                log.warning("paste_into_cursor_claude: Cursor activate failed: %s", activate_err.decode()[:160])
+                return {
+                    "success": False,
+                    "reason": "cursor_unavailable",
+                    "frontmost": frontmost,
+                    "detail": f"Could not activate Cursor.app — is it installed/running? "
+                               f"AppleScript said: {activate_err.decode()[:120]}",
+                }
+        except Exception as e:
+            log.warning("paste_into_cursor_claude: activate exception: %s", e)
+            return {
+                "success": False,
+                "reason": "cursor_unavailable",
+                "frontmost": frontmost,
+                "detail": str(e)[:200],
+            }
+        # Give the WM a beat to actually focus Cursor before keystrokes.
+        await asyncio.sleep(0.35)
+        frontmost = await _frontmost_app_name()
+        log.info("paste_into_cursor_claude: post-activate frontmost=%r", frontmost)
+        if frontmost.lower() != "cursor":
+            log.warning("paste_into_cursor_claude: Cursor didn't take focus (still %r)", frontmost)
+            return {
+                "success": False,
+                "reason": "cursor_focus_lost",
+                "frontmost": frontmost,
+                "detail": f"Activated Cursor but {frontmost!r} grabbed focus back.",
+            }
 
     # ── (2) Save existing clipboard so we can restore it after paste ────
     saved_clipboard = ""
@@ -1293,7 +1444,31 @@ async def paste_into_cursor_claude(prompt: str, task_id: str | None = None) -> d
         log.warning(f"paste_into_cursor_claude osascript failed: {paste_err}")
         return {"success": False, "reason": "applescript_failed", "detail": paste_err}
 
-    log.info(f"paste_into_cursor_claude succeeded (prompt_len={len(prompt)})")
+    # ── (6) Stealth: return focus to whatever was frontmost before, so
+    # the user stays in Chrome/JARVIS instead of being yanked to Cursor.
+    # Skip if Cursor was already focused (no app to restore) or if the
+    # prior frontmost was something we shouldn't reactivate (empty/error).
+    if original_frontmost and original_frontmost.lower() != "cursor":
+        restore_script = f'tell application "{original_frontmost}" to activate'
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "osascript", "-e", restore_script,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, restore_err = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+            if proc.returncode != 0:
+                log.debug(
+                    "paste_into_cursor_claude: focus restore to %r failed: %s",
+                    original_frontmost, restore_err.decode()[:120],
+                )
+        except Exception as e:
+            log.debug(f"paste_into_cursor_claude: focus restore exception: {e}")
+
+    log.info(
+        f"paste_into_cursor_claude succeeded (prompt_len={len(prompt)}, "
+        f"restored_focus_to={original_frontmost!r})"
+    )
     return {"success": True}
 
 

@@ -29,6 +29,17 @@ let isSleeping = localStorage.getItem(WAKE_STATE_KEY) === "sleeping";
 
 const statusEl = document.getElementById("status-text")!;
 const errorEl = document.getElementById("error-text")!;
+const replyEl = document.getElementById("jarvis-reply")!;
+
+function showReply(text: string) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return;
+  replyEl.textContent = trimmed;
+  replyEl.classList.add("visible");
+}
+replyEl.addEventListener("click", () => {
+  replyEl.classList.remove("visible");
+});
 
 let _errorHideTimer: number | undefined;
 function showError(msg: string) {
@@ -83,6 +94,9 @@ designPanel.onShipClick(() => {
 });
 designPanel.onScrapClick(() => {
   socket.send({ type: "transcript", text: "scrap this", isFinal: true });
+});
+designPanel.onTargetSelect((path) => {
+  socket.send({ type: "set_design_target", path });
 });
 
 // Reflect WS connection health in the central ERROR badge.
@@ -193,8 +207,11 @@ socket.onMessage((msg) => {
       console.warn("[audio] no data received, returning to idle");
       transition("idle");
     }
-    // Log text for debugging
-    if (msg.text) console.log("[JARVIS]", msg.text);
+    // Show reply as a persistent caption (TTS audio is ephemeral; the text is not).
+    if (msg.text) {
+      console.log("[JARVIS]", msg.text);
+      showReply(msg.text as string);
+    }
   } else if (type === "status") {
     const state = msg.state as string;
     if (state === "thinking" && currentState !== "thinking") {
@@ -207,8 +224,9 @@ socket.onMessage((msg) => {
       transition("idle");
     }
   } else if (type === "text") {
-    // Text fallback when TTS fails
+    // Text-only path (TTS failed or skipped) — still surface it to the user.
     console.log("[JARVIS]", msg.text);
+    if (msg.text) showReply(msg.text as string);
   } else if (type === "task_spawned") {
     console.log("[task]", "spawned:", msg.task_id, msg.prompt);
   } else if (type === "task_complete") {

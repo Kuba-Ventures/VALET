@@ -35,6 +35,48 @@ html, body {
   z-index: 10;
 }
 
+/* JARVIS's most-recent spoken reply, rendered as a persistent caption so the
+   user can re-read instructions/commands after the TTS has finished. Sits
+   above the diag transcript and below the orb. Click-to-dismiss; otherwise
+   persists until the next reply arrives. */
+#jarvis-reply {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(640px, 80vw);
+  padding: 10px 16px;
+  color: rgba(190, 175, 255, 0.92);
+  background: rgba(20, 14, 48, 0.55);
+  border: 1px solid rgba(110, 92, 255, 0.28);
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: center;
+  letter-spacing: 0.2px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 0 24px rgba(110, 92, 255, 0.12);
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  cursor: pointer;
+  z-index: 10;
+}
+#jarvis-reply.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+#jarvis-reply::before {
+  content: "JARVIS";
+  display: block;
+  font-size: 9px;
+  letter-spacing: 3px;
+  color: rgba(110, 92, 255, 0.7);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
 /* Diagnostic panel — live mic / recognizer / transcript state.
    Centered beneath the orb, directly above the status text.
    Toggle with Cmd+D. */

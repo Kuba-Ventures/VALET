@@ -1412,15 +1412,44 @@ async def _execute_ship_design(ws):
 
     session = design_partner.get_for_ws(ws)
     if session is None:
+        log.info("_execute_ship_design: no active session on ws")
         await _speak(ws, "No design to ship, sir.")
         return
+
+    log.info(
+        "_execute_ship_design: session=%s has_target=%s draft_empty=%s self_mod=%s",
+        session.id, session.has_target, session.draft.is_empty(), session.self_mod,
+    )
 
     if session.draft.is_empty():
         await _speak(ws, "The draft is empty, sir — nothing to ship yet.")
         return
 
+    # No-target fast path: paste the draft straight into Cursor's claude
+    # terminal without project bookkeeping. The user explicitly wants to ship
+    # a prompt into whatever Cursor pane is in focus, even when no JARVIS
+    # project is the formal "target".
     if not session.has_target:
-        await _speak(ws, "No project to ship to, sir — open one first, then say ship.")
+        from actions import paste_into_cursor_claude
+        final_prompt = design_partner.compose_final_prompt(session)
+        log.info("_execute_ship_design: no-target paste, prompt_len=%d", len(final_prompt))
+        # No target selected → no window targeting; paste lands in whichever
+        # Cursor window is currently active.
+        result = await paste_into_cursor_claude(final_prompt)
+        log.info("_execute_ship_design: paste result=%s", result)
+        if result.get("success"):
+            session.mark_building()
+            await session.emit_state()
+            await _speak(ws, "Sent to Claude Code, sir.")
+        else:
+            reason = result.get("reason", "unknown")
+            detail = result.get("detail", "")
+            if reason == "cursor_unavailable":
+                await _speak(ws, "Couldn't reach Cursor, sir — make sure it's running.")
+            elif reason == "cursor_focus_lost":
+                await _speak(ws, "Cursor wouldn't take focus, sir — try again.")
+            else:
+                await _speak(ws, f"Couldn't paste, sir — {detail[:120] or reason}.")
         return
 
     # ── Phase 5 approval gate for self-modifications ──
@@ -1448,8 +1477,13 @@ async def _execute_ship_design(ws):
         # isn't clobbered. On any pre-flight or AppleScript failure, fall
         # back to the file path — the prompt is staged at .jarvis/inbox/
         # so the user can paste manually.
+        # Pass the project path so paste_into_cursor_claude can pick the
+        # right Cursor window across multi-window setups (multi-monitor).
         from actions import paste_into_cursor_claude
-        result = await paste_into_cursor_claude(final_prompt)
+        result = await paste_into_cursor_claude(
+            final_prompt,
+            target_project_path=str(session.project_path) if session.project_path else None,
+        )
 
         if result.get("success"):
             session.mark_building()
@@ -1594,9 +1628,38 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
     session.feature_branch = branch
     session.pre_build_sha = pre_sha
 
-    # Compose + dispatch (file method only for self-mod — AppleScript paste
-    # into Cursor of the Jarvis repo is too easy to get wrong).
+    # Compose + dispatch. Branch is already created; now paste the prompt
+    # directly into the matching Cursor window so the user can see Claude
+    # Code pick it up live. Falls back to file-ship if the paste fails (so
+    # the prompt isn't lost — they can copy from .jarvis/inbox/ manually).
     final_prompt = design_partner.compose_final_prompt(session)
+    from actions import paste_into_cursor_claude
+    paste_result = await paste_into_cursor_claude(
+        final_prompt,
+        target_project_path=str(session.project_path),
+    )
+    log.info("_handle_self_mod_confirm: paste result=%s", paste_result)
+
+    if paste_result.get("success"):
+        session.mark_building()
+        await session.emit_state()
+        design_partner.persist(
+            session, status="building",
+            final_prompt=final_prompt, ship_method="auto_paste-self-mod",
+        )
+        await _speak(
+            ws,
+            f"Branched to {branch}, sir, and sent to Claude Code. "
+            f"Say 'merge it' when you're ready to fold into main, "
+            f"or 'scrap it' to abandon the branch."
+        )
+        return True
+
+    # Paste failed — fall back to file ship so the prompt isn't lost.
+    log.warning(
+        "_handle_self_mod_confirm: paste failed (reason=%s), falling back to file ship",
+        paste_result.get("reason"),
+    )
     try:
         out = design_partner.ship_via_file(session, final_prompt)
     except Exception as e:
@@ -1607,14 +1670,15 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
     await session.emit_state()
     design_partner.persist(
         session, status="building",
-        final_prompt=final_prompt, ship_method="file-self-mod",
+        final_prompt=final_prompt, ship_method="auto_paste_fallback_file-self-mod",
         inbox_path=str(out),
     )
 
     rel = out.relative_to(session.project_path) if session.project_path else out
+    reason = paste_result.get("reason", "unknown")
     await _speak(
         ws,
-        f"Branched to {branch}, sir. Prompt staged at {rel}. "
+        f"Branched to {branch}, sir. Paste failed ({reason}) — prompt staged at {rel}. "
         f"Watch claude work in Cursor; say 'merge it' when you're ready to fold into main, "
         f"or 'scrap it' to abandon the branch."
     )
@@ -3110,9 +3174,37 @@ async def api_cancel_task(task_id: str):
 
 @app.get("/api/projects")
 async def api_list_projects():
-    global cached_projects
-    cached_projects = await scan_projects()
-    return {"projects": cached_projects}
+    """All project directories under configured roots, plus alias entries.
+
+    Unlike `scan_projects()` (used for LLM context), this does NOT filter
+    out non-git directories — the design panel's target dropdown needs to
+    surface every project folder, even unversioned scratch dirs, so the
+    user can ship a prompt to anything in ~/Code.
+    """
+    projects = []
+    for entry in list_projects():
+        path = Path(entry["path"])
+        if not path.is_dir():
+            continue
+        # Best-effort branch lookup; "" if not a git repo.
+        branch = ""
+        head_file = path / ".git" / "HEAD"
+        try:
+            if head_file.exists():
+                head_content = head_file.read_text().strip()
+                if head_content.startswith("ref: refs/heads/"):
+                    branch = head_content.replace("ref: refs/heads/", "")
+                else:
+                    branch = head_content[:8]  # detached HEAD
+        except Exception:
+            pass
+        projects.append({
+            "name": entry["name"],
+            "path": str(path),
+            "branch": branch,
+            "source": entry.get("source", "fs"),
+        })
+    return {"projects": projects}
 
 
 # -- Fast Action Detection (no LLM call) -----------------------------------
@@ -3857,6 +3949,32 @@ async def voice_handler(ws: WebSocket):
                     await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
                 else:
                     await ws.send_json({"type": "text", "text": response_text})
+                continue
+
+            # ── Manual target attach for the active design session.
+            # Sent by the design panel's project dropdown so the user can
+            # bypass voice project-resolution (which mishears hyphens,
+            # confuses "main" with "maine", etc.) and pick the build target
+            # by hand. No-op if no design session is active on this WS.
+            if msg.get("type") == "set_design_target":
+                target_path = (msg.get("path") or "").strip()
+                if not target_path:
+                    continue
+                try:
+                    import design_partner
+                    session = design_partner.get_for_ws(ws)
+                    if session is None:
+                        await _speak(ws, "No design session active, sir — say 'let's design' first.")
+                        continue
+                    p = Path(target_path).expanduser().resolve()
+                    if not p.exists() or not p.is_dir():
+                        await _speak(ws, f"That path isn't a directory, sir: {p}")
+                        continue
+                    session.project_path = p
+                    await session.emit_state()
+                    await _speak(ws, f"Target set to {p.name}, sir.")
+                except Exception as e:
+                    log.error(f"set_design_target failed: {e}")
                 continue
 
             if msg.get("type") != "transcript" or not msg.get("isFinal"):

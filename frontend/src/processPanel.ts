@@ -109,6 +109,10 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   let activeTaskCount = 0;
   let dismissTimer: number | undefined;
 
+  // When design mode is active, this panel hides and drops events on the
+  // floor — the design panel owns the surface. Toggled via setDesignActive.
+  let designSuppressed = false;
+
   // Pin state — when true, auto-dismiss is suspended. Persisted in
   // localStorage. Auto-sets true on first result.* card so users can review.
   const PIN_KEY = "jarvis.processPanel.pinned";
@@ -233,6 +237,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // -----------------------------------------------------------------------
 
   function show() {
+    if (designSuppressed) return;  // design mode owns the surface
     cancelDismiss();
     root.classList.add("visible");
   }
@@ -292,6 +297,11 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // -----------------------------------------------------------------------
 
   function handleEvent(event: ProcessEvent) {
+    // While design mode is active the design panel is the only surface the
+    // user wants to see; drop process events on the floor rather than
+    // rendering behind/beside it.
+    if (designSuppressed) return;
+
     // First event of any kind shows the panel.
     show();
 
@@ -720,13 +730,13 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   });
 
   function setDesignActive(active: boolean) {
-    // Surfacing design-mode state in the Process Panel header so the user
-    // knows their voice turns are routing through Opus's design partner
-    // rather than the default Haiku action router. Also forces the panel
-    // visible while design is active so the indicator is actually seen.
-    designIndicator.hidden = !active;
+    // While design mode is active the design panel is the sole surface — the
+    // process panel hides entirely and ignores incoming events until design
+    // ends. (Previously this just toggled a "· design" chip on the header.)
+    designSuppressed = active;
+    designIndicator.hidden = true;  // chip retired — no design surfacing here
     if (active) {
-      show();
+      closeAndClear();
     }
   }
 

@@ -53,6 +53,13 @@ export interface DesignPanelHandle {
   destroy(): void;
   onShipClick(handler: () => void): void;
   onScrapClick(handler: () => void): void;
+  onTargetSelect(handler: (path: string) => void): void;
+}
+
+interface ProjectEntry {
+  name: string;
+  path: string;
+  source?: string;
 }
 
 const POSITION_KEY = "jarvis.designPanel.pos";
@@ -66,6 +73,8 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   let currentState: SessionState = "IDLE";
   let shipHandler: (() => void) | null = null;
   let scrapHandler: (() => void) | null = null;
+  let targetSelectHandler: ((path: string) => void) | null = null;
+  let projectsLoaded = false;
   let draggingFrom: { x: number; y: number; panelLeft: number; panelTop: number } | null = null;
 
   const root = ensureRootContainer(rootId);
@@ -89,12 +98,15 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
         <div class="dp-draft-body" data-dp-draft><em class="empty">(no draft yet)</em></div>
         <div class="dp-target" data-dp-target-row>
           <span class="dp-target-label">Target</span>
-          <span class="dp-target-name" data-dp-target-name>(none — open a project to ship)</span>
+          <select class="dp-target-select" data-dp-target-select>
+            <option value="" data-default>(no project — will paste into Cursor)</option>
+          </select>
           <span class="dp-target-branch" data-dp-target-branch></span>
+          <button class="dp-target-refresh" data-dp-target-refresh title="Re-scan projects">↻</button>
         </div>
         <div class="dp-actions">
           <button class="dp-btn dp-btn-scrap" data-dp-scrap>Scrap</button>
-          <button class="dp-btn dp-btn-ship"  data-dp-ship disabled title="Open a project before shipping">Ship to Claude Code</button>
+          <button class="dp-btn dp-btn-ship"  data-dp-ship title="Ship the draft to Cursor's claude terminal">Ship to Claude Code</button>
         </div>
       </div>
     </div>
@@ -109,12 +121,62 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   const scrapBtn      = root.querySelector<HTMLButtonElement>("[data-dp-scrap]")!;
   const closeBtn      = root.querySelector<HTMLButtonElement>("[data-dp-close]")!;
   const handle        = root.querySelector<HTMLElement>("[data-dp-handle]")!;
-  const targetNameEl  = root.querySelector<HTMLElement>("[data-dp-target-name]")!;
-  const targetBranchEl= root.querySelector<HTMLElement>("[data-dp-target-branch]")!;
+  const targetSelectEl = root.querySelector<HTMLSelectElement>("[data-dp-target-select]")!;
+  const targetBranchEl = root.querySelector<HTMLElement>("[data-dp-target-branch]")!;
+  const targetRefreshBtn = root.querySelector<HTMLButtonElement>("[data-dp-target-refresh]")!;
 
   closeBtn.addEventListener("click", () => close());
   shipBtn.addEventListener("click", () => shipHandler && shipHandler());
   scrapBtn.addEventListener("click", () => scrapHandler && scrapHandler());
+  targetSelectEl.addEventListener("change", () => {
+    const path = targetSelectEl.value;
+    if (path && targetSelectHandler) targetSelectHandler(path);
+  });
+  targetRefreshBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    projectsLoaded = false;
+    loadProjects();
+  });
+
+  async function loadProjects() {
+    try {
+      const res = await fetch("/api/projects");
+      const data = await res.json();
+      const projects: ProjectEntry[] = data.projects || [];
+      // Preserve the currently-selected value so a manual refresh doesn't
+      // reset the user's pick.
+      const prev = targetSelectEl.value;
+      // Wipe existing options except the default placeholder.
+      const defaultOpt = targetSelectEl.querySelector<HTMLOptionElement>("option[data-default]");
+      targetSelectEl.innerHTML = "";
+      if (defaultOpt) targetSelectEl.appendChild(defaultOpt);
+      else {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.dataset.default = "";
+        opt.textContent = "(no project — will paste into Cursor)";
+        targetSelectEl.appendChild(opt);
+      }
+      // Sort: alias-source first (recent + remembered), then fs-scan.
+      projects.sort((a, b) => {
+        if (a.source === "alias" && b.source !== "alias") return -1;
+        if (b.source === "alias" && a.source !== "alias") return 1;
+        return a.name.localeCompare(b.name);
+      });
+      for (const p of projects) {
+        const opt = document.createElement("option");
+        opt.value = p.path;
+        opt.textContent = p.name;
+        opt.title = p.path;
+        targetSelectEl.appendChild(opt);
+      }
+      // Restore prior selection if still present.
+      if (prev) targetSelectEl.value = prev;
+      projectsLoaded = true;
+    } catch (err) {
+      console.warn("[designPanel] /api/projects failed", err);
+    }
+  }
 
   // ---- Drag (pointer capture, same pattern as processPanel) -----------
   handle.addEventListener("pointerdown", (e) => {
@@ -163,6 +225,8 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
 
   function show() {
     root.classList.add("visible");
+    // Lazy-load the project list the first time the panel becomes visible.
+    if (!projectsLoaded) loadProjects();
   }
   function close() {
     root.classList.remove("visible");
@@ -182,19 +246,29 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     }
   }
 
-  function setTarget(name: string, branch: string, hasTarget: boolean) {
-    if (hasTarget && name) {
-      targetNameEl.textContent = name;
-      targetNameEl.classList.remove("dp-target-none");
+  function setTarget(_name: string, branch: string, hasTarget: boolean, path: string = "") {
+    // Ship button stays clickable regardless of target — the backend will
+    // auto-paste the draft into Cursor's claude terminal whether or not a
+    // project is tied to the session. The dropdown reflects the current
+    // target (driven by emit_state from the backend).
+    if (hasTarget && path) {
+      // Try to select the matching <option>. If the project isn't in the
+      // list yet (e.g. came in via voice register), add it on the fly.
+      const has = Array.from(targetSelectEl.options).some((o) => o.value === path);
+      if (!has) {
+        const opt = document.createElement("option");
+        opt.value = path;
+        opt.textContent = path.split("/").filter(Boolean).pop() || path;
+        opt.title = path;
+        targetSelectEl.appendChild(opt);
+      }
+      targetSelectEl.value = path;
       targetBranchEl.textContent = branch ? `· ${branch}` : "";
-      shipBtn.disabled = false;
-      shipBtn.removeAttribute("title");
+      shipBtn.title = "Ship the draft to Cursor's claude terminal";
     } else {
-      targetNameEl.textContent = "(none — open a project to ship)";
-      targetNameEl.classList.add("dp-target-none");
+      targetSelectEl.value = "";
       targetBranchEl.textContent = "";
-      shipBtn.disabled = true;
-      shipBtn.setAttribute("title", "Open a project before shipping");
+      shipBtn.title = "Paste the draft into Cursor's claude terminal";
     }
   }
 
@@ -250,8 +324,9 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
       if (event.payload.topic) setTopic(event.payload.topic);
       const hasTarget = !!event.payload.has_target;
       const projectName = (event.payload.project_name as string) || "";
+      const projectPath = (event.payload.project_path as string) || "";
       const branch = (event.payload.git_branch as string) || "";
-      setTarget(projectName, branch, hasTarget);
+      setTarget(projectName, branch, hasTarget, projectPath);
       if (typeof event.payload.draft_markdown === "string") {
         setDraft(event.payload.draft_markdown);
       }
@@ -285,6 +360,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     destroy: () => { root.innerHTML = ""; },
     onShipClick: (h) => { shipHandler = h; },
     onScrapClick: (h) => { scrapHandler = h; },
+    onTargetSelect: (h) => { targetSelectHandler = h; },
   };
 }
 
