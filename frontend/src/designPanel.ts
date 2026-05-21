@@ -53,6 +53,7 @@ export interface DesignPanelHandle {
   destroy(): void;
   onShipClick(handler: () => void): void;
   onScrapClick(handler: () => void): void;
+  onMergeClick(handler: () => void): void;
   onTargetSelect(handler: (path: string) => void): void;
 }
 
@@ -73,6 +74,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   let currentState: SessionState = "IDLE";
   let shipHandler: (() => void) | null = null;
   let scrapHandler: (() => void) | null = null;
+  let mergeHandler: (() => void) | null = null;
   let targetSelectHandler: ((path: string) => void) | null = null;
   let projectsLoaded = false;
   let draggingFrom: { x: number; y: number; panelLeft: number; panelTop: number } | null = null;
@@ -90,6 +92,21 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
         <button class="dp-close" data-dp-close title="Close">×</button>
       </div>
       <div class="dp-timeline" data-dp-timeline></div>
+      <div class="dp-build-view" data-dp-build-view>
+        <div class="dp-build-status">
+          <div class="dp-build-spinner"></div>
+          <div class="dp-build-text">
+            <div class="dp-build-label">Building with Claude Code</div>
+            <div class="dp-build-topic" data-dp-build-topic></div>
+            <div class="dp-build-branch" data-dp-build-branch></div>
+          </div>
+        </div>
+        <div class="dp-build-hint">Watch the Claude pane in Cursor — JARVIS will wait here.</div>
+        <div class="dp-actions">
+          <button class="dp-btn dp-btn-scrap"  data-dp-build-scrap>Scrap branch</button>
+          <button class="dp-btn dp-btn-ship"   data-dp-build-merge>Merge to main</button>
+        </div>
+      </div>
       <div class="dp-draft">
         <div class="dp-draft-header">
           <span>Draft prompt</span>
@@ -124,10 +141,16 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   const targetSelectEl = root.querySelector<HTMLSelectElement>("[data-dp-target-select]")!;
   const targetBranchEl = root.querySelector<HTMLElement>("[data-dp-target-branch]")!;
   const targetRefreshBtn = root.querySelector<HTMLButtonElement>("[data-dp-target-refresh]")!;
+  const buildTopicEl   = root.querySelector<HTMLElement>("[data-dp-build-topic]")!;
+  const buildBranchEl  = root.querySelector<HTMLElement>("[data-dp-build-branch]")!;
+  const buildScrapBtn  = root.querySelector<HTMLButtonElement>("[data-dp-build-scrap]")!;
+  const buildMergeBtn  = root.querySelector<HTMLButtonElement>("[data-dp-build-merge]")!;
 
   closeBtn.addEventListener("click", () => close());
   shipBtn.addEventListener("click", () => shipHandler && shipHandler());
   scrapBtn.addEventListener("click", () => scrapHandler && scrapHandler());
+  buildScrapBtn.addEventListener("click", () => scrapHandler && scrapHandler());
+  buildMergeBtn.addEventListener("click", () => mergeHandler && mergeHandler());
   targetSelectEl.addEventListener("change", () => {
     const path = targetSelectEl.value;
     if (path && targetSelectHandler) targetSelectHandler(path);
@@ -244,6 +267,11 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
       readyEl.classList.remove("visible");
       shipBtn.classList.remove("primed");
     }
+    // Switch the panel between design layout (timeline + draft + target +
+    // ship/scrap) and build layout (compact status + merge/scrap). The
+    // building class is the single source of truth for which DOM children
+    // are visible — see designPanel.css `.dp-frame.building-mode`.
+    root.classList.toggle("building-mode", state === "BUILDING");
   }
 
   function setTarget(_name: string, branch: string, hasTarget: boolean, path: string = "") {
@@ -327,6 +355,13 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
       const projectPath = (event.payload.project_path as string) || "";
       const branch = (event.payload.git_branch as string) || "";
       setTarget(projectName, branch, hasTarget, projectPath);
+      // Populate the build view with the same context the design header
+      // shows. After ship-it, the panel flips into building mode and this
+      // is the info the user needs (topic + which branch is live).
+      if (state === "BUILDING") {
+        buildTopicEl.textContent = (event.payload.topic as string) || "";
+        buildBranchEl.textContent = branch ? `branch: ${branch}` : (projectName ? `project: ${projectName}` : "no project tied");
+      }
       if (typeof event.payload.draft_markdown === "string") {
         setDraft(event.payload.draft_markdown);
       }
@@ -360,6 +395,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     destroy: () => { root.innerHTML = ""; },
     onShipClick: (h) => { shipHandler = h; },
     onScrapClick: (h) => { scrapHandler = h; },
+    onMergeClick: (h) => { mergeHandler = h; },
     onTargetSelect: (h) => { targetSelectHandler = h; },
   };
 }

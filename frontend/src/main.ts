@@ -95,6 +95,9 @@ designPanel.onShipClick(() => {
 designPanel.onScrapClick(() => {
   socket.send({ type: "transcript", text: "scrap this", isFinal: true });
 });
+designPanel.onMergeClick(() => {
+  socket.send({ type: "transcript", text: "merge it", isFinal: true });
+});
 designPanel.onTargetSelect((path) => {
   socket.send({ type: "set_design_target", path });
 });
@@ -412,9 +415,12 @@ function reconcileWakeControl() {
   // thinking or speaking, wake stays paused — it'll resume naturally when
   // audio playback finishes and the state returns to idle.
   if (isSleeping) {
-    // Hard deactivation: drop out of any active conversation and stop the mic.
-    // Re-enabling will require the wake phrase again.
-    wake.reset();
+    // Soft deactivation: pause the mic but preserve the wake module's
+    // active flag. The user toggled sleep on purpose (e.g. mid-design to
+    // narrate to a client during a demo); when they toggle back, they
+    // should pick up where they left off without re-saying "ok jarvis".
+    // The backend design session lives on id(ws) and the WS stays open
+    // through sleep, so all conversational context survives.
     wake.pause();
   } else if (currentState === "idle" || currentState === "listening") {
     wake.resume();

@@ -1610,13 +1610,19 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
         await _speak(ws, "I lost the session, sir — try again.")
         return True
 
-    # Branch discipline: refuse if WT dirty (the design-partner conversation
-    # itself shouldn't have touched anything, but the user might have).
+    # Auto-snapshot any in-flight work on the current branch so the user's
+    # changes are never lost AND assert_clean_tree() inside
+    # create_feature_branch never blocks them. Runtime log noise + scratch
+    # dirs are now .gitignored, so most ships will hit the no-op path.
+    snapshot_sha = None
     try:
-        self_mod.assert_clean_tree()
-    except RuntimeError as e:
-        await _speak(ws, f"Working tree is dirty, sir — commit or stash first. {str(e)[:200]}")
+        snapshot_sha = self_mod.commit_wip_snapshot(session.topic)
+    except Exception as e:
+        log.error(f"commit_wip_snapshot failed: {e}")
+        await _speak(ws, f"Couldn't snapshot the dirty tree, sir: {str(e)[:160]}")
         return True
+    if snapshot_sha:
+        log.info(f"_handle_self_mod_confirm: snapshotted dirty tree as {snapshot_sha[:8]}")
 
     try:
         branch, pre_sha = self_mod.create_feature_branch(session.topic)

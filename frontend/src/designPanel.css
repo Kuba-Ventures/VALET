@@ -484,3 +484,73 @@
   color: var(--dp-error);
   border-color: var(--dp-error);
 }
+
+/* --- Build view ---------------------------------------------------------
+   After ship-it the panel flips into "building mode": timeline + draft +
+   target row are hidden, this compact build view takes their place. Single
+   source of truth for which children show is the `.dp-frame.building-mode`
+   class set by setState in designPanel.ts.
+*/
+.dp-build-view {
+  display: none;
+}
+.dp-frame.building-mode .dp-timeline,
+.dp-frame.building-mode .dp-draft {
+  display: none;
+}
+.dp-frame.building-mode .dp-build-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 14px 6px;
+}
+.dp-build-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dp-build-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 200, 112, 0.25);
+  border-top-color: var(--dp-building);
+  animation: dp-build-spin 0.9s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes dp-build-spin {
+  to { transform: rotate(360deg); }
+}
+.dp-build-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.dp-build-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--dp-building);
+}
+.dp-build-topic {
+  font-size: 12px;
+  color: var(--dp-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dp-build-branch {
+  font-family: var(--dp-mono);
+  font-size: 10px;
+  color: var(--dp-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dp-build-hint {
+  font-size: 11px;
+  color: var(--dp-text-faint);
+  font-style: italic;
+  line-height: 1.4;
+}

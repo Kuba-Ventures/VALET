@@ -90,6 +90,29 @@ def assert_clean_tree() -> None:
         raise RuntimeError(f"Working tree dirty — won't self-mod:\n{out.rstrip()}")
 
 
+def commit_wip_snapshot(topic: str) -> Optional[str]:
+    """If the tree is dirty, stage everything and commit a snapshot.
+
+    Returns the new HEAD sha on success, or None if the tree was already
+    clean (no-op). The commit is made on whatever branch is currently
+    checked out — so create_feature_branch() afterwards forks from the
+    snapshot, preserving the user's in-flight work on the parent branch.
+
+    Designed for the self-mod confirm flow: prevents the user's accidental
+    log churn / scratch files from blocking a self-mod ship, without ever
+    losing their work. Commit message is generated and human-readable.
+    """
+    if not working_tree_dirty():
+        return None
+    slug = _slugify(topic) or "untitled"
+    msg = f"wip: snapshot before self-mod '{slug}'"
+    _git("add", "-A")
+    _git("commit", "-m", msg)
+    new_sha = current_sha()
+    log.info(f"commit_wip_snapshot: created {new_sha[:8]} ({msg})")
+    return new_sha
+
+
 def _slugify(text: str) -> str:
     """Kebab-case, alphanumeric+hyphen only, capped at 40 chars."""
     s = re.sub(r"[^A-Za-z0-9]+", "-", text.lower()).strip("-")

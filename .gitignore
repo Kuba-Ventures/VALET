@@ -21,6 +21,13 @@ data/.jarvis_output.txt
 data/google_tokens.json
 data/screenshots/
 
+# Runtime logs — modified on every server restart, would otherwise trip
+# self_mod.assert_clean_tree() on every other self-mod ship.
+logs/
+data/logs/
+frontend/logs/
+.jarvis/
+
 # Google OAuth client secrets
 google_credentials.json
 
