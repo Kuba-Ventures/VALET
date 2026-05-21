@@ -2,8 +2,9 @@
  * Wake-word gating layer over continuous speech recognition.
  *
  * Modes:
- *   - passive: transcripts are scanned for "ok <name>" or "okay <name>".
- *     The wake phrase itself is not forwarded.
+ *   - passive: transcripts are scanned for any "<prefix> <name>" combination
+ *     where <prefix> is one of WAKE_PREFIXES below. The wake phrase itself
+ *     is not forwarded.
  *   - active: every final transcript is forwarded as a command. The controller
  *     stays active indefinitely — only `pause()` / `stop()` (e.g. the Sleeping
  *     toggle) returns it to passive.
@@ -12,8 +13,9 @@
  * ("ok jarvis what time is it"), the tail is forwarded immediately and the
  * controller transitions to active so the next utterance also flows through.
  *
- * The wake regex is derived from `assistantName` — change ASSISTANT_NAME in
- * .env, restart the backend, refresh the page, and the phrase tracks.
+ * The wake regex is derived from `assistantName` × WAKE_PREFIXES — change
+ * ASSISTANT_NAME in .env, restart the backend, refresh the page, and the
+ * phrase tracks. Add a new prefix by appending one string to WAKE_PREFIXES.
  */
 
 import { createVoiceInput, type VoiceInput } from "./voice";
@@ -41,10 +43,27 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * The wake-phrase prefix vocabulary. The full wake phrase is
+ * `<prefix> <assistantName>` — e.g. "ok jarvis", "okay jarvis", "hey jarvis".
+ *
+ * Single source of truth for all accepted prefixes. To add a new one
+ * ("yo", "hi", "hello", etc.), append one lowercase string here and the
+ * regex picks it up automatically. Each entry is regex-escaped before
+ * joining, so a prefix containing regex metacharacters won't break the
+ * pattern.
+ */
+const WAKE_PREFIXES = ["ok", "okay", "hey"] as const;
+
 function buildWakeRegex(name: string): RegExp {
-  // Match "ok" or "okay" followed by the name, tolerating commas/periods/
-  // other punctuation that speech recognizers occasionally insert.
-  return new RegExp(`\\bok(?:ay)?\\b[^\\w]*\\b${escapeRegExp(name.toLowerCase())}\\b`, "i");
+  // Match any prefix from WAKE_PREFIXES followed by the name, tolerating
+  // commas/periods/other punctuation that speech recognizers occasionally
+  // insert between the prefix and the name.
+  const prefixAlt = WAKE_PREFIXES.map(escapeRegExp).join("|");
+  return new RegExp(
+    `\\b(?:${prefixAlt})\\b[^\\w]*\\b${escapeRegExp(name.toLowerCase())}\\b`,
+    "i",
+  );
 }
 
 function normalizeName(raw: string): string {
