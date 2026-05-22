@@ -47,6 +47,7 @@ export type EventType =
   | "result.location"
   | "result.image"
   | "result.markdown"
+  | "result.weather"
   // Per-source preview card emitted during research (live), one per
   // successful web_fetch. Distinct from `result.web` which is the
   // model's final reading list summary.
@@ -581,6 +582,14 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       return;
     }
 
+    // Weather card — dedicated 4-section layout (header, now, alert,
+    // 7-day strip). Bypasses the generic chrome since none of the standard
+    // fields (title/summary/imageUrl) fit a weather widget.
+    if (kind === "weather") {
+      populateWeatherCard(card, event);
+      return;
+    }
+
     // (markdown branch handled in renderResultCard before reaching here.)
 
     const p = (event.payload || {}) as Record<string, unknown>;
@@ -653,6 +662,119 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       const display = sourceUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
       link.textContent = (display.length > 48 ? display.slice(0, 45) + "…" : display) + " ↗";
       card.appendChild(link);
+    }
+  }
+
+  /** Native weather card. Payload is built by weather.build_card_payload on
+   * the backend; see weather.py. Layout: header (location + updated stamp)
+   * → "now" block (big temp + condition + feels-like/wind/humidity) → optional
+   * alert banner → 7-day horizontal strip. Compact phone-widget aesthetic. */
+  function populateWeatherCard(card: HTMLElement, event: ProcessEvent) {
+    interface DayCell {
+      date: string; day_name: string;
+      high: number | null; low: number | null;
+      code_label: string; code_emoji: string;
+      uv_max: number | null; precip_pct: number | null;
+    }
+    interface AlertBlock { level: "severe" | "uv" | "rain"; text: string; }
+    interface WeatherPayload {
+      location: string;
+      current: {
+        temp_f: number | null; feels_like_f: number | null;
+        code_label: string; code_emoji: string;
+        humidity: number | null; wind_mph: number | null;
+      };
+      alert: AlertBlock | null;
+      daily: DayCell[];
+      sunrise?: string; sunset?: string;
+      updated_at?: string;
+    }
+    const p = (event.payload || {}) as unknown as WeatherPayload;
+    const fmt = (n: number | null | undefined, suffix = "°") =>
+      n === null || n === undefined || Number.isNaN(n) ? "—" : `${Math.round(n)}${suffix}`;
+
+    // --- Header
+    const head = document.createElement("div");
+    head.className = "weather-header";
+    const loc = document.createElement("div");
+    loc.className = "weather-location";
+    loc.textContent = p.location || "Unknown";
+    head.appendChild(loc);
+    if (p.updated_at) {
+      const stamp = document.createElement("div");
+      stamp.className = "weather-updated";
+      const diff = Math.max(0, (Date.now() - Date.parse(p.updated_at)) / 1000);
+      stamp.textContent = diff < 60 ? "just now" : `${Math.floor(diff / 60)}m ago`;
+      head.appendChild(stamp);
+    }
+    card.appendChild(head);
+
+    // --- Now block
+    const now = document.createElement("div");
+    now.className = "weather-now";
+    const temp = document.createElement("div");
+    temp.className = "weather-temp";
+    temp.textContent = fmt(p.current?.temp_f, "°");
+    now.appendChild(temp);
+    const cond = document.createElement("div");
+    cond.className = "weather-cond";
+    cond.innerHTML = `<span class="weather-emoji">${p.current?.code_emoji ?? ""}</span><span>${p.current?.code_label ?? ""}</span>`;
+    now.appendChild(cond);
+    const meta = document.createElement("div");
+    meta.className = "weather-meta";
+    const metaParts: string[] = [];
+    if (p.current?.feels_like_f !== null && p.current?.feels_like_f !== undefined)
+      metaParts.push(`feels ${fmt(p.current.feels_like_f, "°")}`);
+    if (p.current?.wind_mph !== null && p.current?.wind_mph !== undefined)
+      metaParts.push(`${Math.round(p.current.wind_mph)} mph wind`);
+    if (p.current?.humidity !== null && p.current?.humidity !== undefined)
+      metaParts.push(`${Math.round(p.current.humidity)}% humidity`);
+    meta.textContent = metaParts.join(" · ");
+    now.appendChild(meta);
+    card.appendChild(now);
+
+    // --- Alert banner (only if present)
+    if (p.alert && p.alert.text) {
+      const banner = document.createElement("div");
+      banner.className = `weather-alert weather-alert-${p.alert.level}`;
+      banner.textContent = p.alert.text;
+      card.appendChild(banner);
+    }
+
+    // --- 7-day strip
+    if (Array.isArray(p.daily) && p.daily.length) {
+      const strip = document.createElement("div");
+      strip.className = "weather-strip";
+      for (const day of p.daily) {
+        const cell = document.createElement("div");
+        cell.className = "weather-day";
+        const name = document.createElement("div");
+        name.className = "weather-day-name";
+        name.textContent = day.day_name;
+        const emoji = document.createElement("div");
+        emoji.className = "weather-day-emoji";
+        emoji.textContent = day.code_emoji;
+        const hl = document.createElement("div");
+        hl.className = "weather-day-hl";
+        hl.textContent = `${fmt(day.high)}/${fmt(day.low)}`;
+        cell.appendChild(name);
+        cell.appendChild(emoji);
+        cell.appendChild(hl);
+        if (day.uv_max !== null && day.uv_max !== undefined && day.uv_max >= 7) {
+          const uv = document.createElement("div");
+          uv.className = "weather-day-badge weather-day-uv";
+          uv.textContent = `UV ${Math.round(day.uv_max)}`;
+          cell.appendChild(uv);
+        }
+        if (day.precip_pct !== null && day.precip_pct !== undefined && day.precip_pct >= 40) {
+          const r = document.createElement("div");
+          r.className = "weather-day-badge weather-day-rain";
+          r.textContent = `💧 ${Math.round(day.precip_pct)}%`;
+          cell.appendChild(r);
+        }
+        strip.appendChild(cell);
+      }
+      card.appendChild(strip);
     }
   }
 

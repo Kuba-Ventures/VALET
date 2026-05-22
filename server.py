@@ -328,6 +328,12 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
 - [ACTION:CHECK_DATE] YYYY-MM-DD — look up calendar events for ANY specific date and read them aloud. Use this for ALL "what's on my calendar [date]", "do I have anything [date]", "show me [date]" queries. Resolve relative dates ("next Thursday", "the 21st") to absolute YYYY-MM-DD using the CURRENT TIME context above.
   "what's on my calendar next Thursday the 21st" → [ACTION:CHECK_DATE] 2026-05-21
   "do I have anything Friday" → [ACTION:CHECK_DATE] 2026-05-16
+- [ACTION:CHECK_WEATHER] location_or_empty — pull current conditions, the day's forecast, the 7-day outlook, UV index, and severe-weather warnings from Open-Meteo. Renders a floating weather card AND reads a 1-2 sentence summary aloud. Empty target → user's hometown (HOMETOWN_CITY env / ADDRESS fallback). Always prefer this over RESEARCH for any weather / forecast / UV / "will it rain" / "how hot" question.
+  "what's the weather" → [ACTION:CHECK_WEATHER]
+  "weather in Tokyo" → [ACTION:CHECK_WEATHER] Tokyo
+  "is it going to rain tomorrow" → [ACTION:CHECK_WEATHER]
+  "any UV warnings today" → [ACTION:CHECK_WEATHER]
+  "forecast for the rest of the week" → [ACTION:CHECK_WEATHER]
   CRITICAL: NEVER try to "click" on a date in the Google Calendar web UI — you cannot click web content. Always use this action to query the API instead. NEVER say "Done, sir" without actually emitting an action tag.
 - [ACTION:CREATE_EVENT] title ||| start_iso ||| duration_min_or_end ||| description? ||| location? — schedule a meeting on the user's primary Google Calendar. Always resolve relative times ("tomorrow at 3pm") to absolute ISO timestamps using the CURRENT TIME context above. Use 30 if no duration mentioned.
   "schedule a meeting tomorrow at 3pm called design review" → [ACTION:CREATE_EVENT] design review ||| 2026-05-16 3:00 PM ||| 30
@@ -938,7 +944,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2905,8 +2911,14 @@ async def generate_response(
     now = datetime.now()
     current_time = now.strftime("%A, %B %d, %Y at %I:%M %p")
 
-    # Use cached weather
-    weather_info = _ctx_cache.get("weather", "Weather data unavailable.")
+    # Use cached weather. Background thread + on-demand lookup both write a
+    # dict {summary, raw, location}; older code paths used to write a plain
+    # string. Accept either shape, the LLM only wants one line.
+    _wx_cached = _ctx_cache.get("weather", "Weather data unavailable.")
+    if isinstance(_wx_cached, dict):
+        weather_info = _wx_cached.get("summary") or "Weather data unavailable."
+    else:
+        weather_info = _wx_cached
 
     # Use cached context (refreshed in background, never blocks responses)
     screen_ctx = _ctx_cache["screen"]
@@ -3178,16 +3190,37 @@ return windowList
             except Exception as e:
                 log.debug(f"Context thread error: {e}")
 
-            # Weather — refresh every loop (30s is fine, API is fast)
+            # Weather — refresh every loop. Uses the user's HOMETOWN_CITY
+            # (with ADDRESS as fallback). Geocode result is cached on
+            # _ctx_cache["_weather_geo"] so we don't re-hit the geocoder
+            # every 30s. The rich shape stays alongside a single-line summary
+            # for the dynamic system prompt; both are picked up downstream.
             try:
-                import urllib.request, json as _json
-                url = "https://api.open-meteo.com/v1/forecast?latitude=27.77&longitude=-82.64&current=temperature_2m,weathercode&temperature_unit=fahrenheit"
-                with urllib.request.urlopen(url, timeout=3) as resp:
-                    d = _json.loads(resp.read()).get("current", {})
-                    temp = d.get("temperature_2m", "?")
-                    _ctx_cache["weather"] = f"Current weather in St. Petersburg, FL: {temp}°F"
-            except Exception:
-                pass
+                import asyncio as _wx_aio
+                import weather as _wx
+                _, _wx_env = _read_env()
+                _wx_city = (_wx_env.get("HOMETOWN_CITY") or "").strip()
+                if not _wx_city:
+                    _wx_city = (_wx_env.get("ADDRESS") or "").strip()
+                if _wx_city:
+                    _wx_geo = _ctx_cache.get("_weather_geo") or None
+                    if not _wx_geo or _wx_geo.get("query") != _wx_city:
+                        _wx_geo = _wx_aio.run(_wx.geocode(_wx_city))
+                        if _wx_geo:
+                            _wx_geo["query"] = _wx_city
+                            _ctx_cache["_weather_geo"] = _wx_geo
+                    if _wx_geo:
+                        _wx_fc = _wx_aio.run(_wx.fetch_forecast(
+                            _wx_geo["lat"], _wx_geo["lon"], _wx_geo["timezone"],
+                        ))
+                        if _wx_fc:
+                            _ctx_cache["weather"] = {
+                                "summary": _wx.quick_summary_for_prompt(_wx_fc, _wx_geo["name"]),
+                                "raw": _wx_fc,
+                                "location": _wx_geo["name"],
+                            }
+            except Exception as _wx_e:
+                log.debug(f"weather context refresh failed: {_wx_e}")
 
             # Calendar — refresh today's events so JARVIS always knows the schedule.
             # Without this, the system prompt forever reads "No calendar data yet"
@@ -3785,6 +3818,32 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                              "any emails", "any mail", "email update", "mail update"]):
         return {"action": "check_mail"}
 
+    # Weather — capture an optional location with the regex variant, fall
+    # through to substring variants for empty-target ("use my hometown")
+    # phrasings. New native pipeline beats the slow RESEARCH WebFetch path.
+    wm = _action_re.match(r".*\bweather\s+(?:in|for|at)\s+(.+?)\s*\.?\s*$", t)
+    if wm:
+        return {"action": "check_weather", "target": wm.group(1).strip()}
+    fm = _action_re.match(r".*\bforecast\s+(?:for|in|at)\s+(.+?)\s*\.?\s*$", t)
+    if fm:
+        cand = fm.group(1).strip()
+        # Avoid eating "forecast for today" / "forecast for the week" — those
+        # are time-scope phrases, not locations. Keep them in the empty-target
+        # bucket below.
+        if cand and cand not in {"today", "tomorrow", "the week", "this week", "the day",
+                                  "tonight", "the rest of today", "the rest of the day",
+                                  "the rest of the week", "the weekend"}:
+            return {"action": "check_weather", "target": cand}
+    if any(p in t for p in [
+        "what's the weather", "whats the weather", "weather today", "weather right now",
+        "weather like", "current weather", "forecast for today", "forecast for tomorrow",
+        "forecast for the week", "weekly forecast", "seven day forecast", "7 day forecast",
+        "uv index", "uv warning", "uv warnings", "any uv", "weather warning",
+        "weather warnings", "any weather warnings", "is it going to rain", "will it rain",
+        "how hot", "how cold", "temperature outside", "temperature out", "feels like outside",
+    ]):
+        return {"action": "check_weather", "target": ""}
+
     # Dispatch / build status check
     if any(p in t for p in ["where are we", "where were we", "project status", "how's the build",
                              "hows the build", "status update", "status report", "where is that",
@@ -3995,6 +4054,65 @@ async def _do_calendar_lookup() -> str:
     if events:
         _ctx_cache["calendar"] = format_events_for_context(events)
     return format_schedule_summary(events)
+
+
+async def _do_weather_lookup(location: str, ws) -> str:
+    """Native weather lookup for [ACTION:CHECK_WEATHER] / check_weather fast-path.
+
+    Resolves location (or falls back to HOMETOWN_CITY → ADDRESS), geocodes,
+    fetches Open-Meteo forecast, mounts a floating weather card on the
+    frontend, returns a JARVIS-style 1-2 sentence summary for TTS.
+
+    Returns the spoken summary string. The card emission is a side effect.
+    """
+    import weather as _wx
+    import uuid as _uuid
+
+    target = (location or "").strip()
+    if not target:
+        # Fallback chain: HOMETOWN_CITY → ADDRESS → ask
+        _, env = _read_env()
+        target = (env.get("HOMETOWN_CITY") or "").strip()
+        if not target:
+            target = (env.get("ADDRESS") or "").strip()
+    if not target:
+        return "I don't have a hometown on file, sir. Set one in settings or name a city."
+
+    geo = await _wx.geocode(target)
+    if not geo:
+        return f"I can't place {target} on the map, sir. Could you spell it?"
+
+    fc = await _wx.fetch_forecast(geo["lat"], geo["lon"], geo["timezone"])
+    if not fc:
+        return f"Couldn't reach the forecast for {geo['name']}, sir."
+
+    alert = _wx.synthesize_alert(fc.get("daily", {}), fc.get("current", {}))
+    card = _wx.build_card_payload(fc, geo["name"])
+
+    # Cache the rich shape so the LLM's dynamic-context block also knows the
+    # latest conditions for the next non-weather turn.
+    _ctx_cache["weather"] = {
+        "summary": _wx.quick_summary_for_prompt(fc, geo["name"]),
+        "raw": fc,
+        "location": geo["name"],
+    }
+
+    # Floating card on the frontend. result.weather is a new event type; the
+    # processPanel card builder mounts it via the existing floatingLayer.
+    try:
+        await ws.send_json({
+            "type": "result.weather",
+            "task_id": "weather",
+            "id": _uuid.uuid4().hex[:10],
+            "status": "done",
+            "timestamp": time.time(),
+            "title": f"Weather: {geo['name']}",
+            "payload": card,
+        })
+    except Exception as e:
+        log.debug(f"result.weather send failed: {e}")
+
+    return _wx.format_voice_summary(fc, geo["name"], alert)
 
 
 async def _do_mail_lookup() -> str:
@@ -4621,6 +4739,19 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "check_mail":
                             response_text = "Checking your inbox now, sir."
                             asyncio.create_task(_lookup_and_report("mail", _do_mail_lookup, ws, history=history, voice_state=voice_state))
+                        elif action["action"] == "check_weather":
+                            wx_target = (action.get("target") or "").strip()
+                            response_text = (
+                                "Checking the weather now, sir." if not wx_target
+                                else f"Checking the weather in {wx_target}, sir."
+                            )
+                            # Wrap in a lambda since _do_weather_lookup takes (location, ws);
+                            # _lookup_and_report expects a zero-arg coroutine factory.
+                            asyncio.create_task(_lookup_and_report(
+                                "weather",
+                                lambda t=wx_target: _do_weather_lookup(t, ws),
+                                ws, history=history, voice_state=voice_state,
+                            ))
                         elif action["action"] == "check_dispatch":
                             recent = dispatch_registry.get_most_recent()
                             if not recent:
@@ -4842,6 +4973,13 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_cancel_event(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "check_date":
                                     asyncio.create_task(_execute_check_date(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "check_weather":
+                                    wx_t = (embedded_action.get("target") or "").strip()
+                                    asyncio.create_task(_lookup_and_report(
+                                        "weather",
+                                        lambda t=wx_t: _do_weather_lookup(t, ws),
+                                        ws, history=history, voice_state=voice_state,
+                                    ))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "prompt_project":
@@ -5053,10 +5191,11 @@ class PreferencesUpdate(BaseModel):
     calendar_accounts: str = "auto"
     date_of_birth: str = ""
     address: str = ""
+    hometown_city: str = ""
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
-    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "WORK_EMAIL", "PERSONAL_EMAIL"}
+    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
@@ -5144,6 +5283,7 @@ async def api_get_preferences():
         "calendar_accounts": env_dict.get("CALENDAR_ACCOUNTS", "auto"),
         "date_of_birth": env_dict.get("DATE_OF_BIRTH", ""),
         "address": env_dict.get("ADDRESS", ""),
+        "hometown_city": env_dict.get("HOMETOWN_CITY", ""),
         "bio_summary": bio["summary"],
         "bio_summary_updated": bio["updated"],
         "bio_source_count": len(sources),
@@ -5156,6 +5296,7 @@ async def api_save_preferences(body: PreferencesUpdate):
     _write_env_key("CALENDAR_ACCOUNTS", body.calendar_accounts)
     _write_env_key("DATE_OF_BIRTH", body.date_of_birth)
     _write_env_key("ADDRESS", body.address)
+    _write_env_key("HOMETOWN_CITY", body.hometown_city)
     return {"success": True}
 
 @app.get("/api/google/status")

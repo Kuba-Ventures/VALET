@@ -35,6 +35,7 @@ interface PreferencesResponse {
   calendar_accounts: string;
   date_of_birth: string;
   address: string;
+  hometown_city: string;
   bio_summary: string;
   bio_summary_updated: string;
   bio_source_count: number;
@@ -219,6 +220,11 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-field">
+            <label>Hometown (city for weather)</label>
+            <input type="text" id="input-hometown-city" placeholder="St. Petersburg, FL" />
+          </div>
+
+          <div class="settings-field">
             <label>About You, written by JARVIS</label>
             <div class="bio-summary" id="bio-summary-display">JARVIS hasn't built your profile yet. Click Regenerate after a few conversations.</div>
             <div class="bio-meta">
@@ -323,7 +329,9 @@ async function loadPreferences() {
 
     const dobEl = document.getElementById("input-date-of-birth") as HTMLInputElement | null;
     const addrEl = document.getElementById("input-address") as HTMLTextAreaElement | null;
+    const homeEl = document.getElementById("input-hometown-city") as HTMLInputElement | null;
     if (dobEl) dobEl.value = prefs.date_of_birth || "";
+    if (homeEl) homeEl.value = prefs.hometown_city || "";
     if (addrEl) addrEl.value = prefs.address || "";
     applyBioSummary(prefs.bio_summary, prefs.bio_summary_updated, prefs.bio_source_count);
   } catch (e) {
@@ -457,8 +465,9 @@ function wireEvents() {
     const calendar_accounts = (document.getElementById("input-calendar-accounts") as HTMLTextAreaElement).value.trim();
     const date_of_birth = (document.getElementById("input-date-of-birth") as HTMLInputElement)?.value.trim() || "";
     const address = (document.getElementById("input-address") as HTMLTextAreaElement)?.value.trim() || "";
+    const hometown_city = (document.getElementById("input-hometown-city") as HTMLInputElement)?.value.trim() || "";
     await apiPost("/api/settings/preferences", {
-      user_name, honorific, calendar_accounts, date_of_birth, address,
+      user_name, honorific, calendar_accounts, date_of_birth, address, hometown_city,
     });
     await loadStatus();
   }
