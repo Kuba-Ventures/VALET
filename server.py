@@ -142,12 +142,13 @@ You are JARVIS — Just A Rather Very Intelligent System. You serve as {user_nam
 
 VOICE & PERSONALITY:
 - British butler elegance with understated dry wit
-- Address {user_name} as "sir" naturally — not every sentence, but regularly
-- Never say "How can I help you?" or "Is there anything else?" — just act
+- Address {user_name} as "sir" naturally, not every sentence, but regularly
+- Never say "How can I help you?" or "Is there anything else?", just act
 - Deliver bad news calmly, like reporting weather: "We have a slight problem, sir."
 - Your humor is observational, never jokes: state facts and let implications land
-- Economy of language — say more with less. No filler, no corporate-speak
+- Economy of language. Say more with less. No filler, no corporate-speak
 - When things go wrong, get CALMER, not more alarmed
+- NEVER use em-dashes (—) or en-dashes (–) in your responses. The user reads your replies as a caption and dashes read as an AI tell. Use commas, periods, colons, or parentheses instead. This is a hard rule.
 
 CONVERSATION STYLE:
 - "Will do, sir." — acknowledging tasks
@@ -851,6 +852,31 @@ async def classify_intent(text: str, client: anthropic.AsyncAnthropic) -> dict:
 # Markdown Stripping for TTS
 # ---------------------------------------------------------------------------
 
+def strip_em_dashes(text: str) -> str:
+    """Replace em-dashes (—) and en-dashes (–) with ", ".
+
+    LLM responses are full of em-dash flourishes — a classic "AI tell" the
+    user does not want in JARVIS's voice or in the on-screen reply caption.
+    The dash usually acts as a parenthetical separator, so ", " preserves
+    cadence without sounding clipped. Multiple consecutive commas / weird
+    artifacts get collapsed.
+    """
+    import re as _ed_re
+    out = text
+    # \s* on both sides handles "X — Y" (with spaces), "X—Y" (no spaces),
+    # and "X —Y" / "X— Y" mixed forms. Replacement always normalizes to
+    # ", " with a single trailing space.
+    out = _ed_re.sub(r"\s*[—–]\s*", ", ", out)
+    # Collapse double commas that can show up when the dash was already
+    # near a comma ("yes, sir — loud" → "yes, sir, , loud" → "yes, sir, loud").
+    out = _ed_re.sub(r",\s*,", ",", out)
+    # Collapse "X, ." → "X." (rare but possible after the substitution).
+    out = _ed_re.sub(r",\s*([.!?])", r"\1", out)
+    # Collapse extra spaces.
+    out = _ed_re.sub(r" {2,}", " ", out)
+    return out
+
+
 def strip_markdown_for_tts(text: str) -> str:
     """Strip ALL markdown from text before sending to TTS."""
     import re as _md_re
@@ -875,6 +901,9 @@ def strip_markdown_for_tts(text: str) -> str:
     result = result.replace("\n", " ")
     # Clean up multiple spaces
     result = _md_re.sub(r"\s{2,}", " ", result)
+
+    # Em-dashes are a major AI tell in TTS — strip before vocalizing.
+    result = strip_em_dashes(result)
 
     # Strip banned phrases
     banned = ["my apologies", "i apologize", "absolutely", "great question",
@@ -1055,9 +1084,11 @@ async def _execute_new_project(target: str, ws):
 
 async def _speak(ws, msg: str) -> None:
     """Inline the synthesize+send_json speak pattern. Used by handlers that need
-    to speak independently of the main voice loop's return path. Best-effort —
-    swallows send failures."""
-    audio = await synthesize_speech(msg)
+    to speak independently of the main voice loop's return path. Best-effort,
+    swallows send failures. Strips em-dashes from the spoken text + caption
+    so JARVIS's voice doesn't read like an LLM transcript."""
+    clean = strip_em_dashes(msg)
+    audio = await synthesize_speech(clean)
     if not audio or not ws:
         return
     try:
@@ -1065,7 +1096,7 @@ async def _speak(ws, msg: str) -> None:
         await ws.send_json({
             "type": "audio",
             "data": base64.b64encode(audio).decode(),
-            "text": msg,
+            "text": clean,
         })
     except Exception:
         pass
@@ -4754,8 +4785,12 @@ async def voice_handler(ws: WebSocket):
                     asyncio.create_task(extract_memories(user_text, response_text, anthropic_client))
 
                 # TTS — skip entirely if response_text is empty (handler did its
-                # own _speak() call, e.g. design-partner branch).
+                # own _speak() call, e.g. design-partner branch). Em-dashes are
+                # stripped from BOTH the TTS input (via strip_markdown_for_tts)
+                # and the on-screen caption text so neither read like an LLM
+                # transcript.
                 if response_text:
+                    response_text = strip_em_dashes(response_text)
                     tts = strip_markdown_for_tts(response_text)
                     await ws.send_json({"type": "status", "state": "speaking"})
                     audio = await synthesize_speech(tts)
