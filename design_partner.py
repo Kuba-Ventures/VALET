@@ -82,11 +82,22 @@ BEHAVIOR:
   "Ready when you are, sir." Set ready_to_ship=true. The user decides
   when to ship.
 
+GREENFIELD MODE:
+When the session is for a brand-new project (no existing code yet), your
+FIRST turn must ask about the stack. Specifically the language and the
+framework. Capture the answer via the stack_pick field of the design_turn
+tool (language: python/node/go/rust/other, framework: free-form string).
+Don't push deeply on architecture before you know what runtime they want.
+After stack is captured, design normally. Greenfield drafts should include
+a clear goal, the chosen stack in context, and acceptance criteria the
+first ship can be measured against.
+
 WARM CONTEXT:
 You have the project's CLAUDE.md, README, file tree, recent commits, and a
 few entry points already loaded. Treat that as ground truth. If you need
 something more, surface it via panel_delta type="context" — the user sees
-what you read.
+what you read. For greenfield projects there is no warm context; rely on
+the user's words.
 
 NEVER FABRICATE:
 - Don't invent files, functions, or classes that the warm context doesn't
@@ -135,6 +146,14 @@ _DESIGN_TOOL = {
             "ready_to_ship": {
                 "type": "boolean",
                 "description": "True if the draft is concrete enough to hand off. Affects panel rendering; does NOT auto-ship.",
+            },
+            "stack_pick": {
+                "type": "object",
+                "description": "Greenfield only — the language + framework the user just confirmed. Emit once when captured; subsequent turns can omit.",
+                "properties": {
+                    "language":  {"type": "string", "enum": ["python", "node", "go", "rust", "other"]},
+                    "framework": {"type": "string"},
+                },
             },
         },
         "required": ["voice_reply"],
@@ -245,13 +264,32 @@ class DesignSession:
     # then runs agents.auto_detect_agent at ship time).
     agent: Optional[str] = None
 
+    # Greenfield mode — the user is designing a brand-new project, not
+    # editing an existing one. When new_project_name is set, ship-it
+    # scaffolds the directory + git-inits + commits + opens Cursor before
+    # pasting the prompt. project_path stays None until the scaffold runs.
+    new_project_name: Optional[str] = None
+    new_project_base_dir: Optional[str] = None
+
+    # Stack pick (greenfield) — captured by the design partner's stack
+    # question on the first greenfield turn. Drives the .gitignore template
+    # + the manifest file new_cursor_project scaffolds before first ship.
+    # Shape: {"language": "python"|"node"|"go"|"rust"|"other", "framework": "fastapi"|"react"|"vite"|...|""}.
+    stack: Optional[dict] = None
+
     @property
     def project_name(self) -> str:
         return self.project_path.name if self.project_path else ""
 
     @property
     def has_target(self) -> bool:
-        return self.project_path is not None
+        # Greenfield (new_project_name set) counts as having a target even
+        # though project_path is None until the scaffold runs at ship time.
+        return self.project_path is not None or bool(self.new_project_name)
+
+    @property
+    def is_greenfield(self) -> bool:
+        return self.project_path is None and bool(self.new_project_name)
 
     @property
     def git_branch(self) -> Optional[str]:
@@ -297,6 +335,10 @@ class DesignSession:
                 "has_target": self.has_target,
                 "git_branch": self.git_branch or "",
                 "agent": self.agent or "",
+                "new_project_name": self.new_project_name or "",
+                "new_project_base_dir": self.new_project_base_dir or "",
+                "is_greenfield": self.is_greenfield,
+                "stack": self.stack or {},
             },
         )
 
@@ -366,6 +408,16 @@ class DesignSession:
         panel_delta = result.get("panel_delta", []) or []
         draft_patch = result.get("draft_patch", {}) or {}
         ready = bool(result.get("ready_to_ship", False))
+        stack_pick = result.get("stack_pick") or None
+
+        # Greenfield: capture the stack the moment Opus reports it. Persisted
+        # on the session so _execute_ship_design can pass it to
+        # new_cursor_project for stack-aware scaffolding.
+        if stack_pick and isinstance(stack_pick, dict):
+            lang = (stack_pick.get("language") or "").strip().lower()
+            fw = (stack_pick.get("framework") or "").strip()
+            if lang:
+                self.stack = {"language": lang, "framework": fw}
 
         # Persist the tool-use turn + synthesize a tool_result so the next call
         # has a valid conversation continuation per Anthropic's tool-use protocol.

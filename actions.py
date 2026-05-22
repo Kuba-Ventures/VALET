@@ -394,7 +394,42 @@ async def run_applescript(script: str) -> dict:
     }
 
 
-async def new_cursor_project(name: str, base_dir: str | None = None, task_id: str | None = None) -> dict:
+# Stack-aware scaffold templates — kept simple so they read in a glance.
+# Each entry: (gitignore_text, manifest_filename_or_None, manifest_text_template).
+# Template can use {name} substitution for the slug.
+_STACK_SCAFFOLDS: dict[str, tuple[str, str | None, str]] = {
+    "python": (
+        "__pycache__/\n*.pyc\n.venv/\nvenv/\n.env\n.env.*\n*.egg-info/\ndist/\nbuild/\n.pytest_cache/\n.ruff_cache/\n.mypy_cache/\n",
+        "pyproject.toml",
+        '[project]\nname = "{name}"\nversion = "0.1.0"\ndescription = ""\nrequires-python = ">=3.11"\ndependencies = []\n',
+    ),
+    "node": (
+        "node_modules/\ndist/\nbuild/\n.next/\n.env\n.env.*\n.DS_Store\n*.log\ncoverage/\n.vite/\n",
+        "package.json",
+        '{{\n  "name": "{name}",\n  "version": "0.1.0",\n  "private": true,\n  "scripts": {{\n    "dev": "echo Add your dev command here"\n  }}\n}}\n',
+    ),
+    "go": (
+        "*.exe\n*.test\n*.out\n.env\ndist/\nbin/\nvendor/\n",
+        None, "",
+    ),
+    "rust": (
+        "target/\nCargo.lock\n.env\n",
+        "Cargo.toml",
+        '[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n',
+    ),
+    "other": (
+        ".DS_Store\n.env\n.env.*\n*.log\nnode_modules/\n__pycache__/\ndist/\nbuild/\n",
+        None, "",
+    ),
+}
+
+
+async def new_cursor_project(
+    name: str,
+    base_dir: str | None = None,
+    task_id: str | None = None,
+    stack: dict | None = None,
+) -> dict:
     """Create (or reuse) a project directory and open it in Cursor with `claude` auto-running.
 
     On a fresh dir: runs `git init`, scaffolds CLAUDE.md (placeholder template)
@@ -453,10 +488,52 @@ async def new_cursor_project(name: str, base_dir: str | None = None, task_id: st
         if not claude_md.exists():
             claude_md.write_text(_CLAUDE_MD_TEMPLATE.format(name=raw_name))
 
+        # Stack-aware scaffold: .gitignore + optional manifest. Best-effort —
+        # picks the "other" template when stack is None or unrecognized.
+        lang = ((stack or {}).get("language") or "other").lower()
+        gitignore_text, manifest_name, manifest_template = _STACK_SCAFFOLDS.get(
+            lang, _STACK_SCAFFOLDS["other"]
+        )
+        gi_path = project_path / ".gitignore"
+        if not gi_path.exists():
+            gi_path.write_text(gitignore_text)
+        if manifest_name:
+            manifest_path = project_path / manifest_name
+            if not manifest_path.exists():
+                manifest_path.write_text(manifest_template.format(name=slug))
+
+        # Initial commit so the tree is clean when Claude Code's first ship
+        # arrives. assert_clean_tree never blocks the very first dispatch.
+        try:
+            add_proc = await asyncio.create_subprocess_exec(
+                "git", "add", "-A",
+                cwd=str(project_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await add_proc.communicate()
+            # `-c` overrides so the commit lands even when global user.* is unset.
+            commit_proc = await asyncio.create_subprocess_exec(
+                "git",
+                "-c", "user.name=JARVIS",
+                "-c", "user.email=jarvis@local",
+                "commit", "-q", "-m", "chore: initial scaffold",
+                cwd=str(project_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await commit_proc.communicate()
+        except Exception as e:
+            log.warning(f"initial-scaffold commit failed in {project_path}: {e}")
+
         if task_id:
+            scaffold_detail = "git init + CLAUDE.md + .gitignore"
+            if manifest_name:
+                scaffold_detail += f" + {manifest_name}"
+            scaffold_detail += " + initial commit"
             await emit_project_event(
-                task_id, "scaffolding", "Scaffolded project",
-                detail="git init + CLAUDE.md", status="done",
+                task_id, "scaffolding", f"Scaffolded {lang} project",
+                detail=scaffold_detail, status="done",
             )
     else:
         log.info(f"new_cursor_project: '{project_path}' already exists, reusing")

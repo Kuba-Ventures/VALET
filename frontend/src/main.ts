@@ -104,6 +104,9 @@ designPanel.onTargetSelect((path) => {
 designPanel.onAgentSelect((agent) => {
   socket.send({ type: "set_design_agent", agent });
 });
+designPanel.onNewProjectSubmit((name, baseDir) => {
+  socket.send({ type: "set_design_new_project", name, base_dir: baseDir });
+});
 
 // Reflect WS connection health in the central ERROR badge.
 socket.onConnectionChange((isConnected) => {

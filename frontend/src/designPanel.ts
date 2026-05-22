@@ -56,6 +56,7 @@ export interface DesignPanelHandle {
   onMergeClick(handler: () => void): void;
   onTargetSelect(handler: (path: string) => void): void;
   onAgentSelect(handler: (agent: string) => void): void;
+  onNewProjectSubmit(handler: (name: string, baseDir: string) => void): void;
   tryAutoCloseIfIdle(): void;
 }
 
@@ -85,6 +86,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   let mergeHandler: (() => void) | null = null;
   let targetSelectHandler: ((path: string) => void) | null = null;
   let agentSelectHandler: ((agent: string) => void) | null = null;
+  let newProjectHandler: ((name: string, baseDir: string) => void) | null = null;
   let projectsLoaded = false;
   let agentsLoaded = false;
   let draggingFrom: { x: number; y: number; panelLeft: number; panelTop: number } | null = null;
@@ -126,10 +128,17 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
         <div class="dp-target" data-dp-target-row>
           <span class="dp-target-label">Target</span>
           <select class="dp-target-select" data-dp-target-select>
+            <option value="__new__" data-new-project>+ New project…</option>
             <option value="" data-default>(no project: will paste into Cursor)</option>
           </select>
           <span class="dp-target-branch" data-dp-target-branch></span>
           <button class="dp-target-refresh" data-dp-target-refresh title="Re-scan projects">↻</button>
+        </div>
+        <div class="dp-new-project" data-dp-new-project-row hidden>
+          <input type="text" class="dp-new-input" data-dp-new-name placeholder="project name (e.g. todo-app)" />
+          <input type="text" class="dp-new-input" data-dp-new-base placeholder="base dir (default ~/Code)" />
+          <button class="dp-btn dp-btn-ship dp-new-submit" data-dp-new-submit>Start</button>
+          <button class="dp-btn dp-new-cancel" data-dp-new-cancel>Cancel</button>
         </div>
         <div class="dp-target" data-dp-agent-row>
           <span class="dp-target-label">Agent</span>
@@ -158,6 +167,11 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   const targetSelectEl = root.querySelector<HTMLSelectElement>("[data-dp-target-select]")!;
   const targetBranchEl = root.querySelector<HTMLElement>("[data-dp-target-branch]")!;
   const targetRefreshBtn = root.querySelector<HTMLButtonElement>("[data-dp-target-refresh]")!;
+  const newProjectRow   = root.querySelector<HTMLElement>("[data-dp-new-project-row]")!;
+  const newNameInput    = root.querySelector<HTMLInputElement>("[data-dp-new-name]")!;
+  const newBaseInput    = root.querySelector<HTMLInputElement>("[data-dp-new-base]")!;
+  const newSubmitBtn    = root.querySelector<HTMLButtonElement>("[data-dp-new-submit]")!;
+  const newCancelBtn    = root.querySelector<HTMLButtonElement>("[data-dp-new-cancel]")!;
   const agentSelectEl  = root.querySelector<HTMLSelectElement>("[data-dp-agent-select]")!;
   const buildTopicEl   = root.querySelector<HTMLElement>("[data-dp-build-topic]")!;
   const buildBranchEl  = root.querySelector<HTMLElement>("[data-dp-build-branch]")!;
@@ -170,8 +184,45 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
   buildScrapBtn.addEventListener("click", () => scrapHandler && scrapHandler());
   buildMergeBtn.addEventListener("click", () => mergeHandler && mergeHandler());
   targetSelectEl.addEventListener("change", () => {
-    const path = targetSelectEl.value;
-    if (path && targetSelectHandler) targetSelectHandler(path);
+    const val = targetSelectEl.value;
+    if (val === "__new__") {
+      // Reveal the inline new-project input row and let the user name it.
+      newProjectRow.hidden = false;
+      newNameInput.value = "";
+      newBaseInput.value = "";
+      newNameInput.focus();
+      // Snap the dropdown back to the default so reopening this row is
+      // an explicit re-pick (rather than a silent re-fire on the same value).
+      targetSelectEl.value = "";
+      return;
+    }
+    if (val && targetSelectHandler) targetSelectHandler(val);
+  });
+
+  function submitNewProject() {
+    const name = newNameInput.value.trim();
+    if (!name) {
+      newNameInput.focus();
+      return;
+    }
+    const baseDir = newBaseInput.value.trim();
+    if (newProjectHandler) newProjectHandler(name, baseDir);
+    newProjectRow.hidden = true;
+  }
+  newSubmitBtn.addEventListener("click", (e) => { e.stopPropagation(); submitNewProject(); });
+  newCancelBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    newProjectRow.hidden = true;
+    newNameInput.value = "";
+    newBaseInput.value = "";
+  });
+  newNameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); submitNewProject(); }
+    else if (e.key === "Escape") { newProjectRow.hidden = true; }
+  });
+  newBaseInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); submitNewProject(); }
+    else if (e.key === "Escape") { newProjectRow.hidden = true; }
   });
   targetRefreshBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -409,7 +460,26 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
       const projectName = (event.payload.project_name as string) || "";
       const projectPath = (event.payload.project_path as string) || "";
       const branch = (event.payload.git_branch as string) || "";
-      setTarget(projectName, branch, hasTarget, projectPath);
+      const isGreenfield = !!(event.payload as Record<string, unknown>).is_greenfield;
+      const newProjectName = ((event.payload as Record<string, unknown>).new_project_name as string) || "";
+      if (isGreenfield && newProjectName) {
+        // Show the new project name in the dropdown so the user sees what
+        // they committed to. Synthetic value "__new:<name>" so re-firing
+        // change doesn't collide with real project paths.
+        const synthValue = `__new:${newProjectName}`;
+        const has = Array.from(targetSelectEl.options).some((o) => o.value === synthValue);
+        if (!has) {
+          const opt = document.createElement("option");
+          opt.value = synthValue;
+          opt.textContent = `+ ${newProjectName} (new)`;
+          targetSelectEl.appendChild(opt);
+        }
+        targetSelectEl.value = synthValue;
+        targetBranchEl.textContent = "scaffold pending";
+        shipBtn.title = `Ship to fresh project '${newProjectName}'`;
+      } else {
+        setTarget(projectName, branch, hasTarget, projectPath);
+      }
       // Reflect the session's current agent pick in the dropdown so refreshing
       // or switching tabs doesn't desync. Empty string = "(auto)".
       const sessionAgent = (event.payload.agent as string) || "";
@@ -468,6 +538,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     onMergeClick: (h) => { mergeHandler = h; },
     onTargetSelect: (h) => { targetSelectHandler = h; },
     onAgentSelect: (h) => { agentSelectHandler = h; },
+    onNewProjectSubmit: (h) => { newProjectHandler = h; },
     /** Called from main.ts when JARVIS returns to idle. Closes the panel
      * ONLY if no design conversation is active — i.e. state is IDLE.
      * BUILDING-mode panels stay visible so the user keeps seeing the

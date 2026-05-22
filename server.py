@@ -1239,10 +1239,10 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
     return False
 
 
-async def _execute_start_design(topic: str, ws):
+async def _execute_start_design(topic: str, ws, new_project: bool = False):
     """Open a design conversation rooted at whatever project is currently active.
 
-    If no project is open, the session starts with no target — Opus designs
+    If no project is open, the session starts with no target. Opus designs
     abstractly and the Design Panel disables the Ship button until a project
     is opened.
 
@@ -1253,8 +1253,15 @@ async def _execute_start_design(topic: str, ws):
     turn becomes the first design-conversation message and Opus picks up
     from there.
 
+    When `new_project=True`, the topic IS the project name — session starts
+    in greenfield mode (new_project_name set, project_path None). The next
+    Opus turn opens with a stack question; ship-it later scaffolds before
+    pasting. Voice fast-path "new project for X" passes new_project=True;
+    the dropdown UI uses set_design_new_project on an already-running session
+    instead.
+
     Future turns route to `design_session.handle_turn()` via the voice_handler
-    DESIGNING branch — Haiku is bypassed entirely until ship/scrap.
+    DESIGNING branch. Haiku is bypassed entirely until ship/scrap.
     """
     import design_partner, project_context
 
@@ -1264,16 +1271,30 @@ async def _execute_start_design(topic: str, ws):
     topic_was_empty = not raw_topic
     topic_clean = raw_topic or "untitled design"
 
+    # Greenfield: topic is the new project's name. Don't tie to any existing
+    # project. Slug-clean the name for filesystem safety.
+    new_project_name: Optional[str] = None
+    if new_project and raw_topic:
+        import re as _np_re
+        new_project_name = _np_re.sub(r"[^A-Za-z0-9._\- ]+", "", raw_topic).strip().replace(" ", "-") or raw_topic
+        project_path = None  # greenfield never starts on an existing path
+        topic_clean = f"new project: {new_project_name}"
+
     self_mod = bool(
         project_path
         and project_path.resolve() == Path(__file__).resolve().parent.resolve()
     )
 
     session = design_partner.start_for_ws(ws, project_path, topic_clean, self_mod=self_mod)
-    target_desc = str(project_path) if project_path else "(no project)"
+    if new_project_name:
+        session.new_project_name = new_project_name
+    target_desc = str(project_path) if project_path else (
+        f"(new project: {new_project_name})" if new_project_name else "(no project)"
+    )
     log.info(
         f"design_partner: session {session.id} started on {target_desc} "
-        f"(topic={topic_clean!r}, self_mod={self_mod}, prompted_for_topic={topic_was_empty})"
+        f"(topic={topic_clean!r}, self_mod={self_mod}, prompted_for_topic={topic_was_empty}, "
+        f"new_project={bool(new_project_name)})"
     )
 
     await session.emit_state()
@@ -1286,12 +1307,14 @@ async def _execute_start_design(topic: str, ws):
         # DESIGNING branch (voice_handler) directly to Opus, which will
         # absorb it as the first design-conversation message.
         msg = "What would you like to design, sir?"
+    elif new_project_name:
+        msg = f"New project, sir, {new_project_name}. What stack are we using?"
     elif not project_path:
-        msg = f"Right, sir — designing '{topic_clean}' in the abstract. Open a project before shipping."
+        msg = f"Right, sir, designing '{topic_clean}' in the abstract. Open a project before shipping."
     elif self_mod:
-        msg = f"Right, sir — let's design '{topic_clean}' for myself. I'll be careful."
+        msg = f"Right, sir, let's design '{topic_clean}' for myself. I'll be careful."
     else:
-        msg = f"Right, sir — let's design '{topic_clean}' for {project_path.name}."
+        msg = f"Right, sir, let's design '{topic_clean}' for {project_path.name}."
     await _speak(ws, msg)
 
 
@@ -1538,6 +1561,41 @@ async def _execute_ship_design(ws):
     if session.draft.is_empty():
         await _speak(ws, "The draft is empty, sir. Nothing to ship yet.")
         return
+
+    # Greenfield branch — user picked "+ New project" in the dropdown or
+    # said "new project for X". Scaffold the directory (git init,
+    # stack-aware .gitignore, manifest, initial commit) BEFORE the paste so
+    # Cursor is open and the claude pane is ready when paste_into_cursor_claude
+    # fires. Once scaffolding succeeds, session.project_path is set and the
+    # flow falls through to the regular auto_paste branch — which knows how
+    # to window-target by project path. Greenfield is never self-mod (the
+    # new project is not the JARVIS repo), so the self-mod gate skips.
+    if session.is_greenfield:
+        from actions import new_cursor_project
+        await _speak(ws, f"Scaffolding {session.new_project_name}, sir.")
+        try:
+            result = await new_cursor_project(
+                name=session.new_project_name,
+                base_dir=session.new_project_base_dir,
+                stack=session.stack,
+            )
+        except Exception as e:
+            log.error(f"new_cursor_project failed: {e}")
+            await _speak(ws, f"Couldn't scaffold the project, sir: {str(e)[:120]}")
+            return
+        if not result.get("success"):
+            await _speak(ws, result.get("confirmation", "Scaffold failed, sir."))
+            return
+        # Promote the new path to the session's real target so the rest of
+        # the ship flow treats it like any other existing project.
+        session.project_path = Path(result["path"])
+        session.new_project_name = None
+        session.new_project_base_dir = None
+        await session.emit_state()
+        # Brief beat so Cursor's claude pane has time to spin up before
+        # paste_into_cursor_claude tries to AXRaise the window.
+        await asyncio.sleep(1.2)
+        # Fall through to the auto_paste branch below.
 
     # No-target fast path: paste the draft straight into Cursor's claude
     # terminal without project bookkeeping. The user explicitly wants to ship
@@ -3435,6 +3493,18 @@ _AGENT_DISPATCH_PATTERN = _action_re.compile(
     _action_re.IGNORECASE,
 )
 
+# Greenfield design intent — "new project for X" / "design a new project X" /
+# "spin up a new project called X" / "start a new project for X". Captures
+# the project name so the session is created with new_project_name already
+# attached and the design partner skips straight to the stack question.
+_NEW_PROJECT_DESIGN_PATTERN = _action_re.compile(
+    r'^\s*(?:let\'?s |can we |please |i (?:want to|wanna|wish to) )?'
+    r'(?:design |spin up |start |create |build )(?:a )?new project '
+    r'(?:for |called |named )?'
+    r'(?P<name>[\w .,\'\-]+?)\s*\??\.?\s*$',
+    _action_re.IGNORECASE,
+)
+
 # Start-design intent — "let's design X" / "design a Y" / "spec X" / "plan a Z".
 # Captures the topic so we can spawn a session with it immediately.
 _START_DESIGN_PATTERN = _action_re.compile(
@@ -3623,6 +3693,15 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # ── (1) Dictation mode opt-in — highest precedence, exempt from word cap.
     if any(p in t for p in _DICTATION_OPTIN_PHRASES):
         return {"action": "start_dictation"}
+
+    # ── (2a) Greenfield design — "new project for X" matched BEFORE the
+    # generic start-design pattern so "design a new project for X" doesn't
+    # collapse to start_design topic="new project for X".
+    nm = _NEW_PROJECT_DESIGN_PATTERN.match(text.strip())
+    if nm:
+        new_name = nm.group("name").strip()
+        if new_name and new_name.lower() not in {"x", "something", "thing"}:
+            return {"action": "start_design", "target": new_name, "new_project": True}
 
     # ── (2) Design-mode opt-in — exempt from word cap so naturally-phrased
     # intent like "let's talk about a feature I want to add to X" still
@@ -4186,6 +4265,40 @@ async def voice_handler(ws: WebSocket):
                     await ws.send_json({"type": "text", "text": response_text})
                 continue
 
+            # ── Greenfield mode: user picked "+ New project…" in the design
+            # panel target dropdown. Attaches a project name (+ optional
+            # base dir) to the active design session. Ship-it later
+            # scaffolds + git-inits + opens Cursor before pasting.
+            if msg.get("type") == "set_design_new_project":
+                proj_name = (msg.get("name") or "").strip()
+                base_dir = (msg.get("base_dir") or "").strip()
+                if not proj_name:
+                    continue
+                try:
+                    import design_partner
+                    session = design_partner.get_for_ws(ws)
+                    if session is None:
+                        await _speak(ws, "No design session active, sir.")
+                        continue
+                    # Slug-clean the name so AppleScript window matching +
+                    # filesystem paths don't break on quotes/special chars.
+                    import re as _gn_re
+                    clean = _gn_re.sub(r"[^A-Za-z0-9._\- ]+", "", proj_name).strip().replace(" ", "-")
+                    session.new_project_name = clean or proj_name
+                    session.new_project_base_dir = base_dir or None
+                    # Clear any prior existing-project target.
+                    session.project_path = None
+                    await session.emit_state()
+                    where = f" in {base_dir}" if base_dir else ""
+                    await _speak(ws, f"New project {session.new_project_name}{where}, sir. What's the stack?")
+                    log.info(
+                        "set_design_new_project: session=%s name=%r base=%r",
+                        session.id, session.new_project_name, session.new_project_base_dir,
+                    )
+                except Exception as e:
+                    log.error(f"set_design_new_project failed: {e}")
+                continue
+
             # ── Manual agent attach for the active design session.
             # Sent by the design panel's agent dropdown. Empty string / "auto"
             # means let the ship handler auto-detect from draft content via
@@ -4554,7 +4667,9 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "start_design":
                             response_text = ""  # _execute_start_design speaks
                             topic = action.get("target", "")
-                            asyncio.create_task(_execute_start_design(topic, ws))
+                            asyncio.create_task(_execute_start_design(
+                                topic, ws, new_project=bool(action.get("new_project")),
+                            ))
                         elif action["action"] == "start_dictation":
                             response_text = ""  # _execute_start_dictation speaks
                             asyncio.create_task(_execute_start_dictation(ws))

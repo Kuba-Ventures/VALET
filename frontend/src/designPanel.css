@@ -554,3 +554,46 @@
   font-style: italic;
   line-height: 1.4;
 }
+
+/* --- New-project inline input row -------------------------------------- */
+.dp-new-project {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--dp-border);
+  background: rgba(0, 0, 0, 0.18);
+  align-items: center;
+}
+.dp-new-project[hidden] {
+  display: none;
+}
+.dp-new-input {
+  flex: 1 1 140px;
+  min-width: 120px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--dp-text);
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid var(--dp-border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  outline: none;
+}
+.dp-new-input::placeholder {
+  color: var(--dp-text-faint);
+}
+.dp-new-input:focus {
+  border-color: var(--dp-accent, rgba(110, 92, 255, 0.8));
+}
+.dp-new-submit {
+  flex-shrink: 0;
+}
+.dp-new-cancel {
+  flex-shrink: 0;
+  color: var(--dp-text-dim);
+}
+.dp-new-cancel:hover {
+  color: var(--dp-error);
+  border-color: var(--dp-error);
+}
