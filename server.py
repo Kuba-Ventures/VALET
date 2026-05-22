@@ -3543,6 +3543,56 @@ _OPEN_APP_NAMES = {
     "the process panel", "the settings panel",
 }
 
+# Brand / category tokens that, when they appear anywhere in a captured name,
+# strongly signal app intent rather than project intent. The smart matcher
+# in _looks_like_app() splits the captured name on whitespace and checks each
+# token against this set, which catches phrasings the literal exclusion list
+# can't enumerate ("work gmail", "personal calendar", "my inbox", etc.). Keep
+# this list tighter than _OPEN_APP_NAMES — we want strong signals only, not
+# generic words like "code" or "messages" that could collide with project
+# names ("code-review project", "messages-clone").
+_APP_KEYWORDS = {
+    "gmail", "calendar", "inbox", "email", "mail",
+    "youtube", "github", "drive", "docs", "sheets", "slides", "meet",
+    "google", "chrome", "safari", "firefox",
+    "slack", "notion", "linear", "figma", "discord", "zoom",
+    "panel",  # "design panel", "process panel", "settings panel"
+}
+
+
+def _looks_like_app(name: str) -> bool:
+    """True if `name` (captured by an _OPEN_PROJECT_PATTERNS regex) is more
+    plausibly a web/native app than a JARVIS project.
+
+    Three-strike matcher:
+      1. Exact (lowercased) match against _OPEN_APP_NAMES.
+      2. Substring containment of an _OPEN_APP_NAMES entry — but only
+         multi-word entries, so "open my google calendar" matches the
+         "google calendar" entry without "code" tripping on "dharma code".
+      3. Whitespace-token match against the curated _APP_KEYWORDS set —
+         catches phrasings we can't enumerate ahead of time ("work gmail",
+         "personal inbox"). _APP_KEYWORDS is intentionally tighter than
+         _OPEN_APP_NAMES so ambiguous single words like "code" / "notes"
+         / "music" don't false-positive on real project names.
+
+    Returns False on no match, leaving the caller to route the name through
+    open_project resolution as before.
+    """
+    n = name.lower().strip()
+    if not n:
+        return False
+    if n in _OPEN_APP_NAMES:
+        return True
+    # Multi-word entries only — single-word entries get the stricter token
+    # check below so "code" can't substring-match inside "dharma code".
+    for entry in _OPEN_APP_NAMES:
+        if " " in entry and entry in n:
+            return True
+    tokens = n.split()
+    if any(t in _APP_KEYWORDS for t in tokens):
+        return True
+    return False
+
 
 def detect_action_fast(text: str, ws=None) -> dict | None:
     """Keyword/regex-based action detection — ONLY for short, obvious commands.
@@ -3675,13 +3725,14 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
 
     # Open a named project — regex captures "open X", "open the X project",
     # "open my X project in cursor", "can you open X", "open the project called X".
-    # Skipped when the captured name is a known app (so "open Cursor" still routes
-    # through the LLM's OPEN_APP path).
+    # Skipped when the captured name looks like an app (so "open Cursor",
+    # "open my work gmail", "open the design panel" all route through the
+    # LLM's OPEN_APP path instead of erroring on a missing project).
     for pat in _OPEN_PROJECT_PATTERNS:
         m = pat.match(t)
         if m:
             name = m.group("name").strip()
-            if name and name not in _OPEN_APP_NAMES:
+            if name and not _looks_like_app(name):
                 return {"action": "open_project", "target": name}
             break  # Matched as "open <app>" — let the LLM handle via OPEN_APP
 
