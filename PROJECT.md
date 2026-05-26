@@ -1,13 +1,13 @@
 # JARVIS
 *Voice-first AI assistant for macOS with audio-reactive orb and live process panel.*
 
-*Last updated: 2026-05-22 22:17 ET by kuba-vault*
+*Last updated: 2026-05-26 10:50 ET by kuba-vault*
 
 ---
 
 ## TL;DR
 
-JARVIS is a local, voice-first macOS assistant — British-butler persona, audio-reactive Three.js orb, Claude under the hood, Fish Audio for TTS. It reads Calendar/Mail/Notes via AppleScript, browses the web with Playwright, and can spin up brand-new projects or modify existing ones through a design panel that pipes prompts directly into Cursor or Claude Code. The project is in post-MVP iteration, shipping in numbered "chunks" — currently at chunk 33 with native weather lookup (Open-Meteo), greenfield project scaffolding, and smarter app/project routing all landed in the last 48 hours. Demo-ready, self-directed, no live deploy.
+JARVIS is a local, voice-first macOS assistant — British-butler persona, audio-reactive Three.js orb, Claude under the hood, Fish Audio for TTS. It reads Calendar/Mail/Notes via AppleScript, browses the web with Playwright, and can spin up brand-new projects or modify existing ones through a design panel that pipes prompts directly into Cursor or Claude Code. The project is in post-MVP iteration, shipping in numbered "chunks" — chunks 29-33 (demo-prep cluster) landed Thu-Fri last week; the repo has been quiet since chunk 33 on 2026-05-22. Demo-ready, self-directed, no live deploy.
 
 ---
 
@@ -27,13 +27,13 @@ JARVIS is a local, voice-first macOS assistant — British-butler persona, audio
 - **Lead:** Finley
 - **Cadence:** continuous (chunked commits)
 - **Next milestone:** TBD — chunks 29-33 were a demo-prep cluster; no committed roadmap past chunk 33
-- **Flags:** shipping
+- **Flags:** on-track (no commits since chunk 33 on 2026-05-22 — first 4-day quiet stretch since chunk 7)
 
 ---
 
 ## Where we are right now
 
-Chunk 33 just landed — weather queries no longer go through the generic research path, they hit a dedicated Open-Meteo pipeline that returns a structured floating "weather widget" card (current conditions, 7-day strip, severe/UV/precip alert banner) plus a 1-2 sentence voice summary. Chunk 32 (greenfield projects) and chunk 31 (smart app vs. project routing) shipped the same week, so the design panel is now a complete loop: pick or invent a project, talk through the spec, ship it into Cursor. The voice fast-path is getting denser — `_NEW_PROJECT_DESIGN_PATTERN`, `_looks_like_app()`, weather regexes — to keep latency-sensitive utterances off Haiku entirely. No active bugs; last three commits were features, not fixes. Worth attention: `server.py` is now 5504 lines, well past the "~2300 lines" still quoted in CLAUDE.md and README — the file is overdue for a split.
+Repo is quiet — 4 days since chunk 33 (the longest gap since chunk 7), working tree clean, 42 commits ahead of origin/main but no push. The demo-prep cluster (chunks 29-33) closed out with native weather (Open-Meteo widget + alerts), greenfield project scaffolds, and the `_looks_like_app()` matcher fixing "open X" mis-routing. The design panel is a complete loop now: pick or invent a project, talk through the spec, ship it into Cursor or Claude Code. The voice fast-path is dense — `_NEW_PROJECT_DESIGN_PATTERN`, `_looks_like_app()`, weather regexes — keeping latency-sensitive utterances off Haiku entirely. No active bugs. Worth attention: (1) `server.py` is 5504 lines, well past the "~2300 lines" still quoted in CLAUDE.md and README — the file is overdue for a split; (2) 42 unpushed commits on main; (3) post-chunk-33 milestone still undecided.
 
 ---
 
@@ -133,6 +133,7 @@ Chunk 33 just landed — weather queries no longer go through the generic resear
 - [ ] Add demo GIF/screenshot to README (TODO marker in line 11) — owner: Finley
 - [ ] Decide next milestone post-chunk-33 — owner: Finley
 - [ ] No tests added for chunks 31-33 voice fast-path regexes — owner: Finley
+- [ ] 42 commits ahead of origin/main, unpushed — owner: Finley
 
 ---
 
@@ -161,6 +162,7 @@ Chunk 33 just landed — weather queries no longer go through the generic resear
 
 ## Changelog
 
+- **2026-05-26:** kuba-vault refresh — no new commits since 2026-05-22, working tree clean; bumped timestamp, flagged 4-day quiet stretch and 42 unpushed commits.
 - **2026-05-22:** kuba-vault initial PROJECT.md superdoc — scanned repo, reconciled README/CLAUDE.md against current state, summarized chunks 0-33.
 - **2026-05-22:** chunk 33 shipped — native `[ACTION:CHECK_WEATHER]` via Open-Meteo, floating weather card with 7-day strip + alert banner, hometown_city preference.
 - **2026-05-21:** chunk 32 shipped — greenfield projects: design + scaffold + ship in one flow, stack picker (python/node/rust/go/other).
