@@ -194,9 +194,10 @@ audioPlayer.onFinished(() => {
   // user can tell the assistant is still hot. Drops back to "idle" only when
   // the wake module has been put back to passive (e.g. via Sleeping toggle).
   transition(wake.isActive() ? "listening" : "idle");
-  // Audio finishing means JARVIS just wrapped a reply — schedule panel
-  // auto-close. Cancelled instantly if more events / audio arrive.
-  scheduleIdleAutoClose();
+  // Audio finishing means JARVIS just wrapped a reply — arm the quiet-timer.
+  // Trailing background events will reset (not kill) it; see
+  // refreshPanelAutoClose. Force-closes once the stream goes quiet.
+  refreshPanelAutoClose();
 });
 
 // ---------------------------------------------------------------------------
@@ -228,8 +229,12 @@ function cancelIdleAutoClose() {
 socket.onMessage((msg) => {
   const type = msg.type as string;
 
-  // Any inbound message is fresh activity — cancel a pending idle-close.
-  cancelIdleAutoClose();
+  // Idle-close is (re)evaluated at the end of this handler via
+  // refreshPanelAutoClose(), once any state transition for this message has
+  // been applied. We deliberately do NOT blanket-cancel here: trailing
+  // background events (warm-context load, draft+browse, dispatch) must RESET
+  // the quiet timer, not permanently kill it — otherwise the panel wedges
+  // open after the work goes quiet. See refreshPanelAutoClose below.
 
   if (type === "audio") {
     const audioData = msg.data as string;
@@ -251,14 +256,8 @@ socket.onMessage((msg) => {
     }
   } else if (type === "status") {
     const state = msg.state as string;
-    // When JARVIS returns to idle, schedule a brief delay then auto-close
-    // any lingering process / design panels. Cancelled if anything new
-    // happens before the timer fires (new transcript, new audio, new event).
-    if (state === "idle") {
-      scheduleIdleAutoClose();
-    } else {
-      cancelIdleAutoClose();
-    }
+    // Panel auto-close is handled centrally by refreshPanelAutoClose() at the
+    // end of this handler, keyed off the resulting currentState.
     if (state === "thinking" && currentState !== "thinking") {
       transition("thinking");
     } else if (state === "working") {
@@ -305,7 +304,37 @@ socket.onMessage((msg) => {
     const active = state === "capturing_prompt" || state === "confirming";
     processPanel.setDictationActive(active);
   }
+
+  // Centralised panel auto-close: re-evaluate after every message, keyed off
+  // the state this message produced. While JARVIS is actively working the
+  // foreground turn (thinking/speaking) the panel stays. Once the turn has
+  // wrapped (idle/listening) each subsequent message — including trailing
+  // background process_events — RESETS a short quiet-timer; when the stream
+  // finally goes quiet the watchdog force-closes via tryAutoClose. This is
+  // the safety net that survives a dropped task_done or a lingering result
+  // card (both of which otherwise wedge the panel open forever).
+  refreshPanelAutoClose();
 });
+
+function refreshPanelAutoClose() {
+  // Keep the coarse idle-close OFF while JARVIS is actively working the
+  // foreground turn (thinking/speaking) OR while the panel is tracking live
+  // background tasks. In those states the panel owns its own dismissal (it
+  // self-dismisses shortly after the last task_done), so a brief quiet gap
+  // in a long job — e.g. a dispatched build mid-thought — never force-closes
+  // it. The watchdog only arms once the turn has wrapped AND no tasks are in
+  // flight, which is exactly the "lingering panel / dropped lifecycle" case
+  // it exists to clean up.
+  if (
+    currentState === "thinking" ||
+    currentState === "speaking" ||
+    processPanel.hasActiveTasks()
+  ) {
+    cancelIdleAutoClose();
+  } else {
+    scheduleIdleAutoClose(); // cancels + re-arms; last quiet message wins
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Kick off

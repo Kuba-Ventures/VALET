@@ -75,6 +75,12 @@ export interface ProcessPanel {
    *  main.ts when the design partner's state transitions in/out of DESIGNING. */
   setDesignActive(active: boolean): void;
   tryAutoClose(): void;
+  /** True while one or more tasks are mid-flight (between task_start and
+   *  task_done). main.ts uses this to keep its coarse idle-close watchdog
+   *  OFF during active background work, so a quiet gap in a long job (e.g. a
+   *  dispatched build) never force-closes the panel — the panel's own
+   *  task-driven dismiss owns closure in that case. */
+  hasActiveTasks(): boolean;
   /** Toggle the "· dictation" indicator (amber). Distinct from · design
    *  so the user knows their voice is being captured verbatim, not
    *  routed through the design partner. */
@@ -115,10 +121,19 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // floor — the design panel owns the surface. Toggled via setDesignActive.
   let designSuppressed = false;
 
-  // Pin state — when true, auto-dismiss is suspended. Persisted in
-  // localStorage. Auto-sets true on first result.* card so users can review.
+  // Pin state — when true, auto-dismiss is suspended. SESSION-ONLY: the panel
+  // always loads UNPINNED and the pin is never persisted across reloads.
+  //
+  // History: an earlier build auto-pinned on the first result.* card and wrote
+  // the pinned flag to localStorage. That behavior is gone, but the persisted
+  // "1" it left behind survived hard refreshes and silently wedged the panel
+  // open forever (every auto-dismiss path early-returns on `pinned`). Pin is a
+  // transient "keep this up while I read it" affordance, not a durable
+  // preference — so it must not outlive the page. We also proactively clear the
+  // stale key on init so any browser still carrying it is healed.
   const PIN_KEY = "jarvis.processPanel.pinned";
-  let pinned = readPinned();
+  try { localStorage.removeItem(PIN_KEY); } catch { /* localStorage may be blocked */ }
+  let pinned = false;
 
   // Drag state.
   let draggingFrom: { x: number; y: number; panelLeft: number; panelTop: number } | null = null;
@@ -149,18 +164,12 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
 
   pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(); });
 
-  function readPinned(): boolean {
-    try { return localStorage.getItem(PIN_KEY) === "1"; } catch { return false; }
-  }
-  function writePinned(v: boolean) {
-    try { localStorage.setItem(PIN_KEY, v ? "1" : "0"); } catch {}
-  }
   function setPinned(v: boolean) {
+    // Session-only: deliberately NOT persisted (see PIN_KEY note above).
     pinned = v;
     pinBtn.textContent = v ? "◉" : "◌";
     pinBtn.setAttribute("aria-pressed", String(v));
     pinBtn.title = v ? "Unpin (allow auto-dismiss)" : "Pin (disable auto-dismiss)";
-    writePinned(v);
     if (v) cancelDismiss();
   }
   function togglePin() { setPinned(!pinned); }
@@ -252,25 +261,25 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     }, DISMISS_AFTER_DONE_MS);
   }
 
-  /** Schedule auto-dismiss only if the user has no floating cards still
-   *  open. While cards float above the panel the Process Panel stays
-   *  visible (quiet) so the user can read what's there; once the last
-   *  card is dismissed the timer fires. */
+  /** Schedule auto-dismiss once all tracked tasks have finished.
+   *
+   *  Auto-dismiss is driven purely by task completion — NOT by floating
+   *  cards. Result cards (weather, product, location…) are independent,
+   *  persistent surfaces with their own close buttons; a card left over
+   *  from an earlier turn must never keep this transient task-progress
+   *  panel open. (It used to: the panel gated dismiss on cardCount === 0,
+   *  so a lingering weather card from a prior query wedged the panel open
+   *  after the next task — e.g. opening a project — completed.) */
   function maybeScheduleDismiss() {
-    if (floatingLayer.cardCount() > 0) {
-      cancelDismiss();
-      return;
-    }
     scheduleDismiss();
   }
 
-  // Re-evaluate auto-dismiss whenever a floating card mounts or unmounts.
-  // Mounting cancels any pending dismiss (cards just arrived, user is
-  // reading); the last unmount, if tasks are done, schedules dismiss.
+  // Floating cards no longer hold the panel open. We still nudge a dismiss
+  // when the last card is closed while idle, so tidying away a lingering
+  // result card also tidies away an otherwise-empty panel — but a card
+  // mounting never cancels a task-driven dismiss.
   floatingLayer.onChange((count) => {
-    if (count > 0) {
-      cancelDismiss();
-    } else if (activeTaskCount === 0) {
+    if (count === 0 && activeTaskCount === 0) {
       scheduleDismiss();
     }
   });
@@ -891,6 +900,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       activeTaskCount = 0;
       closeAndClear();
     },
+    hasActiveTasks: () => activeTaskCount > 0,
   };
 }
 
