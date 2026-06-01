@@ -249,14 +249,27 @@ def synthesize_alert(daily: dict, current: dict) -> Optional[dict]:
 # Voice + card formatting
 # ---------------------------------------------------------------------------
 
-def format_voice_summary(forecast: dict, location: str, alert: Optional[dict]) -> str:
-    """1-2 sentence butler line for TTS + the on-screen caption."""
+def format_voice_summary(
+    forecast: dict,
+    location: str,
+    alert: Optional[dict],
+    when: str = "today",
+) -> str:
+    """1-2 sentence butler line for TTS + the on-screen caption.
+
+    `when` selects the time scope the user asked about:
+      "today"     → live conditions now + today's high (default)
+      "tomorrow"  → tomorrow's high/low + condition (daily index 1)
+      "day_after" → the day after tomorrow (daily index 2)
+      "week"      → range of highs across the 7-day outlook
+    A future day has no "current temperature", so those lines lead with the
+    high/low slab instead of the live reading.
+    """
     current = (forecast or {}).get("current") or {}
     daily = (forecast or {}).get("daily") or {}
-    temp = current.get("temperature_2m")
-    code = current.get("weather_code")
     highs = daily.get("temperature_2m_max") or []
-    high_today = highs[0] if highs else None
+    lows = daily.get("temperature_2m_min") or []
+    codes = daily.get("weather_code") or []
 
     def _fmt(t: Any) -> str:
         try:
@@ -264,6 +277,39 @@ def format_voice_summary(forecast: dict, location: str, alert: Optional[dict]) -
         except Exception:
             return "?"
 
+    def _alert_suffix() -> str:
+        return f" {alert['text']}" if alert and alert.get("text") else ""
+
+    # ── Future single day (tomorrow / day after) ──────────────────────────
+    day_index = {"tomorrow": 1, "day_after": 2}.get(when)
+    if day_index is not None and day_index < len(highs):
+        when_word = "Tomorrow" if day_index == 1 else "The day after tomorrow"
+        label = code_label(codes[day_index] if day_index < len(codes) else None).lower()
+        high = highs[day_index]
+        low = lows[day_index] if day_index < len(lows) else None
+        bits = [f"{when_word} in {location}, sir"]
+        if label and label != "cloudy":
+            bits.append(label)
+        line = ", ".join(bits) + "."
+        if high is not None and low is not None:
+            line += f" High of {_fmt(high)}, low of {_fmt(low)}."
+        elif high is not None:
+            line += f" High of {_fmt(high)}."
+        return line + _alert_suffix()
+
+    # ── Week-ahead range ──────────────────────────────────────────────────
+    if when == "week":
+        week_highs = [h for h in highs[:7] if isinstance(h, (int, float))]
+        if week_highs:
+            lo, hi = min(week_highs), max(week_highs)
+            span = f"{_fmt(lo)} to {_fmt(hi)}" if lo != hi else _fmt(hi)
+            return f"This week in {location}, sir, highs from {span}.{_alert_suffix()}"
+        # fall through to today if no daily data
+
+    # ── Today (default) — live conditions ─────────────────────────────────
+    temp = current.get("temperature_2m")
+    code = current.get("weather_code")
+    high_today = highs[0] if highs else None
     label = code_label(code).lower()
     intro_bits = []
     if temp is not None:

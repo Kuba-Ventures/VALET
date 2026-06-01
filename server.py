@@ -3697,6 +3697,26 @@ def _looks_like_app(name: str) -> bool:
     return False
 
 
+def _weather_when(text: str) -> str:
+    """Map a weather utterance to a forecast time scope for the spoken summary.
+
+    Returns one of: "today" (default), "tomorrow", "day_after", "week".
+    Order matters — "day after tomorrow" must be tested before "tomorrow",
+    since it contains that substring.
+    """
+    t = (text or "").lower()
+    if "day after tomorrow" in t:
+        return "day_after"
+    if "tomorrow" in t:
+        return "tomorrow"
+    if any(k in t for k in (
+        "this week", "the week", "weekly", "week ahead", "rest of the week",
+        "next few days", "coming days", "7 day", "seven day", "7-day", "next 7",
+    )):
+        return "week"
+    return "today"
+
+
 def detect_action_fast(text: str, ws=None) -> dict | None:
     """Keyword/regex-based action detection — ONLY for short, obvious commands.
 
@@ -3821,19 +3841,33 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # Weather — capture an optional location with the regex variant, fall
     # through to substring variants for empty-target ("use my hometown")
     # phrasings. New native pipeline beats the slow RESEARCH WebFetch path.
+    #
+    # Both the "weather in/for/at X" and "forecast for/in/at X" regexes can
+    # capture a time-scope word as if it were a place ("weather for tomorrow"
+    # → "tomorrow"), which then fails to geocode ("I can't place tomorrow on
+    # the map"). Reject these so they fall through to the empty-target bucket,
+    # where they correctly mean "the user's hometown, for that time scope."
+    _TIME_SCOPE = {
+        "today", "tomorrow", "tonight", "now", "right now", "later", "this morning",
+        "this afternoon", "this evening", "the morning", "the afternoon", "the evening",
+        "the day", "the week", "this week", "next week", "the next week", "the weekend",
+        "this weekend", "the next few days", "the rest of today", "the rest of the day",
+        "the rest of the week", "the rest of the weekend",
+    }
     wm = _action_re.match(r".*\bweather\s+(?:in|for|at)\s+(.+?)\s*\.?\s*$", t)
     if wm:
-        return {"action": "check_weather", "target": wm.group(1).strip()}
+        cand = wm.group(1).strip()
+        # A weather query for sure; the token after for/in/at is either a place
+        # or just a time scope ("for tomorrow"). Time scope → hometown.
+        return {"action": "check_weather",
+                "target": "" if (not cand or cand in _TIME_SCOPE) else cand,
+                "when": _weather_when(t)}
     fm = _action_re.match(r".*\bforecast\s+(?:for|in|at)\s+(.+?)\s*\.?\s*$", t)
     if fm:
         cand = fm.group(1).strip()
-        # Avoid eating "forecast for today" / "forecast for the week" — those
-        # are time-scope phrases, not locations. Keep them in the empty-target
-        # bucket below.
-        if cand and cand not in {"today", "tomorrow", "the week", "this week", "the day",
-                                  "tonight", "the rest of today", "the rest of the day",
-                                  "the rest of the week", "the weekend"}:
-            return {"action": "check_weather", "target": cand}
+        return {"action": "check_weather",
+                "target": "" if (not cand or cand in _TIME_SCOPE) else cand,
+                "when": _weather_when(t)}
     if any(p in t for p in [
         "what's the weather", "whats the weather", "weather today", "weather right now",
         "weather like", "current weather", "forecast for today", "forecast for tomorrow",
@@ -3842,7 +3876,7 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         "weather warnings", "any weather warnings", "is it going to rain", "will it rain",
         "how hot", "how cold", "temperature outside", "temperature out", "feels like outside",
     ]):
-        return {"action": "check_weather", "target": ""}
+        return {"action": "check_weather", "target": "", "when": _weather_when(t)}
 
     # Dispatch / build status check
     if any(p in t for p in ["where are we", "where were we", "project status", "how's the build",
@@ -3988,10 +4022,11 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
     JARVIS stays conversational — this runs completely off the main path.
     """
     lookup_id = str(uuid.uuid4())[:8]
+    dispatch_time = time.time()
     _active_lookups[lookup_id] = {
         "type": lookup_type,
         "status": "working",
-        "started": time.time(),
+        "started": dispatch_time,
     }
 
     try:
@@ -4004,9 +4039,12 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
 
         _active_lookups[lookup_id]["status"] = "done"
 
-        # Speak the result — skip audio if user spoke recently to avoid collision
-        if voice_state and time.time() - voice_state["last_user_time"] < 3:
-            log.info(f"Skipping lookup audio for {lookup_type} — user spoke recently")
+        # Speak the result — skip audio only if the user spoke *again* after we
+        # dispatched this lookup (a fresh utterance we'd talk over). The triggering
+        # utterance itself must not suppress its own answer: native fast paths like
+        # weather finish inside the old 3s window, which muted every result.
+        if voice_state and voice_state["last_user_time"] > dispatch_time:
+            log.info(f"Skipping lookup audio for {lookup_type} — newer user utterance after dispatch")
             # Result is still stored in history below
         else:
             tts = strip_markdown_for_tts(result_text)
@@ -4056,12 +4094,15 @@ async def _do_calendar_lookup() -> str:
     return format_schedule_summary(events)
 
 
-async def _do_weather_lookup(location: str, ws) -> str:
+async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
     """Native weather lookup for [ACTION:CHECK_WEATHER] / check_weather fast-path.
 
     Resolves location (or falls back to HOMETOWN_CITY → ADDRESS), geocodes,
     fetches Open-Meteo forecast, mounts a floating weather card on the
     frontend, returns a JARVIS-style 1-2 sentence summary for TTS.
+
+    `when` ("today" / "tomorrow" / "day_after" / "week") selects which slab of
+    the forecast the spoken summary describes; the card always shows all 7 days.
 
     Returns the spoken summary string. The card emission is a side effect.
     """
@@ -4112,7 +4153,7 @@ async def _do_weather_lookup(location: str, ws) -> str:
     except Exception as e:
         log.debug(f"result.weather send failed: {e}")
 
-    return _wx.format_voice_summary(fc, geo["name"], alert)
+    return _wx.format_voice_summary(fc, geo["name"], alert, when=when)
 
 
 async def _do_mail_lookup() -> str:
@@ -4741,6 +4782,7 @@ async def voice_handler(ws: WebSocket):
                             asyncio.create_task(_lookup_and_report("mail", _do_mail_lookup, ws, history=history, voice_state=voice_state))
                         elif action["action"] == "check_weather":
                             wx_target = (action.get("target") or "").strip()
+                            wx_when = action.get("when") or "today"
                             response_text = (
                                 "Checking the weather now, sir." if not wx_target
                                 else f"Checking the weather in {wx_target}, sir."
@@ -4749,7 +4791,7 @@ async def voice_handler(ws: WebSocket):
                             # _lookup_and_report expects a zero-arg coroutine factory.
                             asyncio.create_task(_lookup_and_report(
                                 "weather",
-                                lambda t=wx_target: _do_weather_lookup(t, ws),
+                                lambda t=wx_target, w=wx_when: _do_weather_lookup(t, ws, w),
                                 ws, history=history, voice_state=voice_state,
                             ))
                         elif action["action"] == "check_dispatch":
@@ -4975,9 +5017,12 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_check_date(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "check_weather":
                                     wx_t = (embedded_action.get("target") or "").strip()
+                                    # LLM tag carries no time scope — recover it
+                                    # from the original utterance ("for tomorrow").
+                                    wx_w = _weather_when(user_text)
                                     asyncio.create_task(_lookup_and_report(
                                         "weather",
-                                        lambda t=wx_t: _do_weather_lookup(t, ws),
+                                        lambda t=wx_t, w=wx_w: _do_weather_lookup(t, ws, w),
                                         ws, history=history, voice_state=voice_state,
                                     ))
                                 elif embedded_action["action"] == "draft_email":
