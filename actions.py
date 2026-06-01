@@ -1491,12 +1491,18 @@ async def paste_into_cursor_claude(
     # (in case the pre-flight check was racy). Then paste, brief pause,
     # then Return. Pauses are conservative — total ~250ms — chosen for
     # reliability over speed; tune down if it feels sluggish.
+    # Scale the gap between Cmd+V and Return to the paste size. A big prompt
+    # streams into the terminal's bracketed-paste buffer over time; if Return
+    # fires before the paste finishes, the prompt lands partially or not at all
+    # (osascript still exits 0, so we'd report a false success). ~0.1s baseline
+    # plus 1s per 10KB, capped at 3s so a runaway prompt can't hang the flow.
+    post_paste_delay = min(3.0, 0.1 + len(prompt) / 10_000)
     paste_script = (
         'tell application "Cursor" to activate\n'
         'delay 0.1\n'
         'tell application "System Events"\n'
         '    keystroke "v" using {command down}\n'
-        '    delay 0.1\n'
+        f'    delay {post_paste_delay:.2f}\n'
         '    key code 36\n'  # 36 = Return
         'end tell'
     )

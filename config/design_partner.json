@@ -9,7 +9,8 @@
     "git_log_count": 20,
     "entry_point_lines": 200,
     "max_entry_points": 3,
-    "fs_debounce_ms": 500
+    "fs_debounce_ms": 500,
+    "max_context_chars": 6000
   },
   "design_session": {
     "building_idle_timeout_sec": 300,

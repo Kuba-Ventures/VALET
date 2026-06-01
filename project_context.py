@@ -61,6 +61,7 @@ def _warm_config() -> dict:
         "entry_point_lines": 200,
         "max_entry_points": 3,
         "fs_debounce_ms": 500,
+        "max_context_chars": 6000,
     }
     try:
         if _CONFIG_PATH.exists():
@@ -100,7 +101,16 @@ class ProjectContext:
             parts.append(f"## File tree (depth {cfg['file_tree_depth']})\n```\n{self.file_tree.strip()}\n```")
         for name, body in self.entry_points.items():
             parts.append(f"## Entry point: {name} (first {cfg['entry_point_lines']} lines)\n```\n{body.strip()}\n```")
-        return "\n\n".join(parts)
+        rendered = "\n\n".join(parts)
+        # Hard cap so the composed ship prompt stays inside what the auto-paste
+        # path can reliably deliver into Cursor's claude terminal. Large repos
+        # (full CLAUDE.md + README + 3×200-line entry points) can otherwise
+        # render tens of KB; a clipboard paste that big races the Enter key and
+        # silently fails to land. Truncate with a visible marker.
+        max_chars = cfg.get("max_context_chars", 6000)
+        if max_chars and len(rendered) > max_chars:
+            rendered = rendered[:max_chars].rstrip() + "\n\n…[warm context truncated]"
+        return rendered
 
 
 # ---------------------------------------------------------------------------

@@ -569,7 +569,14 @@ def compose_final_prompt(session: DesignSession) -> str:
     parts: list[str] = [f"## Task: {session.topic}", ""]
     parts.append(session.draft.render_markdown())
 
-    if session.project_path:
+    # Warm context is injected for normal (cross-repo) ships so the dispatched
+    # Claude has the target's docs in-prompt. For SELF-MOD it's both redundant
+    # and harmful: the Claude session is already running *inside* this repo (it
+    # reads CLAUDE.md / README / source directly), and the JARVIS repo's own
+    # docs are large enough (~43KB) to blow the clipboard paste past the size
+    # the integrated terminal can reliably ingest before Enter fires — the
+    # paste silently fails to land. Skip it. See paste_into_cursor_claude.
+    if session.project_path and not session.self_mod:
         warm = get_warm(session.project_path)
         if warm:
             parts.append("\n## Project warm context\n")
