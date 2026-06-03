@@ -18,4 +18,4 @@ if [ -f "$PLIST_PATH" ]; then
     echo "Removed $PLIST_PATH"
 fi
 
-echo "Done. Logs preserved under jarvis-main/logs/ if you need them."
+echo "Done. Logs preserved under jarvis/logs/ if you need them."

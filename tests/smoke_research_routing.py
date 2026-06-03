@@ -76,7 +76,7 @@ def _strip_personal_context_placeholders(prompt: str) -> str:
     # so the prompt is well-formed for an isolated routing call.
     return prompt.format(
         user_name=USER_NAME,
-        project_dir="/Users/finley/Code/jarvis-main",
+        project_dir="/Users/finley/Code/jarvis",
         personal_context="",
     )
 

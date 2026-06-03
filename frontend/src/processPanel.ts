@@ -702,6 +702,31 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     const fmt = (n: number | null | undefined, suffix = "°") =>
       n === null || n === undefined || Number.isNaN(n) ? "—" : `${Math.round(n)}${suffix}`;
 
+    // Sunrise/sunset arrive as Open-Meteo "naive local" ISO strings
+    // (e.g. "2026-06-03T05:34") with no offset. Pull HH:MM straight from the
+    // string rather than via Date(), which would reinterpret it in the
+    // browser's timezone and skew the displayed time.
+    const fmtTime = (iso: string | null | undefined): string => {
+      if (!iso) return "—";
+      const m = /T(\d{2}):(\d{2})/.exec(iso);
+      if (!m) return "—";
+      let h = parseInt(m[1], 10);
+      const ampm = h >= 12 ? "PM" : "AM";
+      h = h % 12 || 12;
+      return `${h}:${m[2]} ${ampm}`;
+    };
+
+    // WHO/EPA UV bands → label + severity class (drives the value's accent).
+    const uvInfo = (uv: number | null | undefined): { label: string; cls: string } | null => {
+      if (uv === null || uv === undefined || Number.isNaN(uv)) return null;
+      const v = Math.round(uv);
+      if (v <= 2) return { label: "Low", cls: "uv-low" };
+      if (v <= 5) return { label: "Moderate", cls: "uv-mod" };
+      if (v <= 7) return { label: "High", cls: "uv-high" };
+      if (v <= 10) return { label: "Very High", cls: "uv-vhigh" };
+      return { label: "Extreme", cls: "uv-extreme" };
+    };
+
     // --- Header
     const head = document.createElement("div");
     head.className = "weather-header";
@@ -741,6 +766,49 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     meta.textContent = metaParts.join(" · ");
     now.appendChild(meta);
     card.appendChild(now);
+
+    // --- Today block — high/low, prominent UV index, sunrise/sunset. The
+    // "now" block above is live conditions; this is the day's outlook, the
+    // detail the spoken summary used to carry before weather went render-only.
+    {
+      const today = Array.isArray(p.daily) ? p.daily[0] : undefined;
+      const stats = document.createElement("div");
+      stats.className = "weather-today-stats";
+
+      const statTile = (label: string, value: string, valueCls = "") => {
+        const tile = document.createElement("div");
+        tile.className = "weather-stat";
+        const l = document.createElement("div");
+        l.className = "weather-stat-label";
+        l.textContent = label;
+        const v = document.createElement("div");
+        v.className = "weather-stat-value" + (valueCls ? ` ${valueCls}` : "");
+        v.textContent = value;
+        tile.appendChild(l);
+        tile.appendChild(v);
+        stats.appendChild(tile);
+      };
+
+      if (today) {
+        statTile("High", fmt(today.high));
+        statTile("Low", fmt(today.low));
+        const uv = uvInfo(today.uv_max);
+        if (uv) statTile("UV Index", `${Math.round(today.uv_max as number)} · ${uv.label}`, uv.cls);
+      }
+      if (p.sunrise) statTile("Sunrise", fmtTime(p.sunrise));
+      if (p.sunset) statTile("Sunset", fmtTime(p.sunset));
+
+      if (stats.children.length) {
+        const todayBlock = document.createElement("div");
+        todayBlock.className = "weather-today";
+        const heading = document.createElement("div");
+        heading.className = "weather-today-head";
+        heading.textContent = "Today";
+        todayBlock.appendChild(heading);
+        todayBlock.appendChild(stats);
+        card.appendChild(todayBlock);
+      }
+    }
 
     // --- Alert banner (only if present)
     if (p.alert && p.alert.text) {

@@ -3599,9 +3599,15 @@ _RESTART_SELF_PHRASES = {
 
 # In-design fast-action phrases — only matched when a session is active.
 _SHIP_DESIGN_PHRASES = {
-    "ship it", "ship this", "send it", "ok build it", "okay build it",
+    "ship", "ship it", "ship this", "ship now", "ship it now",
+    "send it", "ok build it", "okay build it",
     "go ahead and build", "okay ship", "ok ship", "ship the design",
     "let's ship it", "lets ship it",
+    # "commit"-flavored ship intents. Multi-word only — a bare "commit"
+    # would let an innocuous design utterance ("commit to using React")
+    # ship via the startswith() check below, so we never list it alone.
+    "commit now", "commit it", "commit this", "commit it now",
+    "commit the design",
 }
 _SCRAP_DESIGN_PHRASES = {
     "scrap this", "scrap that", "scrap the design", "start over",
@@ -4098,13 +4104,17 @@ async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
     """Native weather lookup for [ACTION:CHECK_WEATHER] / check_weather fast-path.
 
     Resolves location (or falls back to HOMETOWN_CITY → ADDRESS), geocodes,
-    fetches Open-Meteo forecast, mounts a floating weather card on the
-    frontend, returns a JARVIS-style 1-2 sentence summary for TTS.
+    fetches Open-Meteo forecast, and mounts the weather panel on the frontend.
 
-    `when` ("today" / "tomorrow" / "day_after" / "week") selects which slab of
-    the forecast the spoken summary describes; the card always shows all 7 days.
+    Render-only: the forecast detail lives in the panel (current conditions,
+    today's outlook, 7-day strip, UV, severe-weather banner), so JARVIS does
+    NOT read it aloud. This function returns a short butler acknowledgment for
+    TTS instead — escalated to include the text of a *severe* alert, since
+    that's worth hearing without looking at the screen. The `when` arg is
+    retained for caller compatibility; the panel always shows all 7 days.
 
-    Returns the spoken summary string. The card emission is a side effect.
+    The card emission is the substantive effect; the return is just the spoken
+    acknowledgment.
     """
     import weather as _wx
     import uuid as _uuid
@@ -4153,7 +4163,13 @@ async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
     except Exception as e:
         log.debug(f"result.weather send failed: {e}")
 
-    return _wx.format_voice_summary(fc, geo["name"], alert, when=when)
+    # Render-only: the panel carries the forecast, so speak only a brief
+    # acknowledgment. A severe alert is surfaced aloud anyway — safety detail
+    # the user shouldn't have to look up to hear.
+    ack = f"The forecast for {geo['name']}, sir."
+    if alert and alert.get("level") == "severe" and alert.get("text"):
+        ack = f"The forecast for {geo['name']}, sir. {alert['text']}"
+    return ack
 
 
 async def _do_mail_lookup() -> str:
