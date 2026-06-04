@@ -1263,22 +1263,35 @@ async def _frontmost_app_name() -> str:
     return ""
 
 
-async def _focused_role() -> str:
-    """AXRole of the frontmost app's focused UI element, or "" if unreadable.
+async def _focused_signature() -> tuple[str, str]:
+    """(AXRole, AXDescription) of the frontmost app's focused UI element.
 
-    In Cursor (VS Code/Electron): the integrated terminal's xterm <textarea>
-    surfaces as "AXTextArea"; the command palette / quick-input <input>
-    surfaces as "AXTextField". That distinction is how we tell whether a paste
-    will land in the terminal or get dumped into a still-open palette.
+    Both "" if unreadable. Verified against this Cursor build (read-only AX
+    probe): the integrated terminal's focused element is an *AXTextField*
+    (NOT AXTextArea — that earlier assumption was the ship bug) whose
+    AXDescription carries the terminal tab name plus xterm's screen-reader
+    hint, e.g.:
+        "Terminal 2, Start Claude … Use ⌥F1 for terminal accessibility help"
+    The command palette, editor, and other inputs are also AXTextField but
+    their AXDescription does NOT contain "terminal" — so the description, not
+    the role, is the reliable discriminator.
     """
     probe = (
         'tell application "System Events"\n'
         '    try\n'
         '        set p to first application process whose frontmost is true\n'
         '        set el to value of attribute "AXFocusedUIElement" of p\n'
-        '        return value of attribute "AXRole" of el\n'
+        '        set r to ""\n'
+        '        set d to ""\n'
+        '        try\n'
+        '            set r to value of attribute "AXRole" of el\n'
+        '        end try\n'
+        '        try\n'
+        '            set d to value of attribute "AXDescription" of el\n'
+        '        end try\n'
+        '        return r & "\t" & d\n'
         '    on error\n'
-        '        return ""\n'
+        '        return "\t"\n'
         '    end try\n'
         'end tell'
     )
@@ -1289,87 +1302,68 @@ async def _focused_role() -> str:
             stderr=asyncio.subprocess.PIPE,
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-        return out.decode().strip()
+        role, _, desc = out.decode().partition("\t")
+        return role.strip(), desc.strip()
     except Exception as e:
-        log.debug("_focused_role: probe failed: %s", e)
-        return ""
+        log.debug("_focused_signature: probe failed: %s", e)
+        return "", ""
 
 
-async def _press_escape() -> None:
-    """Send a single Escape — used to dismiss a command palette we accidentally
-    left open so we never paste a prompt into it."""
+def _is_terminal_focus(role: str, desc: str) -> bool:
+    """True when the focused element is a Cursor integrated-terminal pane.
+
+    The terminal's AXDescription always contains "terminal" (tab label +
+    xterm's "…terminal accessibility help" hint). The palette/editor/search
+    inputs don't, so this cleanly separates "safe to paste" from everything
+    else regardless of the AXRole (which is AXTextField for the terminal here).
+    """
+    return "terminal" in (desc or "").lower()
+
+
+async def _toggle_terminal() -> None:
+    """Ctrl+` — VS Code/Cursor's toggle-terminal. Focuses a visible-but-
+    unfocused terminal (and reveals a hidden one). We only fire it when the
+    terminal isn't already focused, so its hide-if-focused behavior never bites.
+    Used instead of the "Terminal: Focus Terminal" palette command, which
+    misbehaves in this Cursor build (spawns a fresh terminal / leaves the
+    palette open)."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", 'tell application "System Events" to key code 53',
+            "osascript", "-e",
+            'tell application "System Events" to key code 50 using {control down}',  # 50 = `
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
         await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("_toggle_terminal failed: %s", e)
 
 
 async def _focus_cursor_terminal() -> str:
-    """Focus Cursor's integrated terminal (where the Claude Code session runs)
-    via the command palette, then probe what actually took focus.
+    """Ensure Cursor's integrated terminal (where the Claude session runs) holds
+    keyboard focus before we paste. Returns "terminal" if confirmed focused,
+    "unknown" otherwise (caller decides whether to risk a best-effort paste).
 
-    Raising + activating the window only guarantees the right WINDOW is front;
-    within it, keyboard focus might sit in the editor, a webview, or some
-    non-text chrome — a blind Cmd+V would then dump the prompt into a source
-    file. Running "Terminal: Focus Terminal" (workbench.action.terminal.focus)
-    puts focus on the pane the Claude session lives in. Unlike Ctrl+` it never
-    toggles the panel off, so it's safe to fire regardless of focus state.
-
-    Returns a status string:
-      "terminal" — focused element is a text area (xterm) → safe to paste.
-      "palette"  — focused element is still the command-palette text field;
-                   the focus command never executed (e.g. the fuzzy filter
-                   hadn't populated when Return fired). We Escape to close the
-                   palette and the caller MUST NOT paste — it would land in the
-                   palette, not the terminal. This was the original ship bug.
-      "unknown"  — couldn't read focus (AX denied/empty). Caller pastes
-                   best-effort and tells the user it couldn't confirm.
-
-    Delays are deliberately generous: the earlier 0.25s gap let Return fire
-    before the palette filtered, so the focus command silently no-op'd.
+    Strategy (no command palette — it's unreliable in this Cursor build):
+      1. Probe the focused element. If it's already a terminal, done — no
+         keystroke needed (this is the common case: the user is looking at the
+         Claude pane when they ship).
+      2. Otherwise Ctrl+` to focus the terminal, re-probe. A second tap covers
+         the case where the first one toggled a focused terminal off.
     """
-    focus_script = (
-        'tell application "Cursor" to activate\n'
-        'delay 0.2\n'
-        'tell application "System Events"\n'
-        '    key code 53\n'                                  # Escape — clear any stale widget
-        '    delay 0.2\n'
-        '    keystroke "p" using {command down, shift down}\n'
-        '    delay 0.55\n'                                    # let the palette open
-        '    keystroke "Terminal: Focus Terminal"\n'
-        '    delay 0.7\n'                                     # let the fuzzy filter settle
-        '    key code 36\n'                                  # Return — run the top match
-        '    delay 0.45\n'
-        'end tell'
-    )
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", focus_script,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=6.0)
-        if proc.returncode != 0:
-            log.warning("_focus_cursor_terminal: focus command failed: %s", err.decode()[:160])
-            return "unknown"
-    except Exception as e:
-        log.warning("_focus_cursor_terminal: focus exception: %s", e)
-        return "unknown"
-
-    role = await _focused_role()
-    log.info("_focus_cursor_terminal: focused element role=%r", role)
-    if role == "AXTextArea":
+    role, desc = await _focused_signature()
+    log.info("_focus_cursor_terminal: pre role=%r desc=%r", role, desc[:140])
+    if _is_terminal_focus(role, desc):
         return "terminal"
-    if role == "AXTextField":
-        # Palette never executed the focus command and is still open. Close it
-        # so the caller doesn't paste the prompt into the palette input.
-        await _press_escape()
-        return "palette"
+
+    for attempt in range(2):
+        await _toggle_terminal()
+        await asyncio.sleep(0.25)
+        role, desc = await _focused_signature()
+        log.info("_focus_cursor_terminal: post-toggle[%d] role=%r desc=%r", attempt, role, desc[:140])
+        if _is_terminal_focus(role, desc):
+            return "terminal"
+
     return "unknown"
 
 
@@ -1690,61 +1684,38 @@ async def paste_into_cursor_claude(
             }
 
     # ── (1b) Focus the integrated terminal (the Claude pane) before paste ──
-    # The right window is now front, but focus inside it might be the editor, a
-    # webview, or a command palette. Aim the keystrokes at the terminal so the
-    # prompt can't land in a source file or the palette input.
+    # The right window is now front, but focus inside it might be the editor or
+    # a webview. _focus_cursor_terminal confirms (via the focused element's
+    # AXDescription) that a terminal pane actually holds focus before we paste.
     focus_status = await _focus_cursor_terminal()
-    if focus_status == "palette":
-        # The focus command left the command palette open. Pasting now would
-        # dump the whole prompt INTO the palette input (the original ship bug).
-        # Bail so the caller falls back to file-ship instead of losing it.
+    if focus_status != "terminal":
+        # Couldn't confirm a terminal holds focus (even after Ctrl+`). Refuse to
+        # paste rather than risk dumping the prompt into a source file or a
+        # webview; the caller falls back to file/clipboard ship.
         log.warning(
-            "paste_into_cursor_claude: aborting — command palette still open, "
-            "terminal not focused (would have pasted into the palette)"
+            "paste_into_cursor_claude: aborting — terminal not focused (status=%s)",
+            focus_status,
         )
         return {
             "success": False,
             "reason": "terminal_focus_failed",
-            "detail": "Couldn't focus the Claude terminal pane (command palette stayed open).",
+            "detail": "Couldn't confirm the Claude terminal pane held focus.",
         }
 
-    # ── (1c) Verify a live Claude actually owns the focus before pasting ──
-    # focus_status only confirms *a* terminal has focus, not that Claude is
-    # running in it — that false-confident gate is how a prompt ended up at a
-    # bare `%` shell prompt (and, when "Terminal: Focus Terminal" spawned a
-    # fresh terminal, in a brand-new shell). We can't read the focused pane's
-    # tty, but we can read every Cursor terminal's foreground process. Only
-    # paste when EVERY Cursor pane is a live Claude (so the focused one must be
-    # too); if any pane is a shell — including a just-spawned one — fall back to
-    # file-ship instead of dumping the prompt into a shell.
-    panes = await _cursor_terminal_pane_summary()
-    if panes["claude"] == 0:
-        log.warning(
-            "paste_into_cursor_claude: aborting — no live Claude pane in Cursor "
-            "(panes=%s)", panes["ttys"],
-        )
-        return {
-            "success": False,
-            "reason": "no_live_claude",
-            "detail": "No Cursor terminal is running Claude right now — nothing to paste into.",
-        }
-    if panes["shell"] > 0 or panes["other"] > 0:
-        log.warning(
-            "paste_into_cursor_claude: aborting — can't confirm the focused pane "
-            "is Claude (claude=%d shell=%d other=%d ttys=%s); a non-Claude pane "
-            "could grab the paste", panes["claude"], panes["shell"],
-            panes["other"], panes["ttys"],
-        )
-        return {
-            "success": False,
-            "reason": "ambiguous_terminal",
-            "detail": (
-                f"Couldn't confirm the Claude pane held focus — "
-                f"{panes['shell'] + panes['other']} non-Claude terminal(s) open "
-                f"in Cursor, so a paste could land in the wrong one."
-            ),
-        }
-    # Every Cursor pane is a live Claude → whichever holds focus is Claude.
+    # ── (1c) Informational: log the Cursor terminal pane mix for diagnostics.
+    # We trust the focus check above rather than GATING on this. The old strict
+    # rule ("abort if any shell pane exists") blocked legitimate ships whenever
+    # the user simply had a second shell tab open alongside Claude.
+    try:
+        panes = await _cursor_terminal_pane_summary()
+        if panes.get("claude", 0) == 0:
+            log.warning(
+                "paste_into_cursor_claude: focus confirms a terminal, but no live "
+                "Claude pane detected (panes=%s) — pasting anyway per focus check",
+                panes.get("ttys"),
+            )
+    except Exception as e:
+        log.debug("paste_into_cursor_claude: pane summary failed: %s", e)
     terminal_focused = True
 
     # ── (2) Save existing clipboard so we can restore it after paste ────

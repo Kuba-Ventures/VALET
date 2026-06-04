@@ -1809,14 +1809,39 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
         await _speak(ws, "I lost the session, sir. Try again.")
         return True
 
-    # No branch ceremony: per the user's preference, a self-mod ship now just
-    # pastes the prompt straight into the Claude pane on whatever branch is
-    # checked out — they manage branches themselves. (Previously this auto-
-    # committed a wip snapshot and cut a feature/<topic> branch, which was the
-    # surprise "it started building a branch" behavior.) The "confirmed" gate
-    # upstream is kept as the one safety beat before JARVIS edits itself.
+    # Self-mod safety loop: snapshot any in-flight work, cut a feature/<topic>
+    # branch, THEN paste the prompt so Claude Code builds on the branch. This is
+    # what makes the BUILDING panel's "Merge to main" / "Scrap branch" buttons
+    # and the "merge it" / "scrap it" voice commands mean something — you review
+    # the self-mod on its branch and fold it in or throw it away cleanly. The
+    # earlier surprise ("it started building a branch") was really the paste
+    # failing on top of the branch; now that the paste lands, the branch is the
+    # point. Auto-snapshot keeps create_feature_branch's clean-tree assert happy.
+    try:
+        snapshot_sha = self_mod.commit_wip_snapshot(session.topic)
+    except Exception as e:
+        log.error(f"commit_wip_snapshot failed: {e}")
+        await _speak(ws, f"Couldn't snapshot the working tree, sir: {str(e)[:160]}")
+        return True
+    if snapshot_sha:
+        log.info(f"_handle_self_mod_confirm: snapshotted dirty tree as {snapshot_sha[:8]}")
+
+    parent_branch = self_mod.current_branch()  # where 'scrap it' returns to
+    try:
+        branch, pre_sha = self_mod.create_feature_branch(session.topic)
+    except RuntimeError as e:
+        await _speak(ws, f"Couldn't branch, sir: {str(e)[:200]}")
+        return True
+    session.feature_branch = branch
+    session.pre_build_sha = pre_sha
+    session.parent_branch = parent_branch
+    log.info(
+        "_handle_self_mod_confirm: on branch %s (from %s, pre_sha=%s)",
+        branch, parent_branch, (pre_sha or "")[:8],
+    )
+
     final_prompt, dispatch_agent = _resolve_ship_prompt(session)
-    log.info("_handle_self_mod_confirm: composing ship (no branch), agent=%r", dispatch_agent)
+    log.info("_handle_self_mod_confirm: composing ship on %s, agent=%r", branch, dispatch_agent)
     from actions import paste_into_cursor_claude
     paste_result = await paste_into_cursor_claude(
         final_prompt,
@@ -1829,12 +1854,19 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
         await session.emit_state()
         design_partner.persist(
             session, status="building",
-            final_prompt=final_prompt, ship_method="auto_paste-self-mod-nobranch",
+            final_prompt=final_prompt, ship_method="auto_paste-self-mod",
         )
-        await _speak(ws, _ship_sent_line(paste_result.get("verified", False)))
+        sent = _ship_sent_line(paste_result.get("verified", False))
+        await _speak(
+            ws,
+            f"{sent} You're on a fresh branch — say 'merge it' to fold into "
+            f"main once it checks out, or 'scrap it' to abandon it."
+        )
         return True
 
-    # Paste failed — fall back to file ship so the prompt isn't lost.
+    # Paste failed — fall back to file ship so the prompt isn't lost. The branch
+    # is already cut, so the user can paste the staged prompt manually and still
+    # use the merge/scrap loop.
     log.warning(
         "_handle_self_mod_confirm: paste failed (reason=%s), falling back to file ship",
         paste_result.get("reason"),
@@ -1849,7 +1881,7 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
     await session.emit_state()
     design_partner.persist(
         session, status="building",
-        final_prompt=final_prompt, ship_method="auto_paste_fallback_file-self-mod-nobranch",
+        final_prompt=final_prompt, ship_method="auto_paste_fallback_file-self-mod",
         inbox_path=str(out),
     )
 
@@ -1857,8 +1889,8 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
     reason = paste_result.get("reason", "unknown")
     await _speak(
         ws,
-        f"Couldn't paste, sir ({reason}) — prompt staged at {rel}. "
-        f"Copy it into the Claude pane to proceed."
+        f"Branched, sir, but I couldn't paste ({reason}) — prompt staged at {rel}. "
+        f"Copy it into the Claude pane; then 'merge it' or 'scrap it' as usual."
     )
     return True
 
@@ -1940,6 +1972,25 @@ async def _execute_scrap_design(ws):
         return
 
     if session.state == "BUILDING":
+        # Shipped self-mod → "Scrap branch" should abandon the feature branch
+        # (discard the build, return to where we branched from). Only do this
+        # when we're actually still on that branch; otherwise it already merged
+        # or was a file-ship, and the old keep-the-inbox guidance applies.
+        import self_mod
+        branch = getattr(session, "feature_branch", None)
+        parent = getattr(session, "parent_branch", None) or "main"
+        if branch and self_mod.current_branch() == branch:
+            res = self_mod.abandon_feature_branch(branch, return_to=parent)
+            if res["success"]:
+                design_partner.persist(session, status="scrapped",
+                                       final_prompt=session.draft.render_markdown())
+                session.scrap()
+                await session.emit_state()
+                design_partner.stop_for_ws(ws)
+                await _speak(ws, f"Scrapped, sir. {res['message']} Clean slate.")
+            else:
+                await _speak(ws, f"Couldn't scrap the branch, sir: {res['message'][:200]}")
+            return
         await _speak(ws, "That one already shipped, sir. The inbox file is yours to keep or delete.")
         return
 

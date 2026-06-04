@@ -197,6 +197,32 @@ def merge_to_main(branch: str) -> dict:
         return {"success": False, "message": f"git failed: {e.stderr[:400] if e.stderr else e}"}
 
 
+def abandon_feature_branch(branch: str, return_to: str = "main") -> dict:
+    """Scrap a self-mod feature branch: discard any uncommitted build changes,
+    switch back to `return_to`, and delete the branch. Returns {success, message}.
+
+    Destructive by design — this is the "scrap it" path, only reachable from an
+    explicit user scrap action. Refuses to delete anything that isn't a
+    feature/* branch, and refuses to delete the branch it's currently on
+    without first leaving it.
+    """
+    if not branch.startswith("feature/"):
+        return {"success": False, "message": f"Refusing to scrap {branch} — only feature/* branches."}
+    try:
+        # Drop uncommitted build changes so the checkout is clean. (The user's
+        # own pre-ship work was already committed by commit_wip_snapshot, so
+        # this only discards what the build touched.)
+        _git("reset", "--hard", check=False)
+        _git("checkout", return_to, check=False)
+        if current_branch() == branch:
+            return {"success": False,
+                    "message": f"Couldn't switch off {branch} (is {return_to!r} a valid branch?)."}
+        _git("branch", "-D", branch, check=False)
+        return {"success": True, "message": f"Scrapped {branch}; back on {current_branch()}."}
+    except subprocess.CalledProcessError as e:
+        return {"success": False, "message": f"git failed: {e.stderr[:400] if e.stderr else e}"}
+
+
 def reset_to(sha: str) -> dict:
     """`git reset --hard <sha>`. Caller-protected: only call this when the
     user explicitly asked OR after a confirmed smoke fail. Never auto-called
