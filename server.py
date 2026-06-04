@@ -43,6 +43,7 @@ from pydantic import BaseModel
 
 from process_events import (
     bus as process_bus,
+    Event as ProcessEvent,
     emit_step,
     emit_browser_action,
     emit_screenshot,
@@ -3860,19 +3861,43 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         "this weekend", "the next few days", "the rest of today", "the rest of the day",
         "the rest of the week", "the rest of the weekend",
     }
+    # Self-referential location phrases ("my hometown", "here", "outside") all
+    # mean "the user's hometown" — empty target so the HOMETOWN_CITY fallback
+    # fires. WITHOUT this, "weather for my hometown" captured "my hometown",
+    # whose geocode degradation stripped to the bare token "my" and matched an
+    # obscure real place named "My" — JARVIS then said "The forecast for My,
+    # sir" and mounted a card for the wrong spot.
+    _SELF_LOC = {
+        "my hometown", "my home town", "my home", "my house", "my area",
+        "my town", "my city", "my place", "my location", "my region",
+        "my neighborhood", "my neighbourhood", "my spot", "home", "here",
+        "around here", "round here", "outside", "out", "out there",
+        "where i am", "where i live", "this area", "the area",
+    }
+
+    def _wx_target(cand: str) -> str:
+        """Empty (→ hometown) for time-scope / self-referential phrases."""
+        c = (cand or "").strip()
+        low = c.lower()
+        if not c or low in _TIME_SCOPE or low in _SELF_LOC:
+            return ""
+        # "my hometown today", "here right now" — leading possessive/self
+        # reference with a trailing time scope still means the hometown.
+        if low.startswith(("my ", "here ", "outside ", "around here ")):
+            return ""
+        return c
+
     wm = _action_re.match(r".*\bweather\s+(?:in|for|at)\s+(.+?)\s*\.?\s*$", t)
     if wm:
-        cand = wm.group(1).strip()
         # A weather query for sure; the token after for/in/at is either a place
-        # or just a time scope ("for tomorrow"). Time scope → hometown.
+        # or just a time scope / self-reference ("for tomorrow", "for my town").
         return {"action": "check_weather",
-                "target": "" if (not cand or cand in _TIME_SCOPE) else cand,
+                "target": _wx_target(wm.group(1)),
                 "when": _weather_when(t)}
     fm = _action_re.match(r".*\bforecast\s+(?:for|in|at)\s+(.+?)\s*\.?\s*$", t)
     if fm:
-        cand = fm.group(1).strip()
         return {"action": "check_weather",
-                "target": "" if (not cand or cand in _TIME_SCOPE) else cand,
+                "target": _wx_target(fm.group(1)),
                 "when": _weather_when(t)}
     if any(p in t for p in [
         "what's the weather", "whats the weather", "weather today", "weather right now",
@@ -4120,6 +4145,19 @@ async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
     import uuid as _uuid
 
     target = (location or "").strip()
+    # Self-referential phrases ("my hometown", "here", "outside") mean the
+    # user's hometown, not a place to geocode. The fast-path normalizes these,
+    # but the LLM embedded-action path passes the raw tag target through, so
+    # guard here too — otherwise geocode strips "my hometown" → "my" and hits
+    # an obscure real place named "My".
+    _self_ref = {
+        "my hometown", "my home town", "my home", "my house", "my area",
+        "my town", "my city", "my place", "my location", "my region",
+        "my neighborhood", "my neighbourhood", "home", "here", "around here",
+        "outside", "where i am", "where i live", "this area", "the area",
+    }
+    if target.lower() in _self_ref or target.lower().startswith("my "):
+        target = ""
     if not target:
         # Fallback chain: HOMETOWN_CITY → ADDRESS → ask
         _, env = _read_env()
@@ -4148,20 +4186,23 @@ async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
         "location": geo["name"],
     }
 
-    # Floating card on the frontend. result.weather is a new event type; the
-    # processPanel card builder mounts it via the existing floatingLayer.
+    # Floating card on the frontend. result.weather is a ProcessEvent type the
+    # processPanel card builder mounts via the existing floatingLayer. It MUST
+    # go through the bus so it's wrapped in a {"type":"process_event",...} frame
+    # — main.ts only routes process_event/design_event/etc. and silently drops a
+    # raw top-level {"type":"result.weather"} frame, which is why the panel
+    # never appeared.
     try:
-        await ws.send_json({
-            "type": "result.weather",
-            "task_id": "weather",
-            "id": _uuid.uuid4().hex[:10],
-            "status": "done",
-            "timestamp": time.time(),
-            "title": f"Weather: {geo['name']}",
-            "payload": card,
-        })
+        await process_bus.emit(ProcessEvent(
+            type="result.weather",
+            task_id="weather",
+            id=_uuid.uuid4().hex[:10],
+            status="done",
+            title=f"Weather: {geo['name']}",
+            payload=card,
+        ))
     except Exception as e:
-        log.debug(f"result.weather send failed: {e}")
+        log.debug(f"result.weather emit failed: {e}")
 
     # Render-only: the panel carries the forecast, so speak only a brief
     # acknowledgment. A severe alert is surfaced aloud anyway — safety detail
