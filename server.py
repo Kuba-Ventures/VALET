@@ -1507,6 +1507,22 @@ async def _execute_dispatch_to_agent(ws, agent_raw: str, task: str):
         await _speak(ws, f"Couldn't reach Cursor to dispatch, sir. {reason}.")
 
 
+def _ship_sent_line(verified: bool) -> str:
+    """Spoken confirmation after a paste-ship, honest about verification.
+
+    `verified` comes from paste_into_cursor_claude — True only when we
+    confirmed the integrated terminal actually held focus for the paste. When
+    we couldn't confirm, say so instead of the old false "Sent to Claude Code,
+    sir" that fired whenever osascript merely exited 0.
+    """
+    if verified:
+        return "Sent to Claude Code, sir."
+    return (
+        "Pasted, sir, but I couldn't confirm it reached the Claude pane. "
+        "Have a glance to be sure."
+    )
+
+
 def _resolve_ship_prompt(session) -> tuple[str, Optional[str]]:
     """Compose the final ship prompt + the agent it should dispatch to.
 
@@ -1622,7 +1638,7 @@ async def _execute_ship_design(ws):
         if result.get("success"):
             session.mark_building()
             await session.emit_state()
-            await _speak(ws, "Sent to Claude Code, sir.")
+            await _speak(ws, _ship_sent_line(result.get("verified", False)))
         else:
             reason = result.get("reason", "unknown")
             detail = result.get("detail", "")
@@ -1675,7 +1691,7 @@ async def _execute_ship_design(ws):
                 session, status="building",
                 final_prompt=final_prompt, ship_method="auto_paste",
             )
-            await _speak(ws, "Sent to Claude Code, sir.")
+            await _speak(ws, _ship_sent_line(result.get("verified", False)))
             return
 
         # Pre-flight or paste failed — fall through to file fallback with
@@ -1793,36 +1809,14 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
         await _speak(ws, "I lost the session, sir. Try again.")
         return True
 
-    # Auto-snapshot any in-flight work on the current branch so the user's
-    # changes are never lost AND assert_clean_tree() inside
-    # create_feature_branch never blocks them. Runtime log noise + scratch
-    # dirs are now .gitignored, so most ships will hit the no-op path.
-    snapshot_sha = None
-    try:
-        snapshot_sha = self_mod.commit_wip_snapshot(session.topic)
-    except Exception as e:
-        log.error(f"commit_wip_snapshot failed: {e}")
-        await _speak(ws, f"Couldn't snapshot the dirty tree, sir: {str(e)[:160]}")
-        return True
-    if snapshot_sha:
-        log.info(f"_handle_self_mod_confirm: snapshotted dirty tree as {snapshot_sha[:8]}")
-
-    try:
-        branch, pre_sha = self_mod.create_feature_branch(session.topic)
-    except RuntimeError as e:
-        await _speak(ws, f"Couldn't branch: {str(e)[:200]}")
-        return True
-
-    # Record branch info on the session so 'merge it' can find it later.
-    session.feature_branch = branch
-    session.pre_build_sha = pre_sha
-
-    # Compose + dispatch. Branch is already created; now paste the prompt
-    # directly into the matching Cursor window so the user can see Claude
-    # Code pick it up live. Falls back to file-ship if the paste fails (so
-    # the prompt isn't lost — they can copy from .jarvis/inbox/ manually).
+    # No branch ceremony: per the user's preference, a self-mod ship now just
+    # pastes the prompt straight into the Claude pane on whatever branch is
+    # checked out — they manage branches themselves. (Previously this auto-
+    # committed a wip snapshot and cut a feature/<topic> branch, which was the
+    # surprise "it started building a branch" behavior.) The "confirmed" gate
+    # upstream is kept as the one safety beat before JARVIS edits itself.
     final_prompt, dispatch_agent = _resolve_ship_prompt(session)
-    log.info("_handle_self_mod_confirm: composing ship, agent=%r", dispatch_agent)
+    log.info("_handle_self_mod_confirm: composing ship (no branch), agent=%r", dispatch_agent)
     from actions import paste_into_cursor_claude
     paste_result = await paste_into_cursor_claude(
         final_prompt,
@@ -1835,14 +1829,9 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
         await session.emit_state()
         design_partner.persist(
             session, status="building",
-            final_prompt=final_prompt, ship_method="auto_paste-self-mod",
+            final_prompt=final_prompt, ship_method="auto_paste-self-mod-nobranch",
         )
-        await _speak(
-            ws,
-            f"Branched to {branch}, sir, and sent to Claude Code. "
-            f"Say 'merge it' when you're ready to fold into main, "
-            f"or 'scrap it' to abandon the branch."
-        )
+        await _speak(ws, _ship_sent_line(paste_result.get("verified", False)))
         return True
 
     # Paste failed — fall back to file ship so the prompt isn't lost.
@@ -1860,7 +1849,7 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
     await session.emit_state()
     design_partner.persist(
         session, status="building",
-        final_prompt=final_prompt, ship_method="auto_paste_fallback_file-self-mod",
+        final_prompt=final_prompt, ship_method="auto_paste_fallback_file-self-mod-nobranch",
         inbox_path=str(out),
     )
 
@@ -1868,9 +1857,8 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
     reason = paste_result.get("reason", "unknown")
     await _speak(
         ws,
-        f"Branched to {branch}, sir. Paste failed ({reason}) — prompt staged at {rel}. "
-        f"Watch claude work in Cursor; say 'merge it' when you're ready to fold into main, "
-        f"or 'scrap it' to abandon the branch."
+        f"Couldn't paste, sir ({reason}) — prompt staged at {rel}. "
+        f"Copy it into the Claude pane to proceed."
     )
     return True
 
@@ -3541,9 +3529,23 @@ _NEW_PROJECT_DESIGN_PATTERN = _action_re.compile(
 
 # Start-design intent — "let's design X" / "design a Y" / "spec X" / "plan a Z".
 # Captures the topic so we can spawn a session with it immediately.
+#
+# Lead-in group is deliberately generous: people open the design panel with all
+# sorts of polite preambles ("I'd like to…", "could we…", "time to…"). The verb
+# set is the design-intent core; "spec out"/"scope out"/etc. are listed before
+# their bare forms so the trailing "out" is consumed as part of the verb, not
+# captured into the topic.
 _START_DESIGN_PATTERN = _action_re.compile(
-    r'^\s*(?:let\'?s |let us |i (?:want to|wanna|wish to) |can we |please )?'
-    r'(?:design|spec|architect|plan|think through|prototype)\s+'
+    r'^\s*(?:'
+    r"let'?s |let us |let me |"
+    r"i'?d (?:like|love) to |i would (?:like|love) to |"
+    r'i (?:want to|wanna|wish to|need to) |'
+    r'(?:want to|wanna|need to) |'
+    r'can we |could we |shall we |should we |we should |'
+    r'how about (?:we )?|what if we |time to |please '
+    r')?'
+    r'(?:design|spec out|spec|architect|plan|think through|'
+    r'brainstorm|prototype|scope out|scope|flesh out|sketch out|sketch|map out)\s+'
     r'(?:a |an |the |some )?(?P<topic>[\w .,\'\-]+?)\s*\??\.?\s*$',
     _action_re.IGNORECASE,
 )
@@ -3563,6 +3565,22 @@ _DESIGN_OPTIN_PHRASES = (
     "plan a feature",
     "think about adding",
     "design before we build",
+    # More natural openers for the design panel. Topic-less by design — these
+    # trigger START_DESIGN with no target, and JARVIS asks for the topic next
+    # turn (the "what should this feature do?" prompt).
+    "design a feature",
+    "design a new feature",
+    "design something",
+    "design a new",
+    "spec out a feature",
+    "plan a new feature",
+    "work on a new feature",
+    "feature idea",
+    "i have a feature idea",
+    "let's spec",
+    "lets spec",
+    "let's brainstorm",
+    "lets brainstorm",
 )
 
 # Dictation-mode opt-in phrases. Substring match, case-insensitive.
@@ -3794,11 +3812,36 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if ws is not None:
         import design_partner
         if design_partner.get_for_ws(ws) is not None:
-            if t in _SHIP_DESIGN_PHRASES or any(t.startswith(p + " ") for p in _SHIP_DESIGN_PHRASES):
+            # Strip conversational filler so "please ship now" / "sure ship it
+            # please" match the same as a bare "ship it". Without this, leading
+            # words ("please", "sure", "okay") and trailing politeness
+            # ("please", "for me") fell through to the LLM and the ship never
+            # fired — the user said "ship" several times before it took.
+            ts = t
+            for _suf in (" please", " for me", " thanks", " thank you", " now please"):
+                if ts.endswith(_suf):
+                    ts = ts[: -len(_suf)].strip()
+            _changed = True
+            while _changed:
+                _changed = False
+                for _pre in (
+                    "please ", "sure ", "ok ", "okay ", "yeah ", "yes ", "yep ",
+                    "alright ", "all right ", "right ", "now ", "can you ",
+                    "could you ", "would you ", "go ahead and ", "go ahead ",
+                    "let's ", "lets ", "just ",
+                ):
+                    if ts.startswith(_pre):
+                        ts = ts[len(_pre):].strip()
+                        _changed = True
+
+            def _phrase_hit(phrases) -> bool:
+                return ts in phrases or any(ts.startswith(p + " ") for p in phrases)
+
+            if _phrase_hit(_SHIP_DESIGN_PHRASES):
                 return {"action": "ship_design"}
-            if t in _SCRAP_DESIGN_PHRASES or any(t.startswith(p + " ") for p in _SCRAP_DESIGN_PHRASES):
+            if _phrase_hit(_SCRAP_DESIGN_PHRASES):
                 return {"action": "scrap_design"}
-            if t in _SHOW_DRAFT_PHRASES or any(t.startswith(p + " ") for p in _SHOW_DRAFT_PHRASES):
+            if _phrase_hit(_SHOW_DRAFT_PHRASES):
                 return {"action": "show_draft"}
 
     # Close / dismiss the process panel. Fast-path so JARVIS responds
