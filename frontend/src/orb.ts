@@ -48,7 +48,7 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
 
   const mat = new THREE.PointsMaterial({
-    color: 0x4169e1, size: 0.4, transparent: true, opacity: 0.6,
+    color: 0x4b0082, size: 0.4, transparent: true, opacity: 0.6,
     sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
 
@@ -63,7 +63,7 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   lineGeo.setDrawRange(0, 0);
 
   const lineMat = new THREE.LineBasicMaterial({
-    color: 0x4169e1, transparent: true, opacity: 0.0,
+    color: 0x4b0082, transparent: true, opacity: 0.0,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
 
@@ -297,9 +297,9 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     mat.opacity = currentBright + bass * 0.08;
     mat.size = currentSize + bass * 0.05;
 
-    // Particles + lines: single uniform royal blue (#4169E1) across all states.
-    mat.color.lerp(new THREE.Color(0x4169e1), 0.015);
-    lineMat.color.lerp(new THREE.Color(0x4169e1), 0.015);
+    // Particles + lines: single uniform dark purple (#4B0082) across all states.
+    mat.color.lerp(new THREE.Color(0x4b0082), 0.015);
+    lineMat.color.lerp(new THREE.Color(0x4b0082), 0.015);
 
     camera.position.x = Math.sin(t * 0.02) * 5;
     camera.position.y = Math.cos(t * 0.03) * 3;
