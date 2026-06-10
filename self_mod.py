@@ -1,10 +1,10 @@
 """
-JARVIS self-modification machinery (Phase 5).
+VALET self-modification machinery (Phase 5).
 
-The design partner can target the JARVIS repo itself. When that happens the
+The design partner can target the VALET repo itself. When that happens the
 ship-it flow takes an additional path through this module:
 
-  1. Approval gate    — JARVIS speaks "I'm about to modify myself. Confirm?"
+  1. Approval gate    — VALET speaks "I'm about to modify myself. Confirm?"
                         and refuses to ship without the explicit phrase
                         "confirmed". Implemented in server._execute_ship_design
                         + _handle_pending_offer via kind="self_mod_confirm".
@@ -12,7 +12,7 @@ ship-it flow takes an additional path through this module:
                         create_feature_branch() makes feature/<slug>.
   3. Smoke gate        — run_smoke_test() runs scripts/smoke_test.sh; on fail
                         the user gets the failure speech + the branch sits
-                        on the feature branch unmerged (JARVIS never auto-
+                        on the feature branch unmerged (VALET never auto-
                         resets per the rules — user decides).
   4. Merge             — merge_to_main(branch) does
                         `git checkout main && git merge --no-ff <branch>`,
@@ -34,35 +34,35 @@ import time
 from pathlib import Path
 from typing import Optional
 
-log = logging.getLogger("jarvis.self_mod")
+log = logging.getLogger("valet.self_mod")
 
-JARVIS_REPO = Path(__file__).resolve().parent
-SMOKE_SCRIPT = JARVIS_REPO / "scripts" / "smoke_test.sh"
-RESTART_SCRIPT = JARVIS_REPO / "scripts" / "restart.sh"
+VALET_REPO = Path(__file__).resolve().parent
+SMOKE_SCRIPT = VALET_REPO / "scripts" / "smoke_test.sh"
+RESTART_SCRIPT = VALET_REPO / "scripts" / "restart.sh"
 
 
 # ---------------------------------------------------------------------------
 # Repo identity
 # ---------------------------------------------------------------------------
 
-def is_jarvis_repo(path: Optional[Path]) -> bool:
-    """True if `path` is (a) Path-resolved equal to JARVIS_REPO."""
+def is_valet_repo(path: Optional[Path]) -> bool:
+    """True if `path` is (a) Path-resolved equal to VALET_REPO."""
     if path is None:
         return False
     try:
-        return Path(path).resolve() == JARVIS_REPO
+        return Path(path).resolve() == VALET_REPO
     except Exception:
         return False
 
 
 # ---------------------------------------------------------------------------
-# Git operations — all run with cwd=JARVIS_REPO, no `--no-verify` shortcuts.
+# Git operations — all run with cwd=VALET_REPO, no `--no-verify` shortcuts.
 # ---------------------------------------------------------------------------
 
 def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args],
-        cwd=str(JARVIS_REPO),
+        cwd=str(VALET_REPO),
         capture_output=True,
         text=True,
         check=check,
@@ -153,7 +153,7 @@ async def run_smoke_test(timeout_sec: int = 120) -> dict:
     try:
         proc = await asyncio.create_subprocess_exec(
             str(SMOKE_SCRIPT),
-            cwd=str(JARVIS_REPO),
+            cwd=str(VALET_REPO),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -243,7 +243,7 @@ def reset_to(sha: str) -> dict:
 def restart_self() -> dict:
     """Spawn scripts/restart.sh detached. Returns {success, message}.
 
-    Caller (JARVIS Python process) should speak the confirmation BEFORE this
+    Caller (VALET Python process) should speak the confirmation BEFORE this
     returns and not assume anything works after — the restarter will kill
     this process shortly.
     """
@@ -254,7 +254,7 @@ def restart_self() -> dict:
         # the act of killing the parent.
         subprocess.Popen(
             [str(RESTART_SCRIPT)],
-            cwd=str(JARVIS_REPO),
+            cwd=str(VALET_REPO),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

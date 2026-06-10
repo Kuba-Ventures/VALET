@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.jarvis.backend</string>
+    <string>com.valet.backend</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>__JARVIS_DIR__/scripts/jarvis-launchd.sh</string>
+        <string>__VALET_DIR__/scripts/valet-launchd.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>__JARVIS_DIR__</string>
+    <string>__VALET_DIR__</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -23,10 +23,10 @@
     <integer>10</integer>
 
     <key>StandardOutPath</key>
-    <string>__JARVIS_DIR__/logs/jarvis.out.log</string>
+    <string>__VALET_DIR__/logs/valet.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>__JARVIS_DIR__/logs/jarvis.err.log</string>
+    <string>__VALET_DIR__/logs/valet.err.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

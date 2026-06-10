@@ -7,7 +7,7 @@ from pathlib import Path
 
 from actions import list_projects
 
-log = logging.getLogger("jarvis.projects")
+log = logging.getLogger("valet.projects")
 
 
 # Project Scanner

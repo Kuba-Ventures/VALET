@@ -1,4 +1,4 @@
-"""Google OAuth + API client helper for JARVIS.
+"""Google OAuth + API client helper for VALET.
 
 Handles loading the credentials.json, kicking off the local-server OAuth flow,
 persisting tokens to data/google_tokens.json, refreshing them when expired,
@@ -20,11 +20,11 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-log = logging.getLogger("jarvis.google")
+log = logging.getLogger("valet.google")
 
 # Gmail: readonly for searching + reading, compose for draft creation. The
 # code never calls messages.send() — drafts only, the user clicks Send.
-# Calendar: full event read/write so JARVIS can schedule and cancel.
+# Calendar: full event read/write so VALET can schedule and cancel.
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
@@ -142,8 +142,8 @@ def _run_oauth_flow_blocking() -> tuple[bool, str]:
             port=0,
             open_browser=True,
             prompt="consent",
-            authorization_prompt_message="JARVIS is opening your browser to connect your Google account...",
-            success_message="JARVIS connected. You can close this tab.",
+            authorization_prompt_message="VALET is opening your browser to connect your Google account...",
+            success_message="VALET connected. You can close this tab.",
         )
     except Exception as e:
         log.error(f"OAuth flow failed: {e}")

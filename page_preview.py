@@ -23,11 +23,11 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-log = logging.getLogger("jarvis.page_preview")
+log = logging.getLogger("valet.page_preview")
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 JARVIS-Preview/0.1"
+    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 VALET-Preview/0.1"
 )
 
 _TITLE_RE = re.compile(r"<title[^>]*>([^<]+)</title>", re.IGNORECASE | re.DOTALL)

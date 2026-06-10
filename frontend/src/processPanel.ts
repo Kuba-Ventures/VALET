@@ -1,5 +1,5 @@
 /**
- * JARVIS Process Panel — live activity stream beside the orb.
+ * VALET Process Panel — live activity stream beside the orb.
  *
  * The backend `ProcessEventBus` broadcasts events as
  *     { type: "process_event", event: {...} }
@@ -92,7 +92,7 @@ export interface ProcessPanel {
 // ---------------------------------------------------------------------------
 
 const DISMISS_AFTER_DONE_MS = 2000;
-const POSITION_KEY = "jarvis.processPanel.pos";
+const POSITION_KEY = "valet.processPanel.pos";
 const CODE_LINES_COLLAPSED = 20;
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // transient "keep this up while I read it" affordance, not a durable
   // preference — so it must not outlive the page. We also proactively clear the
   // stale key on init so any browser still carrying it is healed.
-  const PIN_KEY = "jarvis.processPanel.pinned";
+  const PIN_KEY = "valet.processPanel.pinned";
   try { localStorage.removeItem(PIN_KEY); } catch { /* localStorage may be blocked */ }
   let pinned = false;
 
@@ -962,7 +962,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
      * pin keeps the panel up), and resets activeTaskCount so a stuck
      * task_start (e.g. one whose task_done was dropped on a WS reconnect)
      * can never wedge the panel open forever. Called from main.ts when
-     * JARVIS returns to idle. */
+     * VALET returns to idle. */
     tryAutoClose: () => {
       if (pinned) return;
       activeTaskCount = 0;

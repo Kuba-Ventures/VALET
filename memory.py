@@ -1,13 +1,13 @@
 """
-JARVIS Memory & Planning — persistent context, tasks, notes, and smart routing.
+VALET Memory & Planning — persistent context, tasks, notes, and smart routing.
 
 Three systems:
-1. Memory — facts, preferences, project context JARVIS learns from conversations
+1. Memory — facts, preferences, project context VALET learns from conversations
 2. Tasks — to-do items with priority, due dates, project association
 3. Notes — freeform context tied to projects, people, or topics
 
 Everything stored in SQLite. Relevant memories injected into every LLM call
-so JARVIS gets smarter over time.
+so VALET gets smarter over time.
 """
 
 import json
@@ -17,9 +17,9 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-log = logging.getLogger("jarvis.memory")
+log = logging.getLogger("valet.memory")
 
-DB_PATH = Path(__file__).parent / "data" / "jarvis.db"
+DB_PATH = Path(__file__).parent / "data" / "valet.db"
 
 # Bump when adding migrations below. PRAGMA user_version is checked on init.
 SCHEMA_VERSION = 3
@@ -160,7 +160,7 @@ def _normalize_project_key(name: str) -> str:
     Examples:
       RecipeBook Code        -> recipe-book-code
       TommyTopDecker-Trading -> tommy-top-decker-trading
-      jarvis-main            -> jarvis-main
+      valet-main            -> valet-main
       tommytopdecker         -> tommytopdecker  (no camelcase boundary)
     """
     import re as _re
@@ -189,8 +189,8 @@ def resolve_project(name: str) -> str | None:
     """Resolve a project name to a filesystem path via the alias table.
 
     Matches by canonical key (case-insensitive, separator-insensitive,
-    camelcase-tolerant, hyphen-fallback) so "jarvis main", "jarvis_main",
-    "Jarvis.Main", "jarvis-main" all resolve to the same row.
+    camelcase-tolerant, hyphen-fallback) so "valet main", "valet_main",
+    "Valet.Main", "valet-main" all resolve to the same row.
     Returns None if nothing matches.
     """
     if not name or not name.strip():
@@ -335,7 +335,7 @@ def list_known_projects() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Memories — facts JARVIS learns
+# Memories — facts VALET learns
 # ---------------------------------------------------------------------------
 
 def remember(content: str, mem_type: str = "fact", source: str = "", importance: int = 5) -> int:
@@ -399,7 +399,7 @@ def recall(query: str, limit: int = 5) -> list[dict]:
 
 
 def get_bio_summary() -> dict:
-    """Return the current JARVIS-generated user profile summary, with timestamp.
+    """Return the current VALET-generated user profile summary, with timestamp.
 
     Returns {"summary": str, "updated": str_or_empty}. Empty summary if never generated.
     """
@@ -413,12 +413,12 @@ def get_bio_summary() -> dict:
 
 
 def set_bio_summary(content: str) -> None:
-    """Replace the JARVIS-generated profile summary (single canonical entry, importance=10)."""
+    """Replace the VALET-generated profile summary (single canonical entry, importance=10)."""
     db = _get_db()
     db.execute("DELETE FROM memories WHERE type='bio_summary'")
     if content.strip():
         db.execute(
-            "INSERT INTO memories (content, type, source, importance) VALUES (?, 'bio_summary', 'jarvis-generated', 10)",
+            "INSERT INTO memories (content, type, source, importance) VALUES (?, 'bio_summary', 'valet-generated', 10)",
             (content.strip(),),
         )
     db.commit()
@@ -442,7 +442,7 @@ def get_bio_sources() -> list[dict]:
 def add_bio_note(content: str) -> int:
     """Append an incremental fact about the user (importance=10, type='bio_note').
 
-    These are the raw source notes JARVIS keeps. The bio_summary is a synthesis
+    These are the raw source notes VALET keeps. The bio_summary is a synthesis
     over these plus high-importance facts; it's regenerated on demand.
     """
     db = _get_db()
@@ -710,13 +710,13 @@ _EXTRACTION_MIN_INTERVAL_S = 30.0
 _PENDING_MAX = 8
 
 
-async def extract_memories(user_text: str, jarvis_response: str, anthropic_client) -> list[str]:
+async def extract_memories(user_text: str, valet_response: str, anthropic_client) -> list[str]:
     """After a conversation turn, extract any facts worth remembering.
 
     Throttled to one Anthropic call per 30s — during rapid conversation we
     queue turns and process them in batch on the next eligible call. This
     halves API traffic during active use, sidestepping the 429 rate-limit
-    backoff that was making JARVIS feel slow.
+    backoff that was making VALET feel slow.
     """
     global _last_extraction_ts, _pending_turns
 
@@ -724,7 +724,7 @@ async def extract_memories(user_text: str, jarvis_response: str, anthropic_clien
         return []
 
     # Always queue this turn so it gets processed eventually.
-    _pending_turns.append((user_text, jarvis_response))
+    _pending_turns.append((user_text, valet_response))
     if len(_pending_turns) > _PENDING_MAX:
         # Drop oldest if queue overflows — these are low-value casual chats.
         _pending_turns = _pending_turns[-_PENDING_MAX:]
@@ -737,7 +737,7 @@ async def extract_memories(user_text: str, jarvis_response: str, anthropic_clien
     _last_extraction_ts = now
     batch = _pending_turns[:]
     _pending_turns = []
-    convo_block = "\n\n".join(f"User: {u}\nJARVIS: {j}" for u, j in batch)
+    convo_block = "\n\n".join(f"User: {u}\nVALET: {j}" for u, j in batch)
 
     try:
         response = await anthropic_client.messages.create(

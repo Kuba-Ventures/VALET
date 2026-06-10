@@ -1,5 +1,5 @@
 /**
- * JARVIS — Main entry point.
+ * VALET — Main entry point.
  *
  * Wires together the orb visualization, WebSocket communication,
  * speech recognition, and audio playback into a single experience.
@@ -24,12 +24,12 @@ let currentState: State = "idle";
 // Wake-word listening toggle. Persisted across reloads via localStorage so the
 // user's preference survives a refresh. Controls only the frontend's wake-word
 // listening — the backend service is unaffected.
-const WAKE_STATE_KEY = "jarvis.wakeListening";
+const WAKE_STATE_KEY = "valet.wakeListening";
 let isSleeping = localStorage.getItem(WAKE_STATE_KEY) === "sleeping";
 
 const statusEl = document.getElementById("status-text")!;
 const errorEl = document.getElementById("error-text")!;
-const replyEl = document.getElementById("jarvis-reply")!;
+const replyEl = document.getElementById("valet-reply")!;
 
 function showReply(text: string) {
   const trimmed = (text || "").trim();
@@ -83,7 +83,7 @@ const socket = createSocket(WS_URL);
 const audioPlayer = createAudioPlayer();
 orb.setAnalyser(audioPlayer.getAnalyser());
 
-// Live "what JARVIS is doing" panel. Hidden until the first event arrives.
+// Live "what VALET is doing" panel. Hidden until the first event arrives.
 const processPanel = createProcessPanel();
 const designPanel = createDesignPanel();
 
@@ -144,7 +144,7 @@ function transition(newState: State) {
 // ---------------------------------------------------------------------------
 
 const wake = createWakeWord(
-  "jarvis", // overwritten once /api/config resolves below
+  "vee", // casual wake word; overwritten once /api/config resolves below
   {
     onWake: () => {
       transition("listening");
@@ -165,17 +165,19 @@ const wake = createWakeWord(
   }
 );
 
-const jarvisLabelEl = document.getElementById("jarvis-label")!;
+const valetLabelEl = document.getElementById("valet-label")!;
+// The orb label is the formal brand (VALET); the spoken wake word is the casual
+// name (Vee). They are deliberately decoupled.
+valetLabelEl.textContent = "VALET";
 
 function applyAssistantName(name: string) {
   wake.setName(name);
-  jarvisLabelEl.textContent = name.toUpperCase();
 }
 
-// Default visible label matches the default wake name; updated once /api/config resolves.
-applyAssistantName("jarvis");
+// Default wake name; updated once /api/config resolves.
+applyAssistantName("vee");
 
-// Pull the configured name from the backend; if the fetch fails we keep "jarvis".
+// Pull the configured wake name from the backend; if the fetch fails we keep "vee".
 fetch("/api/config")
   .then((r) => r.json())
   .then((cfg: { assistant_name?: string }) => {
@@ -194,7 +196,7 @@ audioPlayer.onFinished(() => {
   // user can tell the assistant is still hot. Drops back to "idle" only when
   // the wake module has been put back to passive (e.g. via Sleeping toggle).
   transition(wake.isActive() ? "listening" : "idle");
-  // Audio finishing means JARVIS just wrapped a reply — arm the quiet-timer.
+  // Audio finishing means VALET just wrapped a reply — arm the quiet-timer.
   // Trailing background events will reset (not kill) it; see
   // refreshPanelAutoClose. Force-closes once the stream goes quiet.
   refreshPanelAutoClose();
@@ -203,7 +205,7 @@ audioPlayer.onFinished(() => {
 // ---------------------------------------------------------------------------
 // Panel auto-close on idle
 // ---------------------------------------------------------------------------
-// User asked: when JARVIS finishes a turn, don't leave the process / design
+// User asked: when VALET finishes a turn, don't leave the process / design
 // panels lingering on screen. Trigger on either (a) audio playback finishing
 // or (b) the server sending status=idle. Cancel on any new activity.
 const IDLE_AUTO_CLOSE_MS = 1800;
@@ -251,7 +253,7 @@ socket.onMessage((msg) => {
     }
     // Show reply as a persistent caption (TTS audio is ephemeral; the text is not).
     if (msg.text) {
-      console.log("[JARVIS]", msg.text);
+      console.log("[VALET]", msg.text);
       showReply(msg.text as string);
     }
   } else if (type === "status") {
@@ -269,7 +271,7 @@ socket.onMessage((msg) => {
     }
   } else if (type === "text") {
     // Text-only path (TTS failed or skipped) — still surface it to the user.
-    console.log("[JARVIS]", msg.text);
+    console.log("[VALET]", msg.text);
     if (msg.text) showReply(msg.text as string);
   } else if (type === "task_spawned") {
     console.log("[task]", "spawned:", msg.task_id, msg.prompt);
@@ -306,7 +308,7 @@ socket.onMessage((msg) => {
   }
 
   // Centralised panel auto-close: re-evaluate after every message, keyed off
-  // the state this message produced. While JARVIS is actively working the
+  // the state this message produced. While VALET is actively working the
   // foreground turn (thinking/speaking) the panel stays. Once the turn has
   // wrapped (idle/listening) each subsequent message — including trailing
   // background process_events — RESETS a short quiet-timer; when the stream
@@ -317,7 +319,7 @@ socket.onMessage((msg) => {
 });
 
 function refreshPanelAutoClose() {
-  // Keep the coarse idle-close OFF while JARVIS is actively working the
+  // Keep the coarse idle-close OFF while VALET is actively working the
   // foreground turn (thinking/speaking) OR while the panel is tracking live
   // background tasks. In those states the panel owns its own dismissal (it
   // self-dismisses shortly after the last task_done), so a brief quiet gap
@@ -482,14 +484,14 @@ function applyWakeVisuals() {
 }
 
 function reconcileWakeControl() {
-  // Only resume mic if we're actually waiting for input. If JARVIS is mid-
+  // Only resume mic if we're actually waiting for input. If VALET is mid-
   // thinking or speaking, wake stays paused — it'll resume naturally when
   // audio playback finishes and the state returns to idle.
   if (isSleeping) {
     // Soft deactivation: pause the mic but preserve the wake module's
     // active flag. The user toggled sleep on purpose (e.g. mid-design to
     // narrate to a client during a demo); when they toggle back, they
-    // should pick up where they left off without re-saying "ok jarvis".
+    // should pick up where they left off without re-saying "ok valet".
     // The backend design session lives on id(ws) and the WS stays open
     // through sleep, so all conversational context survives.
     wake.pause();
@@ -536,7 +538,7 @@ btnRestart.addEventListener("click", async (e) => {
 btnFixSelf.addEventListener("click", (e) => {
   e.stopPropagation();
   menuDropdown.style.display = "none";
-  // Activate work mode on the WebSocket session (JARVIS becomes Claude Code's voice)
+  // Activate work mode on the WebSocket session (VALET becomes Claude Code's voice)
   socket.send({ type: "fix_self" });
   statusEl.textContent = "entering work mode...";
 });

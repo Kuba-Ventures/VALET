@@ -18,7 +18,7 @@ from typing import Optional
 
 import httpx
 
-log = logging.getLogger("jarvis.licensing")
+log = logging.getLogger("valet.licensing")
 
 # Statuses that grant access (must match the proxy / Phase-1 vocabulary).
 ENTITLED = {"active", "trialing"}

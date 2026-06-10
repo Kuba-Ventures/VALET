@@ -1,4 +1,4 @@
--- [PRODUCT_NAME] proxy usage + fair-use metering store.
+-- VALET proxy usage + fair-use metering store.
 -- Run AFTER migration.sql, once, against your Supabase project (SQL editor or psql).
 --
 -- Every AI/TTS call that flows through the proxy records usage here, keyed by

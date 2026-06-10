@@ -1,4 +1,4 @@
--- [JARVIS] license + entitlement store.
+-- VALET license + entitlement store.
 -- Run this once against your Supabase project (SQL editor or psql).
 
 create extension if not exists "pgcrypto";

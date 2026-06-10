@@ -1,5 +1,5 @@
 """
-JARVIS Browser — Playwright-based web browsing capabilities.
+VALET Browser — Playwright-based web browsing capabilities.
 
 Provides search, page visits, screenshots, and multi-step research.
 Runs headless Chromium with realistic user agent to avoid blocking.
@@ -22,7 +22,7 @@ from process_events import (
     emit_step,
 )
 
-log = logging.getLogger("jarvis.browser")
+log = logging.getLogger("valet.browser")
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -95,8 +95,8 @@ class ResearchResult:
 # Browser Manager
 # ---------------------------------------------------------------------------
 
-class JarvisBrowser:
-    """Playwright-based web browsing for JARVIS."""
+class ValetBrowser:
+    """Playwright-based web browsing for VALET."""
 
     def __init__(self):
         self._pw = None
@@ -111,7 +111,7 @@ class JarvisBrowser:
         from playwright.async_api import async_playwright
 
         self._pw = await async_playwright().start()
-        # Launch VISIBLE browser so user can watch JARVIS browse
+        # Launch VISIBLE browser so user can watch VALET browse
         self._browser = await self._pw.chromium.launch(headless=False)
         self._context = await self._browser.new_context(
             user_agent=USER_AGENT,
@@ -264,7 +264,7 @@ class JarvisBrowser:
             await page.wait_for_timeout(1000)  # let rendering settle
 
             if not path:
-                tmp = tempfile.mktemp(suffix=".png", prefix="jarvis_screenshot_")
+                tmp = tempfile.mktemp(suffix=".png", prefix="valet_screenshot_")
                 path = tmp
 
             await page.screenshot(path=path, full_page=True)

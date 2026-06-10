@@ -1,5 +1,5 @@
 /**
- * JARVIS — Settings Panel
+ * VALET — Settings Panel
  *
  * Overlay panel for API keys, connection status, preferences, and system info.
  * Slides in from the right with glass-morphism styling.
@@ -83,7 +83,7 @@ function buildPanelHTML(): string {
       </div>
 
       <div class="settings-welcome" id="settings-welcome" style="display:none">
-        <p>Welcome to JARVIS. Let's get you set up.</p>
+        <p>Welcome to VALET. Let's get you set up.</p>
       </div>
 
       <!-- Tab nav — User Settings sits first as the primary tab. Hidden
@@ -224,8 +224,8 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-field">
-            <label>About You, written by JARVIS</label>
-            <div class="bio-summary" id="bio-summary-display">JARVIS hasn't built your profile yet. Click Regenerate after a few conversations.</div>
+            <label>About You, written by VALET</label>
+            <div class="bio-summary" id="bio-summary-display">VALET hasn't built your profile yet. Click Regenerate after a few conversations.</div>
             <div class="bio-meta">
               <span id="bio-source-count">0 notes</span>
               <span class="bio-meta-sep">·</span>
@@ -363,7 +363,7 @@ function applyGoogleStatus(connected: boolean, email: string, credsPresent: bool
       hint.classList.add("warn");
       if (connectBtn) connectBtn.disabled = true;
     } else if (connected) {
-      hint.textContent = "JARVIS can read your Gmail and Google Calendar.";
+      hint.textContent = "VALET can read your Gmail and Google Calendar.";
       hint.classList.remove("warn");
       if (connectBtn) connectBtn.disabled = false;
     } else {
@@ -383,7 +383,7 @@ function applyBioSummary(summary: string, updated: string, sourceCount: number) 
       display.textContent = summary;
       display.classList.remove("empty");
     } else {
-      display.textContent = "JARVIS hasn't built your profile yet. Add facts via voice ('remember this about me: ...') or click Regenerate.";
+      display.textContent = "VALET hasn't built your profile yet. Add facts via voice ('remember this about me: ...') or click Regenerate.";
       display.classList.add("empty");
     }
   }
@@ -460,7 +460,7 @@ function wireEvents() {
   document.getElementById("btn-save-prefs")?.addEventListener("click", saveAllPreferences);
   document.getElementById("btn-save-personalized")?.addEventListener("click", saveAllPreferences);
 
-  // Regenerate profile — JARVIS synthesizes a fresh summary from accumulated notes.
+  // Regenerate profile — VALET synthesizes a fresh summary from accumulated notes.
   document.getElementById("btn-regenerate-bio")?.addEventListener("click", async () => {
     const btn = document.getElementById("btn-regenerate-bio") as HTMLButtonElement | null;
     const display = document.getElementById("bio-summary-display");

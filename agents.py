@@ -1,7 +1,7 @@
 """
 Claude Code sub-agent discovery.
 
-Enumerates the agents available to a running Claude Code session so JARVIS
+Enumerates the agents available to a running Claude Code session so VALET
 can let the user pick which one to dispatch ship-it work to (via the design
 panel's agent dropdown, an auto-detect heuristic, or a direct voice command).
 
@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-log = logging.getLogger("jarvis.agents")
+log = logging.getLogger("valet.agents")
 
 
 # Stock agents available to every Claude Code session. Keep names matching
@@ -99,7 +99,7 @@ def _scan_dir(dir_path: Path, source_label: str) -> list[dict]:
 
 
 def list_agents(project_path: Optional[Path] = None) -> list[dict]:
-    """Return every agent JARVIS knows about, de-duped by name.
+    """Return every agent VALET knows about, de-duped by name.
 
     Project-local entries win over user-global, which win over builtins.
     Shape: [{"name": str, "description": str, "source": "project"|"user"|"builtin"}].

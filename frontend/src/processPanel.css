@@ -1,7 +1,7 @@
 /* ===========================================================================
-   JARVIS Process Panel — live activity stream beside the orb.
+   VALET Process Panel — live activity stream beside the orb.
 
-   Sits to the right of the orb when JARVIS is doing something non-trivial.
+   Sits to the right of the orb when VALET is doing something non-trivial.
    Auto-dismisses 2s after the active task finishes. Draggable within the
    window via the top handle.
    =========================================================================== */

@@ -95,11 +95,11 @@ export default async function SuccessPage({
               href={`/api/download?key=${encodeURIComponent(licenseKey)}`}
               className="btn-primary"
             >
-              Download [JARVIS]
+              Download VALET
             </a>
           ) : (
             <button className="btn-primary opacity-50" disabled>
-              Download [JARVIS]
+              Download VALET
             </button>
           )}
           <Link href="/" className="btn-ghost">
