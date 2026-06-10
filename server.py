@@ -72,6 +72,10 @@ from notes_access import get_recent_notes, read_note, search_notes_apple, create
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 from page_preview import fetch_page_preview
+# Stage C/D control + safety layer.
+from applescript_executor import AppleScriptExecutor
+from safe_executor import SafeExecutor
+from safety import kill_switch, confirmations
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("valet")
@@ -2633,6 +2637,30 @@ cached_projects: list[dict] = []
 recently_built: list[dict] = []  # [{"name": str, "path": str, "time": float}]
 dispatch_registry = DispatchRegistry()
 
+# Stage D: the safety-gated control executor. Destructive (Tier 1) actions route
+# through this — it asks the user to confirm and honors the global kill switch.
+executor = SafeExecutor(AppleScriptExecutor())
+
+
+async def _run_gated_action(ws: "WebSocket", result_coro) -> None:
+    """Await a SafeExecutor capability (which may prompt for confirmation) and
+    speak its outcome back over the WebSocket. Used for Tier 1 voice actions."""
+    try:
+        result = await result_coro
+    except Exception as e:
+        log.error(f"gated action error: {e}")
+        return
+    text = result.message or ("Done, sir." if result.ok else "I'm afraid that didn't go through, sir.")
+    try:
+        await ws.send_json({"type": "status", "state": "speaking"})
+        audio = await synthesize_speech(strip_markdown_for_tts(text))
+        if audio:
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": text})
+        else:
+            await ws.send_json({"type": "text", "text": text})
+    except Exception:
+        pass
+
 # Usage tracking — logs every call with timestamp, persists to disk
 _USAGE_FILE = Path(__file__).parent / "data" / "usage_log.jsonl"
 _session_start = time.time()
@@ -2883,6 +2911,10 @@ def assistant_blocked_message() -> Optional[str]:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects
+    # Stage D: route Tier 1 confirmation prompts to connected frontends. The
+    # confirm card listens for {"type":"confirm_request"} and replies with
+    # {"type":"confirm_response"}.
+    confirmations.set_sender(task_manager._notify)
     # Enable Langfuse tracing before any LLM call so every Anthropic request is
     # captured. No-op (and never raises) if Langfuse isn't configured.
     observability.setup_observability()
@@ -4197,6 +4229,23 @@ async def voice_handler(ws: WebSocket):
             except json.JSONDecodeError:
                 continue
 
+            # ── Risk-tier confirmation response (Stage D) ──
+            if msg.get("type") == "confirm_response":
+                confirmations.resolve(msg.get("id", ""), bool(msg.get("allow")))
+                continue
+
+            # ── Global kill switch (Stage D): halt actions + the assistant loop ──
+            if msg.get("type") == "kill":
+                kill_switch.engage()
+                confirmations.cancel_all(allow=False)  # deny anything awaiting a decision
+                _cancel_response = True                 # stop the in-progress reply
+                await task_manager._notify({"type": "kill_state", "engaged": True})
+                continue
+            if msg.get("type") == "kill_reset":
+                kill_switch.reset()
+                await task_manager._notify({"type": "kill_state", "engaged": False})
+                continue
+
             # ── Fix-self: activate work mode in VALET repo ──
             if msg.get("type") == "fix_self":
                 valet_dir = str(Path(__file__).parent)
@@ -4779,9 +4828,11 @@ async def voice_handler(ws: WebSocket):
                                 elif embedded_action["action"] == "restart_self":
                                     asyncio.create_task(_execute_restart_self(ws))
                                 elif embedded_action["action"] == "delete_file":
-                                    asyncio.create_task(delete_file(embedded_action["target"]))
+                                    # Tier 1: confirm-first (to Trash) via the safety gate.
+                                    asyncio.create_task(_run_gated_action(ws, executor.delete_file(embedded_action["target"])))
                                 elif embedded_action["action"] == "applescript":
-                                    asyncio.create_task(run_applescript(embedded_action["target"]))
+                                    # Tier 1: arbitrary AppleScript confirms first.
+                                    asyncio.create_task(_run_gated_action(ws, executor.run_script(embedded_action["target"])))
                                 elif embedded_action["action"] == "type":
                                     asyncio.create_task(_execute_type(embedded_action["target"], press_enter=False))
                                 elif embedded_action["action"] == "send":
@@ -5225,6 +5276,29 @@ async def api_get_config():
     _, env_dict = _read_env()
     name = env_dict.get("ASSISTANT_NAME", "").strip() or "vee"
     return {"assistant_name": name}
+
+# ---------------------------------------------------------------------------
+# Safety: global kill switch (Stage D)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/safety/kill")
+async def api_safety_kill():
+    """Engage the kill switch: halt in-progress actions and refuse new ones
+    until reset. Always available."""
+    kill_switch.engage()
+    confirmations.cancel_all(allow=False)
+    await task_manager._notify({"type": "kill_state", "engaged": True})
+    return {"engaged": True}
+
+@app.post("/api/safety/kill/reset")
+async def api_safety_kill_reset():
+    kill_switch.reset()
+    await task_manager._notify({"type": "kill_state", "engaged": False})
+    return {"engaged": False}
+
+@app.get("/api/safety/status")
+async def api_safety_status():
+    return {"kill_engaged": kill_switch.is_engaged(), "executor": executor.name}
 
 # ---------------------------------------------------------------------------
 # Control endpoints (restart, fix-self)
