@@ -1,0 +1,108 @@
+@import "../styles/tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Ambient field behind everything: faint accent wash, no hard gradient banding. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background:
+      radial-gradient(1100px 700px at 50% -10%, rgba(56, 225, 255, 0.10), transparent 60%),
+      radial-gradient(800px 500px at 85% 110%, rgba(20, 136, 200, 0.08), transparent 55%);
+    pointer-events: none;
+  }
+
+  ::selection {
+    background: var(--color-accent-soft);
+    color: var(--color-ink);
+  }
+}
+
+@layer components {
+  /* Glassy translucent panel, the recurring surface primitive. */
+  .panel {
+    background: var(--color-panel);
+    border: 1px solid var(--color-panel-border);
+    border-radius: var(--radius-lg);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  .label-mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-ink-faint);
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    color: #04121a;
+    background: linear-gradient(180deg, #6cecff 0%, var(--color-accent) 60%, var(--color-accent-deep) 100%);
+    border-radius: var(--radius-md);
+    padding: 0.85rem 1.5rem;
+    box-shadow: 0 0 40px -8px var(--color-accent-soft);
+    transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 64px -8px var(--color-accent-soft);
+    filter: brightness(1.05);
+  }
+
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    font-weight: 500;
+    color: var(--color-ink);
+    background: transparent;
+    border: 1px solid var(--color-panel-border);
+    border-radius: var(--radius-md);
+    padding: 0.85rem 1.5rem;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .btn-ghost:hover {
+    border-color: var(--color-accent-soft);
+    background: rgba(56, 225, 255, 0.05);
+  }
+}
+
+/* Honor reduced motion globally: kill smooth scroll and long transitions. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
