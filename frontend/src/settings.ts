@@ -135,6 +135,11 @@ function buildPanelHTML(): string {
             </div>
           </div>
 
+          <div class="settings-field">
+            <label class="settings-check"><input type="checkbox" id="input-telemetry" /> Share crash + error reports</label>
+            <div class="settings-hint">Off by default. Sends error metadata only — never file contents, messages, or prompts. <a href="https://valetvoice.vercel.app/privacy" target="_blank" rel="noreferrer">Privacy</a></div>
+          </div>
+
           <div class="settings-actions">
             <button class="settings-btn primary" id="btn-save-keys">Save</button>
           </div>
@@ -424,10 +429,12 @@ function wireEvents() {
   };
   async function loadVoice() {
     try {
-      const cfg = await apiGet<{ voice?: string; voice_female_available?: boolean }>("/api/config");
+      const cfg = await apiGet<{ voice?: string; voice_female_available?: boolean; telemetry?: boolean }>("/api/config");
       setActiveVoice(cfg.voice === "female" ? "female" : "male");
       const hint = document.getElementById("voice-female-hint");
       if (hint) hint.hidden = !!cfg.voice_female_available;
+      const tel = document.getElementById("input-telemetry") as HTMLInputElement | null;
+      if (tel) tel.checked = !!cfg.telemetry;
     } catch {
       /* keep default */
     }
@@ -438,6 +445,11 @@ function wireEvents() {
       setActiveVoice(voice);
       await apiPost("/api/settings/keys", { key_name: "VALET_VOICE", key_value: voice });
     });
+  });
+  // Opt-in telemetry consent (off by default).
+  document.getElementById("input-telemetry")?.addEventListener("change", async (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    await apiPost("/api/settings/keys", { key_name: "VALET_TELEMETRY", key_value: on ? "on" : "off" });
   });
   void loadVoice();
 

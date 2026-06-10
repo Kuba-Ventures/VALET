@@ -2988,6 +2988,10 @@ async def lifespan(application: FastAPI):
     # Enable Langfuse tracing before any LLM call so every Anthropic request is
     # captured. No-op (and never raises) if Langfuse isn't configured.
     observability.setup_observability()
+    # Stage F: opt-in error reporting — no-op unless the user consented
+    # (VALET_TELEMETRY) and a SENTRY_DSN is set. Payloads are scrubbed.
+    import sentry_setup
+    sentry_setup.setup_telemetry()
     # max_retries=1 (default is 2): on 429 we want to surface the error quickly
     # instead of waiting through two exponential-backoff retries (which caused
     # those 10-15s response stalls during heavy use).
@@ -5151,7 +5155,7 @@ class PreferencesUpdate(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     # The app holds NO vendor secrets — only its license key and the proxy URL.
-    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "VALET_VOICE", "VALET_VOICE_MALE_ID", "VALET_VOICE_FEMALE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
+    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "VALET_VOICE", "VALET_VOICE_MALE_ID", "VALET_VOICE_FEMALE_ID", "VALET_TELEMETRY", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
@@ -5347,10 +5351,12 @@ async def api_get_config():
     _, env_dict = _read_env()
     name = env_dict.get("ASSISTANT_NAME", "").strip() or "vee"
     voice = (env_dict.get("VALET_VOICE", "").strip().lower() or "male")
+    telemetry = env_dict.get("VALET_TELEMETRY", "").strip().lower() in ("1", "on", "true", "yes")
     return {
         "assistant_name": name,
         "voice": "female" if voice == "female" else "male",
         "voice_female_available": bool(env_dict.get("VALET_VOICE_FEMALE_ID", "").strip()),
+        "telemetry": telemetry,
     }
 
 # ---------------------------------------------------------------------------
@@ -5375,6 +5381,55 @@ async def api_safety_kill_reset():
 @app.get("/api/safety/status")
 async def api_safety_status():
     return {"kill_engaged": kill_switch.is_engaged(), "executor": executor.name}
+
+# ---------------------------------------------------------------------------
+# Permissions (Stage F onboarding)
+# ---------------------------------------------------------------------------
+
+def _check_full_disk_access() -> bool:
+    """Full Disk Access lets VALET read files anywhere. Probe a TCC-protected
+    path: readable only when FDA is granted."""
+    for probe in (
+        Path.home() / "Library/Application Support/com.apple.TCC/TCC.db",
+        Path.home() / "Library/Mail",
+    ):
+        try:
+            if probe.is_dir():
+                next(iter(os.scandir(probe)), None)
+                return True
+            with open(probe, "rb") as f:
+                f.read(1)
+            return True
+        except (PermissionError, OSError):
+            continue
+        except Exception:
+            continue
+    return False
+
+@app.get("/api/permissions/status")
+async def api_permissions_status():
+    """First-run onboarding reads this to show what's granted and what to enable.
+    Automation prompts per-app on first use; Accessibility is post-v1."""
+    return {
+        "full_disk_access": {
+            "granted": _check_full_disk_access(),
+            "label": "Full Disk Access",
+            "why": "Read and act on your files anywhere.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+        },
+        "automation": {
+            "granted": None,  # macOS prompts the first time each app is targeted
+            "label": "Automation",
+            "why": "Drive Calendar, Mail, Notes and Chrome via AppleScript.",
+            "note": "Granted per app the first time VALET controls it.",
+        },
+        "accessibility": {
+            "granted": None,
+            "label": "Accessibility",
+            "why": "Only needed once UI-scripting / vision control ship (after v1).",
+            "required_v1": False,
+        },
+    }
 
 # ---------------------------------------------------------------------------
 # Control endpoints (restart, fix-self)
