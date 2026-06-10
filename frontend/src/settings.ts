@@ -114,7 +114,7 @@ function buildPanelHTML(): string {
           <div class="settings-field">
             <label>Proxy URL</label>
             <div class="settings-input-row">
-              <input type="text" id="input-proxy-url" placeholder="https://jarvis-y.vercel.app" />
+              <input type="text" id="input-proxy-url" placeholder="https://valetvoice.vercel.app" />
             </div>
           </div>
 
