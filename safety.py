@@ -56,7 +56,10 @@ _ALWAYS_TIER0 = {
 # Protected roots: writing/moving/deleting under these warrants an explicit
 # warning even though the action is already Tier 1.
 _PROTECTED_PREFIXES = (
-    "/System", "/usr", "/bin", "/sbin", "/Library", "/private",
+    "/System", "/usr", "/bin", "/sbin", "/Library",
+    # Deliberately NOT bare "/private": on macOS /tmp resolves to /private/tmp
+    # (a normal temp dir), which we don't want to over-gate.
+    "/private/etc", "/private/var/db",
     str(Path.home() / "Library"),
 )
 
