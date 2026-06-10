@@ -35,7 +35,10 @@ echo "==> 1/5 frontend build"
 ( cd frontend && npm ci && npm run build )
 
 echo "==> 2/5 PyInstaller backend"
-./.venv/bin/pyinstaller packaging/valet.spec --noconfirm
+# Invoke via `python -m` so a stale venv shebang (e.g. after a repo rename)
+# can't break the build — the python symlink resolves even when console-script
+# shebangs still point at an old path.
+./.venv/bin/python -m PyInstaller packaging/valet.spec --noconfirm
 
 echo "==> 3/5 place sidecar (Tauri requires the <name>-<target-triple> suffix)"
 mkdir -p src-tauri/binaries

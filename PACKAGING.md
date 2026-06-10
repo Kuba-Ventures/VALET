@@ -47,8 +47,8 @@ bundle is read-only) — see `server.py:valet_env_path`.
 curl https://sh.rustup.rs -sSf | sh
 npm i -g @tauri-apps/cli      # v2
 
-# PyInstaller in the project venv
-./.venv/bin/pip install pyinstaller
+# PyInstaller in the project venv (this also repairs venv shebangs after a rename)
+bash scripts/setup-build.sh
 
 # App icon (once): generate icons/ from a 1024px PNG
 npm exec -- tauri icon path/to/valet-1024.png   # writes src-tauri/icons/
