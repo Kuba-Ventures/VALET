@@ -1,38 +1,49 @@
 import Link from "next/link";
+import Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
 import { upsertLicenseFromSubscription } from "@/lib/license";
 import CopyButton from "@/components/CopyButton";
+import DataLayerEvent from "@/components/DataLayerEvent";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type Plan = "pro" | "ultra" | null;
+
+function planFromPriceId(priceId: string | undefined): Plan {
+  if (!priceId) return null;
+  if (priceId === process.env.STRIPE_PRICE_ID_PRO) return "pro";
+  if (priceId === process.env.STRIPE_PRICE_ID_ULTRA) return "ultra";
+  return null;
+}
+
 /**
- * Post-purchase page. We resolve the license key from the checkout session.
- * The Stripe webhook normally creates the row, but the redirect can beat it,
- * so we provision idempotently here too (same shared upsert) to guarantee the
- * user always sees a working key.
+ * Post-purchase resolution from the checkout session. The Stripe webhook
+ * normally creates the license row, but the redirect can beat it, so we
+ * provision idempotently here too (same shared upsert) to guarantee the user
+ * always sees a working key. Also derives the plan for analytics.
  */
-async function resolveLicenseKey(
+async function resolveCheckout(
   sessionId: string | undefined,
-): Promise<string | null> {
-  if (!sessionId) return null;
+): Promise<{ licenseKey: string | null; plan: Plan }> {
+  if (!sessionId) return { licenseKey: null, plan: null };
   try {
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["subscription"],
     });
-    const sub = session.subscription;
-    if (!sub || typeof sub === "string") {
-      // Fall back to a fetch if it did not expand.
-      if (typeof sub === "string") {
-        const full = await stripe.subscriptions.retrieve(sub);
-        return upsertLicenseFromSubscription(full);
-      }
-      return null;
-    }
-    return upsertLicenseFromSubscription(sub);
+    const raw = session.subscription;
+    const sub: Stripe.Subscription | null = !raw
+      ? null
+      : typeof raw === "string"
+        ? await stripe.subscriptions.retrieve(raw)
+        : raw;
+    if (!sub) return { licenseKey: null, plan: null };
+    const licenseKey = await upsertLicenseFromSubscription(sub);
+    const plan = planFromPriceId(sub.items?.data?.[0]?.price?.id);
+    return { licenseKey, plan };
   } catch (err) {
     console.error("success resolve error:", err);
-    return null;
+    return { licenseKey: null, plan: null };
   }
 }
 
@@ -42,10 +53,17 @@ export default async function SuccessPage({
   searchParams: Promise<{ session_id?: string }>;
 }) {
   const { session_id } = await searchParams;
-  const licenseKey = await resolveLicenseKey(session_id);
+  const { licenseKey, plan } = await resolveCheckout(session_id);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-shell flex-col items-center justify-center px-6 py-20">
+      {licenseKey && (
+        <DataLayerEvent
+          event="trial_started"
+          plan={plan}
+          value={plan === "ultra" ? 50 : 20}
+        />
+      )}
       <div className="panel w-full max-w-xl p-8 shadow-glow-lg">
         <div className="label-mono mb-3 text-accent/80">Trial started</div>
         <h1 className="text-3xl font-bold tracking-tight">You are all set.</h1>
