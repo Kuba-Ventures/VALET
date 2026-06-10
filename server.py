@@ -135,7 +135,7 @@ _log_startup_banner()
 # usage. ANTHROPIC_API_KEY / FISH_API_KEY remain as a DEV-ONLY fallback for this
 # internal repo (used only when LICENSE_KEY is unset); they are not shipped.
 LICENSE_KEY = os.getenv("LICENSE_KEY", "")
-PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://jarvis-y.vercel.app").rstrip("/")
+PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://valetvoice.vercel.app").rstrip("/")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # dev fallback only
 FISH_API_KEY = os.getenv("FISH_API_KEY", "")  # dev fallback only
