@@ -15,7 +15,7 @@ export default function Hero() {
           </h1>
 
           <p className="mx-auto mt-6 max-w-md text-lg leading-relaxed text-ink-dim md:mx-0">
-            [PRODUCT_NAME] is a voice assistant that acts across your apps. Ask
+            [JARVIS] is a voice assistant that acts across your apps. Ask
             in plain words. It stays fast for the simple things and goes deep on
             the hard ones. Everything is included, no API key of your own
             required.

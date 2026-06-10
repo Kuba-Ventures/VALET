@@ -3,14 +3,17 @@
 import { useState } from "react";
 
 /**
- * Starts the subscription checkout: creates a session server-side via
- * /api/checkout, then sends the browser to the returned Stripe URL.
+ * Starts subscription checkout for a given paid plan: creates a session
+ * server-side via /api/checkout (passing the plan), then sends the browser to
+ * the returned Stripe URL.
  */
 export default function CheckoutButton({
+  plan = "pro",
   label = "Start 7 day free trial",
   variant = "primary",
   className = "",
 }: {
+  plan?: "pro" | "ultra";
   label?: string;
   variant?: "primary" | "ghost";
   className?: string;
@@ -22,7 +25,11 @@ export default function CheckoutButton({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/checkout", { method: "POST" });
+      const res = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan }),
+      });
       const data = await res.json();
       if (!res.ok || !data.url) {
         throw new Error(data.error || "Could not start checkout.");

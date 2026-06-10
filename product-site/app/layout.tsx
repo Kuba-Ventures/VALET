@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "[PRODUCT_NAME] — talk to your computer",
+  title: "[JARVIS] — talk to your computer",
   description:
     "A voice-first assistant you talk to. It acts across your apps, stays fast for simple things and goes deep for hard ones. Everything included, no API key needed.",
 };
