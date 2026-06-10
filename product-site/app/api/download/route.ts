@@ -6,13 +6,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * The real signed installer does not exist yet. When it does, set this to its
- * source (a CDN URL or a storage object key) and the route redirects there.
- * Until then it stays null and we serve a versioned placeholder. Swapping in
- * the real build is this one line.
+ * The signed VALET installer URL. Set the DOWNLOAD_URL env var (in Vercel) to the
+ * notarized .dmg's public URL and this route redirects there; until then it
+ * serves a versioned placeholder. Swapping in the real build is one env change —
+ * no redeploy of code needed.
  */
-const DOWNLOAD_SOURCE: string | null = null;
-const PLACEHOLDER_VERSION = "0.0.1-placeholder";
+const DOWNLOAD_SOURCE: string | null = process.env.DOWNLOAD_URL || null;
+const PLACEHOLDER_VERSION = "0.1.0-placeholder";
 
 /**
  * GET /api/download?key=PRODUCT-....

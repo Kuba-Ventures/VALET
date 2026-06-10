@@ -18,8 +18,24 @@ import sys
 import time
 from pathlib import Path
 
+def valet_env_path() -> Path:
+    """Where the user .env lives. In a packaged build (VALET_SHIPPED set, or no
+    .git beside this file) it's a writable file under Application Support, so the
+    read-only app bundle is never mutated; in the dev repo it's the repo .env."""
+    here = Path(__file__).resolve().parent
+    shipped = bool(os.environ.get("VALET_SHIPPED")) or not (here / ".git").exists()
+    if shipped:
+        d = Path.home() / "Library" / "Application Support" / "VALET"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            return d / ".env"
+        except Exception:
+            pass
+    return here / ".env"
+
+
 # Load .env file if present
-_env_path = Path(__file__).parent / ".env"
+_env_path = valet_env_path()
 if _env_path.exists():
     for _line in _env_path.read_text().splitlines():
         _line = _line.strip()
@@ -5073,7 +5089,8 @@ async def voice_handler(ws: WebSocket):
 # ---------------------------------------------------------------------------
 
 def _env_file_path() -> Path:
-    return Path(__file__).parent / ".env"
+    # Writable user .env in a packaged build, repo .env in dev (see valet_env_path).
+    return valet_env_path()
 
 def _env_example_path() -> Path:
     return Path(__file__).parent / ".env.example"
