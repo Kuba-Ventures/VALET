@@ -43,7 +43,12 @@ frontend/.vite/
 .DS_Store
 .vscode/
 .idea/
-.claude/
+.claude/*
+# …but the supervised PR factory's reviewer agent must be tracked so CI (a clean
+# runner with no access to ~/.claude) can load it. Keep this one file in the repo.
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/pr-reviewer.md
 .arch/
 
 # Desktop overlay
