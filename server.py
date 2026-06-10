@@ -51,7 +51,7 @@ from typing import Optional
 
 import anthropic
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1651,19 +1651,14 @@ async def _execute_merge_branch(ws):
 
 
 async def _execute_restart_self(ws):
-    """Phase 5 — spawn the detached restarter. Speaks confirmation BEFORE the
-    restarter kills the current process (otherwise the speech doesn't make it
-    to the user)."""
-    self_mod = _load_self_mod()
-    if self_mod is None:
-        # restart_self lives in the dev-only self_mod module; a packaged build
-        # restarts via its host shell (wired in Stage F packaging).
-        await _speak(ws, "I can't restart myself in this build, sir.")
-        return
+    """Restart the backend. Speaks confirmation BEFORE the process goes away
+    (otherwise the speech doesn't make it to the user). Lives in restart.py (not
+    self_mod) so it works in packaged builds too — see restart.restart_self."""
+    import restart
     await _speak(ws, "Restarting in a couple seconds, sir.")
-    # Give the TTS time to actually send before the restarter pkills us.
+    # Give the TTS time to actually send before the process is replaced.
     await asyncio.sleep(0.8)
-    result = self_mod.restart_self()
+    result = restart.restart_self()
     if not result["success"]:
         await _speak(ws, f"Restart failed: {result['message'][:200]}")
 
@@ -5481,18 +5476,43 @@ async def api_permissions_status():
         },
     }
 
+
+_SETTINGS_PANES = {
+    "full_disk": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+    "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+    "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+}
+
+
+@app.post("/api/permissions/open")
+async def api_permissions_open(request: Request):
+    """Open a specific System Settings privacy pane (onboarding deep-link)."""
+    body = await request.json()
+    url = _SETTINGS_PANES.get((body or {}).get("target", ""))
+    if not url:
+        return {"ok": False, "error": "unknown target"}
+    try:
+        subprocess.Popen(["open", url])
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:160]}
+
 # ---------------------------------------------------------------------------
 # Control endpoints (restart, fix-self)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/restart")
 async def api_restart():
-    """Restart the VALET server."""
-    log.info("Restart requested — shutting down in 2 seconds")
+    """Restart the VALET server (works in dev + packaged builds)."""
+    log.info("Restart requested — shutting down in ~1 second")
     async def _restart():
-        await asyncio.sleep(2)
-        cmd = [sys.executable, __file__, "--port", "8340", "--host", "0.0.0.0"]
-        os.execv(sys.executable, cmd)
+        await asyncio.sleep(1.0)
+        if os.environ.get("VALET_SHIPPED"):
+            import restart
+            restart.restart_self()  # exits; the Tauri shell respawns the sidecar
+        else:
+            cmd = [sys.executable, __file__, "--port", "8340", "--host", "0.0.0.0"]
+            os.execv(sys.executable, cmd)
     asyncio.create_task(_restart())
     return {"status": "restarting"}
 

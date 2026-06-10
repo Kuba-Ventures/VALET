@@ -10,6 +10,7 @@ import { createAudioPlayer } from "./voice";
 import { createWakeWord } from "./wakeWord";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
+import { maybeShowOnboarding } from "./onboarding";
 import { createProcessPanel, type ProcessEvent } from "./processPanel";
 import { createDesignPanel, type DesignEvent } from "./designPanel";
 import { createConfirmCard, type ConfirmRequest } from "./confirmCard";
@@ -588,4 +589,5 @@ btnSettings.addEventListener("click", (e) => {
 // First-time setup detection — check after a short delay for server readiness
 setTimeout(() => {
   checkFirstTimeSetup();
+  void maybeShowOnboarding(); // first-run permissions walkthrough (once)
 }, 2000);
