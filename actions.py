@@ -1263,6 +1263,231 @@ async def _frontmost_app_name() -> str:
     return ""
 
 
+async def _focused_signature() -> tuple[str, str]:
+    """(AXRole, AXDescription) of the frontmost app's focused UI element.
+
+    Both "" if unreadable. Verified against this Cursor build (read-only AX
+    probe): the integrated terminal's focused element is an *AXTextField*
+    (NOT AXTextArea — that earlier assumption was the ship bug) whose
+    AXDescription carries the terminal tab name plus xterm's screen-reader
+    hint, e.g.:
+        "Terminal 2, Start Claude … Use ⌥F1 for terminal accessibility help"
+    The command palette, editor, and other inputs are also AXTextField but
+    their AXDescription does NOT contain "terminal" — so the description, not
+    the role, is the reliable discriminator.
+    """
+    probe = (
+        'tell application "System Events"\n'
+        '    try\n'
+        '        set p to first application process whose frontmost is true\n'
+        '        set el to value of attribute "AXFocusedUIElement" of p\n'
+        '        set r to ""\n'
+        '        set d to ""\n'
+        '        try\n'
+        '            set r to value of attribute "AXRole" of el\n'
+        '        end try\n'
+        '        try\n'
+        '            set d to value of attribute "AXDescription" of el\n'
+        '        end try\n'
+        '        return r & "\t" & d\n'
+        '    on error\n'
+        '        return "\t"\n'
+        '    end try\n'
+        'end tell'
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", probe,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        role, _, desc = out.decode().partition("\t")
+        return role.strip(), desc.strip()
+    except Exception as e:
+        log.debug("_focused_signature: probe failed: %s", e)
+        return "", ""
+
+
+def _is_terminal_focus(role: str, desc: str) -> bool:
+    """True when the focused element is a Cursor integrated-terminal pane.
+
+    The terminal's AXDescription always contains "terminal" (tab label +
+    xterm's "…terminal accessibility help" hint). The palette/editor/search
+    inputs don't, so this cleanly separates "safe to paste" from everything
+    else regardless of the AXRole (which is AXTextField for the terminal here).
+    """
+    return "terminal" in (desc or "").lower()
+
+
+async def _toggle_terminal() -> None:
+    """Ctrl+` — VS Code/Cursor's toggle-terminal. Focuses a visible-but-
+    unfocused terminal (and reveals a hidden one). We only fire it when the
+    terminal isn't already focused, so its hide-if-focused behavior never bites.
+    Used instead of the "Terminal: Focus Terminal" palette command, which
+    misbehaves in this Cursor build (spawns a fresh terminal / leaves the
+    palette open)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e",
+            'tell application "System Events" to key code 50 using {control down}',  # 50 = `
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except Exception as e:
+        log.debug("_toggle_terminal failed: %s", e)
+
+
+async def _focus_cursor_terminal() -> str:
+    """Ensure Cursor's integrated terminal (where the Claude session runs) holds
+    keyboard focus before we paste. Returns "terminal" if confirmed focused,
+    "unknown" otherwise (caller decides whether to risk a best-effort paste).
+
+    Strategy (no command palette — it's unreliable in this Cursor build):
+      1. Probe the focused element. If it's already a terminal, done — no
+         keystroke needed (this is the common case: the user is looking at the
+         Claude pane when they ship).
+      2. Otherwise Ctrl+` to focus the terminal, re-probe. A second tap covers
+         the case where the first one toggled a focused terminal off.
+    """
+    role, desc = await _focused_signature()
+    log.info("_focus_cursor_terminal: pre role=%r desc=%r", role, desc[:140])
+    if _is_terminal_focus(role, desc):
+        return "terminal"
+
+    for attempt in range(2):
+        await _toggle_terminal()
+        await asyncio.sleep(0.25)
+        role, desc = await _focused_signature()
+        log.info("_focus_cursor_terminal: post-toggle[%d] role=%r desc=%r", attempt, role, desc[:140])
+        if _is_terminal_focus(role, desc):
+            return "terminal"
+
+    return "unknown"
+
+
+# Foreground-process basenames that mean a pane is sitting at a *shell* prompt
+# (Claude not running / already exited) rather than inside the Claude TUI.
+_SHELL_COMMS = {"zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh"}
+
+
+def _cmd_basename(command: str) -> str:
+    """Lowercased basename of a `ps` command string's argv[0], leading login
+    dash stripped (`-zsh` → `zsh`). Empty string if unparseable."""
+    if not command:
+        return ""
+    arg0 = command.split()[0]
+    base = arg0.rsplit("/", 1)[-1]
+    if base.startswith("-"):
+        base = base[1:]
+    return base.lower()
+
+
+async def _cursor_terminal_pane_summary() -> dict:
+    """Classify every Cursor integrated-terminal pane by its foreground process.
+
+    Why this exists: the paste lands in whichever integrated terminal currently
+    holds keyboard focus, and AppleScript can't tell us which tty that is. But
+    every integrated terminal is a descendant of the single
+    "Cursor Helper: terminal pty-host" process, each on its own tty, and the
+    process table DOES tell us each tty's foreground program. So we read the
+    whole set:
+
+      - If every Cursor pane is running `claude` and none is a bare shell, then
+        whatever pane is focused MUST be a Claude pane → safe to paste.
+      - If any pane is a shell (Claude exited, or a fresh terminal was just
+        spawned — the reported bug), we can't guarantee the focused pane is
+        Claude, so the caller falls back to file-ship instead of dumping the
+        prompt at a `%` prompt.
+
+    Returns {"claude": int, "shell": int, "other": int, "ttys": {tty: kind}}.
+    On any failure returns all-zero counts with "error" set, and the caller
+    treats "can't tell" as "don't auto-paste".
+
+    A pane is classified by its FOREGROUND process group (the `+` flag in
+    `ps` stat): claude > shell > other. The intermediate login shell that
+    spawned claude is in the same process group but backgrounded, so a live
+    Claude pane reads as "claude", and only reverts to "shell" once claude
+    actually exits and the shell returns to the foreground.
+    """
+    summary = {"claude": 0, "shell": 0, "other": 0, "ttys": {}, "error": None}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ps", "-axww", "-o", "pid=,ppid=,tty=,stat=,command=",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+    except Exception as e:
+        log.warning("_cursor_terminal_pane_summary: ps failed: %s", e)
+        summary["error"] = str(e)[:120]
+        return summary
+
+    rows = []           # (pid, ppid, tty, stat, command)
+    by_pid = {}         # pid -> row
+    children = {}       # ppid -> [pid, ...]
+    for line in out.decode(errors="replace").splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 5:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        tty, stat, command = parts[2], parts[3], parts[4]
+        row = (pid, ppid, tty, stat, command)
+        rows.append(row)
+        by_pid[pid] = row
+        children.setdefault(ppid, []).append(pid)
+
+    # Find the Cursor terminal pty-host(s) and gather all descendants.
+    host_pids = [r[0] for r in rows if "pty-host" in r[4] and "cursor" in r[4].lower()]
+    if not host_pids:
+        log.info("_cursor_terminal_pane_summary: no Cursor pty-host found")
+        return summary  # no Cursor terminals → all zero; caller falls back
+
+    descendants = []
+    stack = list(host_pids)
+    seen = set()
+    while stack:
+        pid = stack.pop()
+        for child in children.get(pid, ()):
+            if child in seen:
+                continue
+            seen.add(child)
+            descendants.append(by_pid[child])
+            stack.append(child)
+
+    # Group foreground processes by tty. A pane's kind is decided by the
+    # highest-priority foreground process on its tty: claude > shell > other.
+    PRIORITY = {"claude": 3, "shell": 2, "other": 1}
+    tty_kind = {}
+    for pid, ppid, tty, stat, command in descendants:
+        if not tty or tty in ("??", "-"):
+            continue
+        if "+" not in stat:            # only the foreground process group counts
+            continue
+        base = _cmd_basename(command)
+        if base == "claude":
+            kind = "claude"
+        elif base in _SHELL_COMMS:
+            kind = "shell"
+        else:
+            kind = "other"
+        if PRIORITY[kind] > PRIORITY.get(tty_kind.get(tty, "other"), 0):
+            tty_kind[tty] = kind
+
+    for tty, kind in tty_kind.items():
+        summary[kind] += 1
+    summary["ttys"] = tty_kind
+    log.info(
+        "_cursor_terminal_pane_summary: claude=%d shell=%d other=%d ttys=%s",
+        summary["claude"], summary["shell"], summary["other"], tty_kind,
+    )
+    return summary
+
+
 async def _list_cursor_window_names() -> list[str]:
     """All Cursor window titles, one per line. Empty list on any AppleScript
     error. Window names look like "<file> — <project-name>" or just
@@ -1362,6 +1587,7 @@ async def paste_into_cursor_claude(
     prompt: str,
     task_id: str | None = None,
     target_project_path: str | None = None,
+    restore_focus: bool = False,
 ) -> dict:
     """Auto-paste a prompt into Cursor's active claude terminal pane.
 
@@ -1457,6 +1683,41 @@ async def paste_into_cursor_claude(
                 "detail": f"Activated Cursor but {frontmost!r} grabbed focus back.",
             }
 
+    # ── (1b) Focus the integrated terminal (the Claude pane) before paste ──
+    # The right window is now front, but focus inside it might be the editor or
+    # a webview. _focus_cursor_terminal confirms (via the focused element's
+    # AXDescription) that a terminal pane actually holds focus before we paste.
+    focus_status = await _focus_cursor_terminal()
+    if focus_status != "terminal":
+        # Couldn't confirm a terminal holds focus (even after Ctrl+`). Refuse to
+        # paste rather than risk dumping the prompt into a source file or a
+        # webview; the caller falls back to file/clipboard ship.
+        log.warning(
+            "paste_into_cursor_claude: aborting — terminal not focused (status=%s)",
+            focus_status,
+        )
+        return {
+            "success": False,
+            "reason": "terminal_focus_failed",
+            "detail": "Couldn't confirm the Claude terminal pane held focus.",
+        }
+
+    # ── (1c) Informational: log the Cursor terminal pane mix for diagnostics.
+    # We trust the focus check above rather than GATING on this. The old strict
+    # rule ("abort if any shell pane exists") blocked legitimate ships whenever
+    # the user simply had a second shell tab open alongside Claude.
+    try:
+        panes = await _cursor_terminal_pane_summary()
+        if panes.get("claude", 0) == 0:
+            log.warning(
+                "paste_into_cursor_claude: focus confirms a terminal, but no live "
+                "Claude pane detected (panes=%s) — pasting anyway per focus check",
+                panes.get("ttys"),
+            )
+    except Exception as e:
+        log.debug("paste_into_cursor_claude: pane summary failed: %s", e)
+    terminal_focused = True
+
     # ── (2) Save existing clipboard so we can restore it after paste ────
     saved_clipboard = ""
     try:
@@ -1546,11 +1807,12 @@ async def paste_into_cursor_claude(
         log.warning(f"paste_into_cursor_claude osascript failed: {paste_err}")
         return {"success": False, "reason": "applescript_failed", "detail": paste_err}
 
-    # ── (6) Stealth: return focus to whatever was frontmost before, so
-    # the user stays in Chrome/JARVIS instead of being yanked to Cursor.
-    # Skip if Cursor was already focused (no app to restore) or if the
-    # prior frontmost was something we shouldn't reactivate (empty/error).
-    if original_frontmost and original_frontmost.lower() != "cursor":
+    # ── (6) Optional stealth: return focus to whatever was frontmost before.
+    # OFF by default — restoring focus to Chrome right after pasting made the
+    # ship look like it did nothing (Chrome popped back up, no prompt visible
+    # in the terminal). Leaving Cursor front lets the user watch the prompt
+    # land. Callers that genuinely want to stay put pass restore_focus=True.
+    if restore_focus and original_frontmost and original_frontmost.lower() != "cursor":
         restore_script = f'tell application "{original_frontmost}" to activate'
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1569,9 +1831,10 @@ async def paste_into_cursor_claude(
 
     log.info(
         f"paste_into_cursor_claude succeeded (prompt_len={len(prompt)}, "
-        f"restored_focus_to={original_frontmost!r})"
+        f"terminal_focused={terminal_focused}, "
+        f"restored_focus_to={original_frontmost if restore_focus else None!r})"
     )
-    return {"success": True}
+    return {"success": True, "verified": terminal_focused}
 
 
 async def monitor_build(project_dir: str, ws=None, synthesize_fn=None) -> None:
