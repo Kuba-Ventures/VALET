@@ -1,5 +1,5 @@
 """
-JARVIS Action Executor — AppleScript-based system actions.
+VALET Action Executor — AppleScript-based system actions.
 
 Execute actions IMMEDIATELY, before generating any LLM response.
 Each function returns {"success": bool, "confirmation": str}.
@@ -22,7 +22,7 @@ from process_events import (
     emit_text_write,
 )
 
-log = logging.getLogger("jarvis.actions")
+log = logging.getLogger("valet.actions")
 
 DESKTOP_PATH = Path.home() / "Desktop"
 
@@ -58,7 +58,7 @@ _CLAUDE_MD_TEMPLATE = """# {name}
 <placeholder>
 
 ## Recent meeting notes
-<!-- TODO: JARVIS will populate from memory layer in a future phase -->
+<!-- TODO: VALET will populate from memory layer in a future phase -->
 """
 
 
@@ -153,10 +153,10 @@ def _fuzzy_suggestions(name: str, limit: int = 3) -> list[dict]:
     return [proj for _, proj in scored[:limit]]
 
 
-async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
+async def _mark_terminal_as_valet(revert_after: float = 5.0):
     """Temporarily set the front Terminal window to Ocean theme, then revert.
 
-    Shows the user JARVIS is active in that terminal. Reverts after revert_after seconds.
+    Shows the user VALET is active in that terminal. Reverts after revert_after seconds.
     """
     # Save the current profile, switch to Ocean, then revert
     script_save = (
@@ -216,7 +216,7 @@ async def _revert_terminal_theme(profile_name: str):
 
 
 async def open_terminal(command: str = "") -> dict:
-    """Open Terminal.app and optionally run a command. Marks it blue for JARVIS."""
+    """Open Terminal.app and optionally run a command. Marks it blue for VALET."""
     if command:
         escaped = command.replace('"', '\\"')
         script = (
@@ -241,7 +241,7 @@ async def open_terminal(command: str = "") -> dict:
     if not success:
         log.error(f"open_terminal failed: {stderr.decode()}")
     else:
-        await _mark_terminal_as_jarvis()
+        await _mark_terminal_as_valet()
     return {
         "success": success,
         "confirmation": "Terminal is open, sir." if success else "I had trouble opening Terminal, sir.",
@@ -350,7 +350,7 @@ async def type_into_app(target: str, press_enter: bool = False, task_id: str | N
         if "1002" in err or "not authorized" in err.lower():
             return {
                 "success": False,
-                "confirmation": "I need Accessibility permission to type, sir. Open System Settings → Privacy & Security → Accessibility and enable the JARVIS process.",
+                "confirmation": "I need Accessibility permission to type, sir. Open System Settings → Privacy & Security → Accessibility and enable the VALET process.",
             }
         return {"success": False, "confirmation": f"Couldn't type that, sir: {err[:120]}"}
 
@@ -515,8 +515,8 @@ async def new_cursor_project(
             # `-c` overrides so the commit lands even when global user.* is unset.
             commit_proc = await asyncio.create_subprocess_exec(
                 "git",
-                "-c", "user.name=JARVIS",
-                "-c", "user.email=jarvis@local",
+                "-c", "user.name=VALET",
+                "-c", "user.email=valet@local",
                 "commit", "-q", "-m", "chore: initial scaffold",
                 cwd=str(project_path),
                 stdout=asyncio.subprocess.PIPE,
@@ -700,7 +700,7 @@ async def _spawn_external_terminal(project_path: Path, task_id: str | None = Non
     _, stderr = await proc.communicate()
     success = proc.returncode == 0
     if success:
-        await _mark_terminal_as_jarvis()
+        await _mark_terminal_as_valet()
         if task_id:
             await emit_app_launch(task_id, "Terminal", status="done", detail=str(project_path))
     else:
@@ -942,7 +942,7 @@ async def register_project(path: str, alias: str | None = None, task_id: str | N
 async def refresh_calendar_tabs() -> dict:
     """Reload any open Google Calendar tab in Chrome so the user sees fresh data.
 
-    Used after JARVIS creates/cancels/updates events via the API. The user
+    Used after VALET creates/cancels/updates events via the API. The user
     sees the change land in their browser without having to refresh manually.
     Silent no-op if no calendar.google.com tab is open.
     """
@@ -1057,7 +1057,7 @@ async def open_browser(url: str, browser: str = "chrome") -> dict:
     Uses macOS `open -a` rather than AppleScript so the URL is routed to the
     main browser app bundle via Launch Services. AppleScript's
     `tell application "Google Chrome"` can misfire when a Chrome PWA window
-    (e.g. the JARVIS app shell) is in the foreground — it targets the PWA's
+    (e.g. the VALET app shell) is in the foreground — it targets the PWA's
     Chrome process instead of the real browser. `open -a` always hits the
     actual app bundle.
     """
@@ -1090,14 +1090,14 @@ async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
     On a fresh project (no CLAUDE.md), writes the prompt to CLAUDE.md so claude
     picks it up on startup. On a project that already has a CLAUDE.md (the
     warm-context source of truth), writes the per-invocation prompt to a
-    sidecar `.jarvis_prompt.md` instead — never clobbers user-owned context.
+    sidecar `.valet_prompt.md` instead — never clobbers user-owned context.
     """
     claude_md = Path(project_dir) / "CLAUDE.md"
     if not claude_md.exists():
         claude_md.write_text(f"# Task\n\n{prompt}\n\nBuild this completely. If web app, make index.html work standalone.\n")
     else:
         # Preserve existing CLAUDE.md (Phase 2 warm-context loader reads it).
-        sidecar = Path(project_dir) / ".jarvis_prompt.md"
+        sidecar = Path(project_dir) / ".valet_prompt.md"
         sidecar.write_text(f"# Latest task\n\n{prompt}\n")
 
     # Launch claude interactive — it reads CLAUDE.md on its own
@@ -1117,7 +1117,7 @@ async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
     if not success:
         log.error(f"open_claude_in_project failed: {stderr.decode()}")
     else:
-        await _mark_terminal_as_jarvis()
+        await _mark_terminal_as_valet()
     return {
         "success": success,
         "confirmation": "Claude Code is running in Terminal, sir. You can watch the progress."
@@ -1195,7 +1195,7 @@ return "OK"
             log.error(f"prompt_existing_terminal failed: {stderr.decode()[:200]}")
 
         if success:
-            await _mark_terminal_as_jarvis()
+            await _mark_terminal_as_valet()
 
         return {
             "success": success,
@@ -1599,7 +1599,7 @@ async def paste_into_cursor_claude(
          user has Cursor open and focused with the claude pane visible.
          If Cursor isn't focused, return {"success": False, "reason":
          "cursor_not_focused", "frontmost": <whatever>} so the caller
-         can write the prompt to .jarvis/inbox/<task_id>.md as a fallback.
+         can write the prompt to .valet/inbox/<task_id>.md as a fallback.
       2. Save the user's existing clipboard via `pbpaste` so we can
          restore it after the paste lands. We don't want to clobber
          whatever they had copied.
@@ -1614,7 +1614,7 @@ async def paste_into_cursor_claude(
     ship-it flow indefinitely. Returns:
       {"success": True}                               — paste fired cleanly
       {"success": False, "reason": "...", "detail": ".."}  — caller falls back
-    Never raises. All telemetry goes to logs/jarvis.err.log via log.
+    Never raises. All telemetry goes to logs/valet.err.log via log.
     """
     # ── (0) Optional window targeting. If a project path is supplied, look
     # for a Cursor window whose title identifies that project and AXRaise
@@ -1636,11 +1636,11 @@ async def paste_into_cursor_claude(
 
     # ── (1) Pre-flight: bring Cursor forward if it isn't already. ──────
     # The typical caller is the design ship-it button OR a voice "ship it"
-    # spoken to the JARVIS browser tab — in both cases Chrome (not Cursor)
+    # spoken to the VALET browser tab — in both cases Chrome (not Cursor)
     # is frontmost. Rather than refuse, we activate Cursor and re-check.
     # Only fail if Cursor.app isn't installed/launchable.
     # Save the original frontmost so we can return focus after pasting
-    # ("stealth paste") — user is reading JARVIS in Chrome and shouldn't
+    # ("stealth paste") — user is reading VALET in Chrome and shouldn't
     # be yanked into Cursor every time they ship.
     original_frontmost = await _frontmost_app_name()
     frontmost = original_frontmost
@@ -1841,7 +1841,7 @@ async def monitor_build(project_dir: str, ws=None, synthesize_fn=None) -> None:
     """Monitor a Claude Code build for completion. Notify via WebSocket when done."""
     import base64
 
-    output_file = Path(project_dir) / ".jarvis_output.txt"
+    output_file = Path(project_dir) / ".valet_output.txt"
     start = time.time()
     timeout = 600  # 10 minutes
 
@@ -1849,7 +1849,7 @@ async def monitor_build(project_dir: str, ws=None, synthesize_fn=None) -> None:
         await asyncio.sleep(5)
         if output_file.exists():
             content = output_file.read_text()
-            if "--- JARVIS TASK COMPLETE ---" in content:
+            if "--- VALET TASK COMPLETE ---" in content:
                 log.info(f"Build complete in {project_dir}")
                 if ws and synthesize_fn:
                     try:
@@ -1939,4 +1939,4 @@ def _generate_project_name(prompt: str) -> str:
             "on", "desktop", "that", "application", "app", "full", "stack", "simple",
             "web", "page", "site", "named"}
     meaningful = [w for w in words if w not in skip and len(w) > 2][:4]
-    return "-".join(meaningful) if meaningful else "jarvis-project"
+    return "-".join(meaningful) if meaningful else "valet-project"

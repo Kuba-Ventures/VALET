@@ -17,7 +17,7 @@ __pycache__/
 *.db
 data/*.jsonl
 data/active_session.json
-data/.jarvis_output.txt
+data/.valet_output.txt
 data/google_tokens.json
 data/license_state.json
 data/screenshots/
@@ -27,7 +27,7 @@ data/screenshots/
 logs/
 data/logs/
 frontend/logs/
-.jarvis/
+.valet/
 
 # Google OAuth client secrets
 google_credentials.json

@@ -4,7 +4,7 @@ export default function Footer() {
       <div className="mx-auto flex max-w-shell flex-col items-start justify-between gap-6 px-6 py-12 md:flex-row md:items-center">
         <div>
           <div className="font-mono text-lg font-medium tracking-tight">
-            [JARVIS]
+            VALET
           </div>
           <p className="mt-1 text-sm text-ink-faint">
             Voice-first computer control for macOS.
@@ -26,7 +26,7 @@ export default function Footer() {
 
       <div className="border-t border-panel-border">
         <div className="mx-auto max-w-shell px-6 py-5 text-xs text-ink-faint">
-          &copy; {new Date().getFullYear()} [JARVIS]. All rights reserved.
+          &copy; {new Date().getFullYear()} VALET. All rights reserved.
         </div>
       </div>
     </footer>

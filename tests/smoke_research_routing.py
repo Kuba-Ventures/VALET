@@ -40,7 +40,7 @@ if env_path.exists():
 import anthropic  # noqa: E402
 
 import server  # noqa: E402
-from server import extract_action, JARVIS_SYSTEM_PROMPT, USER_NAME  # noqa: E402
+from server import extract_action, VALET_SYSTEM_PROMPT, USER_NAME  # noqa: E402
 from process_events import bus as process_bus  # noqa: E402
 
 
@@ -76,14 +76,14 @@ def _strip_personal_context_placeholders(prompt: str) -> str:
     # so the prompt is well-formed for an isolated routing call.
     return prompt.format(
         user_name=USER_NAME,
-        project_dir="/Users/finley/Code/jarvis",
+        project_dir="/Users/finley/Code/VALET",
         personal_context="",
     )
 
 
 async def _route_one(client, utterance: str) -> tuple[str | None, str]:
     """Ask the routing model what tag it would emit. Return (action, raw_text)."""
-    system = _strip_personal_context_placeholders(JARVIS_SYSTEM_PROMPT)
+    system = _strip_personal_context_placeholders(VALET_SYSTEM_PROMPT)
     response = await client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=250,

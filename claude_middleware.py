@@ -1,5 +1,5 @@
 """
-JARVIS Claude Code middleware — Haiku-based structured-result extraction.
+VALET Claude Code middleware — Haiku-based structured-result extraction.
 
 After a WorkSession turn completes, this module takes the assistant's final
 response + any tool-result snippets collected during streaming and asks Haiku
@@ -27,12 +27,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from process_events import bus, Event
 
-log = logging.getLogger("jarvis.claude_middleware")
+log = logging.getLogger("valet.claude_middleware")
 
 
 # Currency normalization — the user is in the US; any non-USD price that
 # slips through from a foreign-locale source page gets stripped (with a
-# loud warning to jarvis.err.log) rather than displayed. The system
+# loud warning to valet.err.log) rather than displayed. The system
 # prompt also instructs Opus to omit non-USD prices, but Haiku has been
 # observed passing them through verbatim from the model's source text.
 _NON_USD_SYMBOLS = ("£", "€", "¥", "₹", "₩", "₽", "₪", "₺", "฿")

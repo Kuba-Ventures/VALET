@@ -10,8 +10,12 @@
  *     toggle) returns it to passive.
  *
  * If the wake phrase and command arrive in the same utterance
- * ("ok jarvis what time is it"), the tail is forwarded immediately and the
+ * ("ok vee what time is it"), the tail is forwarded immediately and the
  * controller transitions to active so the next utterance also flows through.
+ *
+ * A bare "vee" / "vee?" on its own also wakes (a soft re-engage). We require it
+ * to be the whole utterance so a stray "vee" mid-sentence won't trigger, and we
+ * never accept a bare single letter ("v") — too many false hits in Web Speech.
  *
  * The wake regex is derived from `assistantName` × WAKE_PREFIXES — change
  * ASSISTANT_NAME in .env, restart the backend, refresh the page, and the
@@ -45,7 +49,7 @@ function escapeRegExp(s: string): string {
 
 /**
  * The wake-phrase prefix vocabulary. The full wake phrase is
- * `<prefix> <assistantName>` — e.g. "ok jarvis", "okay jarvis", "hey jarvis".
+ * `<prefix> <assistantName>` — e.g. "ok vee", "okay vee", "hey vee".
  *
  * Single source of truth for all accepted prefixes. To add a new one
  * ("yo", "hi", "hello", etc.), append one lowercase string here and the
@@ -66,9 +70,21 @@ function buildWakeRegex(name: string): RegExp {
   );
 }
 
+/**
+ * Soft re-engage: the bare name as the WHOLE utterance ("vee", "vee?", "vee.").
+ * Anchored start-to-end so a stray "vee" inside a sentence won't wake. Names of
+ * one character (e.g. "v") are rejected by the caller to avoid Web Speech noise.
+ */
+function buildSoftRegex(name: string): RegExp {
+  return new RegExp(`^\\s*${escapeRegExp(name.toLowerCase())}\\s*[?.!]*\\s*$`, "i");
+}
+
 function normalizeName(raw: string): string {
   const cleaned = (raw || "").trim().toLowerCase();
-  return cleaned || "jarvis";
+  // Default casual name is "vee". Guard against a bare single letter (e.g. "v")
+  // which would be far too trigger-happy in continuous speech recognition.
+  if (!cleaned || cleaned.length < 2) return "vee";
+  return cleaned;
 }
 
 export function createWakeWord(
@@ -77,6 +93,7 @@ export function createWakeWord(
 ): WakeWordController {
   let assistantName = normalizeName(initialName);
   let wakeRegex = buildWakeRegex(assistantName);
+  let softRegex = buildSoftRegex(assistantName);
   let active = false;
 
   function goPassive() {
@@ -102,13 +119,19 @@ export function createWakeWord(
       }
 
       const match = wakeRegex.exec(trimmed);
-      if (!match) return;
+      if (match) {
+        const tail = trimmed.slice(match.index + match[0].length).replace(/^[^\w]+/, "").trim();
+        goActive();
+        if (tail) {
+          // Wake phrase plus command in one utterance — fire the tail too.
+          handlers.onCommand(tail);
+        }
+        return;
+      }
 
-      const tail = trimmed.slice(match.index + match[0].length).replace(/^[^\w]+/, "").trim();
-      goActive();
-      if (tail) {
-        // Wake phrase plus command in one utterance — fire the tail too.
-        handlers.onCommand(tail);
+      // Soft re-engage: a bare "vee" / "vee?" as the whole utterance.
+      if (softRegex.test(trimmed)) {
+        goActive();
       }
     },
     (msg: string) => handlers.onError(msg)
@@ -118,7 +141,7 @@ export function createWakeWord(
     start() { voiceInput.start(); },
     stop() { goPassive(); voiceInput.stop(); },
     // pause() = "temporarily stop hearing"; keeps active flag so a brief mic-off
-    // during JARVIS's own TTS doesn't drop us out of an in-progress conversation.
+    // during Vee's own TTS doesn't drop us out of an in-progress conversation.
     pause() { voiceInput.pause(); },
     resume() { voiceInput.resume(); },
     // reset() = "go back to needing the wake phrase". No longer called from
@@ -130,6 +153,7 @@ export function createWakeWord(
       if (next === assistantName) return;
       assistantName = next;
       wakeRegex = buildWakeRegex(assistantName);
+      softRegex = buildSoftRegex(assistantName);
       goPassive();
     },
     notifyCommandComplete() { /* no-op in continuous mode; kept for API stability */ },

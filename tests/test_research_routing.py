@@ -32,7 +32,7 @@ if env_path.exists():
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 import server  # noqa: E402
-from server import extract_action, JARVIS_SYSTEM_PROMPT  # noqa: E402
+from server import extract_action, VALET_SYSTEM_PROMPT  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ def test_native_research_uses_opus_47_and_web_tools():
 def test_system_prompt_drops_report_document_language():
     """The old description told the model it was creating a report. Confirm
     every assertive (non-negated) form of that instruction is gone."""
-    research_section = _extract_research_section(JARVIS_SYSTEM_PROMPT)
+    research_section = _extract_research_section(VALET_SYSTEM_PROMPT)
     lowered = research_section.lower()
     # Assertive phrasings — these would tell the model to produce a file.
     bad_phrases = [
@@ -346,7 +346,7 @@ def test_system_prompt_drops_report_document_language():
 
 
 def test_system_prompt_describes_card_panel_output():
-    research_section = _extract_research_section(JARVIS_SYSTEM_PROMPT).lower()
+    research_section = _extract_research_section(VALET_SYSTEM_PROMPT).lower()
     assert "process panel" in research_section or "card" in research_section, (
         "Research description should tell the model output renders as cards in the Process Panel."
     )
@@ -354,7 +354,7 @@ def test_system_prompt_describes_card_panel_output():
 
 
 def test_system_prompt_distinguishes_research_verbs_from_build_verbs():
-    section = _extract_research_section(JARVIS_SYSTEM_PROMPT).lower()
+    section = _extract_research_section(VALET_SYSTEM_PROMPT).lower()
     # Research verbs the rule must enumerate.
     for verb in ["show me", "find me", "what are", "tell me about", "research"]:
         assert verb in section, f"System prompt missing research verb example: {verb!r}"
@@ -366,7 +366,7 @@ def test_system_prompt_distinguishes_research_verbs_from_build_verbs():
 
 def test_system_prompt_handles_show_me_how_to_build_carveout():
     """Case #5: 'show me how to build X' must route to RESEARCH, not BUILD."""
-    section = _extract_research_section(JARVIS_SYSTEM_PROMPT).lower()
+    section = _extract_research_section(VALET_SYSTEM_PROMPT).lower()
     assert "how to build" in section or "show me how to" in section, (
         "System prompt must address the 'show me how to build X' carve-out — "
         "otherwise the model will keyword-match 'build' and dispatch a project."
@@ -376,7 +376,7 @@ def test_system_prompt_handles_show_me_how_to_build_carveout():
 
 def test_system_prompt_handles_ambiguous_create_a_project():
     """Case #6: 'create a project called X' should ask, not silently slugify."""
-    section = _extract_research_section(JARVIS_SYSTEM_PROMPT).lower()
+    section = _extract_research_section(VALET_SYSTEM_PROMPT).lower()
     assert "ask" in section or "ambiguous" in section, (
         "System prompt must instruct the model to ask when build vs research is ambiguous."
     )
@@ -391,9 +391,9 @@ def test_design_optin_fast_path():
     cases = [
         # (utterance, expected_action_or_None, notes)
         # 1. Explicit opt-in via "talk about a feature" — design fires with no target.
-        ("talk about a feature for jarvis-main",
+        ("talk about a feature for valet-main",
          "start_design",
-         "explicit opt-in phrase — empty target so Jarvis prompts for topic"),
+         "explicit opt-in phrase — empty target so Valet prompts for topic"),
         # 2. Direct build request — must NOT route to design.
         ("add a footer that says copyright 2026",
          None,  # falls through to LLM; not the fast-path's job to dispatch this
@@ -425,7 +425,7 @@ def test_design_optin_fast_path():
     assert "feature for RecipeBook Code" in r3["target"], r3
 
     # Bonus: the opt-in case must come back with EMPTY target (signals prompt-for-topic).
-    r1 = detect_action_fast("talk about a feature for jarvis-main", ws=None)
+    r1 = detect_action_fast("talk about a feature for valet-main", ws=None)
     assert r1 is not None and r1.get("target") == "", r1
 
     print("✓ Design opt-in fast-path: 4 cases route correctly; targets populated as expected")
@@ -472,12 +472,12 @@ def test_get_ship_method_accepts_auto_paste():
 
 
 def test_chunk_20_bug_long_design_opt_in_routes_correctly():
-    """Regression — the exact 13-word transcript from logs/jarvis.err.log
+    """Regression — the exact 13-word transcript from logs/valet.err.log
     at 17:02:22 (chunk-20 routing bug). Before chunk 21 this fell off the
     12-word cliff and reached the LLM instead of fast-pathing."""
     from server import detect_action_fast
 
-    utterance = "let's talk about a feature I want to add to Jarvis Dash Main"
+    utterance = "let's talk about a feature I want to add to Valet Dash Main"
     assert len(utterance.split()) > 12, "test fixture invariant — must exceed the old cap"
 
     result = detect_action_fast(utterance, ws=None)
@@ -517,7 +517,7 @@ def test_dictation_precedence_over_design():
     the bypass)."""
     from server import detect_action_fast
 
-    utterance = "dictate to claude — let's talk about a feature for jarvis-main"
+    utterance = "dictate to claude — let's talk about a feature for valet-main"
     result = detect_action_fast(utterance, ws=None)
     assert result is not None
     assert result["action"] == "start_dictation", (

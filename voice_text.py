@@ -11,7 +11,7 @@ import re
 import anthropic
 import observability
 
-log = logging.getLogger("jarvis.voice_text")
+log = logging.getLogger("valet.voice_text")
 
 
 # Speech-to-Text Corrections
@@ -25,8 +25,8 @@ STT_CORRECTIONS = {
     r"\bclod code\b": "Claude Code",
     r"\bcloud\b": "Claude",
     r"\bquad\b": "Claude",
-    r"\btravis\b": "JARVIS",
-    r"\bjarves\b": "JARVIS",
+    r"\bvee\b": "Vee",
+    r"\bbee\b": "Vee",
 }
 
 
@@ -54,13 +54,13 @@ async def classify_intent(text: str, client: anthropic.AsyncAnthropic) -> dict:
             model="claude-haiku-4-5-20251001",
             max_tokens=100,
             system=(
-                "Classify this voice command. The user is talking to JARVIS, an AI assistant that can:\n"
+                "Classify this voice command. The user is talking to VALET, an AI assistant that can:\n"
                 "- Open Terminal and run Claude Code (coding AI tool)\n"
                 "- Open Chrome browser for web searches and URLs\n"
                 "- Build software projects via Claude Code in Terminal\n"
                 "- Research topics by opening Chrome search\n\n"
                 "Note: speech-to-text may produce errors like \"Cloud\" for \"Claude\", "
-                "\"Travis\" for \"JARVIS\", \"clock code\" for \"Claude Code\".\n\n"
+                "\"Bee\" for \"Vee\", \"clock code\" for \"Claude Code\".\n\n"
                 "Return ONLY valid JSON: {\"action\": \"open_terminal|browse|build|chat\", "
                 "\"target\": \"description of what to do\"}\n"
                 "open_terminal = user wants to open terminal or launch Claude Code\n"
@@ -92,7 +92,7 @@ def strip_em_dashes(text: str) -> str:
     """Replace em-dashes (—) and en-dashes (–) with ", ".
 
     LLM responses are full of em-dash flourishes — a classic "AI tell" the
-    user does not want in JARVIS's voice or in the on-screen reply caption.
+    user does not want in VALET's voice or in the on-screen reply caption.
     The dash usually acts as a parenthetical separator, so ", " preserves
     cadence without sounding clipped. Multiple consecutive commas / weird
     artifacts get collapsed.

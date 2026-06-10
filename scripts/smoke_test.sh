@@ -1,5 +1,5 @@
 #!/bin/bash
-# JARVIS smoke test — used by the self-modification flow as the gate
+# VALET smoke test — used by the self-modification flow as the gate
 # before merging a feature branch to main.
 #
 # Three checks, all fast (< 60s total):
@@ -33,9 +33,9 @@ PY
 
 echo "[smoke 3/3] frontend build..."
 cd "$ROOT/frontend"
-if ! npm run build > /tmp/jarvis-smoke-build.log 2>&1; then
+if ! npm run build > /tmp/valet-smoke-build.log 2>&1; then
   echo "  FAIL: npm run build exited non-zero"
-  tail -30 /tmp/jarvis-smoke-build.log
+  tail -30 /tmp/valet-smoke-build.log
   exit 13
 fi
 echo "  OK"

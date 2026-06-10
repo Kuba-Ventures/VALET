@@ -1,10 +1,10 @@
 #!/bin/bash
-# Stops and removes the JARVIS launchd user agent.
+# Stops and removes the VALET launchd user agent.
 # Leaves logs/ and .env in place; delete those manually if desired.
 
 set -u
 
-LABEL="com.jarvis.backend"
+LABEL="com.valet.backend"
 PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 if launchctl bootout "gui/$UID/$LABEL" 2>/dev/null; then
@@ -18,4 +18,4 @@ if [ -f "$PLIST_PATH" ]; then
     echo "Removed $PLIST_PATH"
 fi
 
-echo "Done. Logs preserved under jarvis/logs/ if you need them."
+echo "Done. Logs preserved under valet/logs/ if you need them."

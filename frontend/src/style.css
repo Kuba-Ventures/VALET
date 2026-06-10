@@ -35,11 +35,11 @@ html, body {
   z-index: 10;
 }
 
-/* JARVIS's most-recent spoken reply, rendered as a persistent caption so the
+/* VALET's most-recent spoken reply, rendered as a persistent caption so the
    user can re-read instructions/commands after the TTS has finished. Sits
    above the diag transcript and below the orb. Click-to-dismiss; otherwise
    persists until the next reply arrives. */
-#jarvis-reply {
+#valet-reply {
   position: fixed;
   bottom: 96px;
   left: 50%;
@@ -63,12 +63,12 @@ html, body {
   cursor: pointer;
   z-index: 10;
 }
-#jarvis-reply.visible {
+#valet-reply.visible {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
-#jarvis-reply::before {
-  content: "JARVIS";
+#valet-reply::before {
+  content: "VALET";
   display: block;
   font-size: 9px;
   letter-spacing: 3px;
@@ -114,7 +114,7 @@ html, body {
   text-align: center;
 }
 
-#jarvis-label {
+#valet-label {
   position: fixed;
   bottom: 16px;
   left: 50%;
@@ -626,7 +626,7 @@ body.wake-sleeping #orb-canvas {
   color: rgba(234, 179, 8, 0.85);
 }
 
-/* JARVIS-generated bio summary block */
+/* VALET-generated bio summary block */
 .bio-summary {
   padding: 12px 14px;
   background: rgba(110, 92, 255, 0.05);

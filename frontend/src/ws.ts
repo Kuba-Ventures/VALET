@@ -1,10 +1,10 @@
 /**
- * WebSocket client for JARVIS server communication.
+ * WebSocket client for VALET server communication.
  */
 
 export type MessageHandler = (msg: Record<string, unknown>) => void;
 
-export interface JarvisSocket {
+export interface ValetSocket {
   send(data: Record<string, unknown>): boolean;
   onMessage(handler: MessageHandler): void;
   onConnectionChange(handler: (connected: boolean) => void): void;
@@ -12,7 +12,7 @@ export interface JarvisSocket {
   isConnected(): boolean;
 }
 
-export function createSocket(url: string): JarvisSocket {
+export function createSocket(url: string): ValetSocket {
   let ws: WebSocket | null = null;
   let handlers: MessageHandler[] = [];
   let connHandlers: ((c: boolean) => void)[] = [];

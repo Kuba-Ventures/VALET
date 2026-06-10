@@ -1,5 +1,5 @@
 """
-JARVIS Server — Voice AI + Development Orchestration
+VALET Server — Voice AI + Development Orchestration
 
 Handles:
 1. WebSocket voice interface (browser audio <-> LLM <-> TTS)
@@ -74,7 +74,7 @@ from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 from page_preview import fetch_page_preview
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
-log = logging.getLogger("jarvis")
+log = logging.getLogger("valet")
 
 
 def _log_startup_banner() -> None:
@@ -135,7 +135,7 @@ PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://jarvis-y.vercel.app").rstr
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # dev fallback only
 FISH_API_KEY = os.getenv("FISH_API_KEY", "")  # dev fallback only
-FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # JARVIS (MCU)
+FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # VALET voice
 FISH_API_URL = "https://api.fish.audio/v1/tts"  # dev fallback only
 USER_NAME = os.getenv("USER_NAME", "sir")
 DATE_OF_BIRTH = os.getenv("DATE_OF_BIRTH", "")
@@ -146,8 +146,8 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DESKTOP_PATH = Path.home() / "Desktop"
 
-JARVIS_SYSTEM_PROMPT = """\
-You are JARVIS — Just A Rather Very Intelligent System. You serve as {user_name}'s AI assistant, modeled precisely after Tony Stark's AI from the MCU films.
+VALET_SYSTEM_PROMPT = """\
+You are VALET, the Voice-Activated Local Engineering Terminal: {user_name}'s voice-first AI assistant. In conversation you go by Vee; VALET is your full name, kept in reserve for dry effect. You answer to "Vee" and refer to yourself as Vee.
 {personal_context}
 
 VOICE & PERSONALITY:
@@ -169,7 +169,7 @@ CONVERSATION STYLE:
 - When you don't know something: "I'm afraid I don't have that information, sir" not "I don't know"
 
 SELF-AWARENESS:
-You ARE the JARVIS project at {project_dir} on {user_name}'s computer. Your code is Python (FastAPI server, WebSocket voice, Fish Audio TTS, Anthropic API). You were built by {user_name}. If asked about yourself, your code, how you work, or your line count — use [ACTION:PROMPT_PROJECT] to check the jarvis project. You have full access to your own source code.
+You ARE the VALET project at {project_dir} on {user_name}'s computer. Your code is Python (FastAPI server, WebSocket voice, Fish Audio TTS, Anthropic API). You were built by {user_name}. If asked about yourself, your code, how you work, or your line count — use [ACTION:PROMPT_PROJECT] to check the VALET project. You have full access to your own source code.
 
 YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT NOW):
 - You CAN open Terminal.app via AppleScript
@@ -222,7 +222,7 @@ If asked about any of these, explain them briefly and naturally. If the user is 
 
 SPEECH-TO-TEXT CORRECTIONS (the user speaks, speech recognition may mishear):
 - "Cloud code" or "cloud" = "Claude Code" or "Claude"
-- "Travis" = "JARVIS"
+- "Bee", "V", or "Vee" = "Vee" (your name)
 - "clock code" = "Claude Code"
 
 RESPONSE LENGTH — THIS IS CRITICAL:
@@ -300,7 +300,7 @@ RESEARCH vs BUILD — distinguish by the user's verb at the front of the request
   "reload the cerwood context" → [ACTION:REFRESH_CONTEXT] cerwood
 
 DESIGN-PARTNER MODE (Phase 3):
-- [ACTION:START_DESIGN] topic — open a design conversation. JARVIS becomes the design partner; subsequent turns route through Opus until the user ships or scraps. Use for "let's design X", "plan a Y", "spec a Z", "I want to design something for…".
+- [ACTION:START_DESIGN] topic — open a design conversation. VALET becomes the design partner; subsequent turns route through Opus until the user ships or scraps. Use for "let's design X", "plan a Y", "spec a Z", "I want to design something for…".
   "let's design a daily rollup" → [ACTION:START_DESIGN] daily rollup
   "plan a feature for client onboarding" → [ACTION:START_DESIGN] client onboarding
   DESIGN-vs-BUILD DISCRIMINATION (critical): if {user_name} says he wants to talk through, discuss, brainstorm, or design something BEFORE building it, emit [ACTION:START_DESIGN] and let the design panel collect the topic. Do NOT emit [ACTION:PROMPT_PROJECT] or [ACTION:REMEMBER] in that case. A direct build request ("add a footer that says copyright 2026", "fix the login bug", "yes please add that to the code") still emits the appropriate build/dispatch action — only stated design intent triggers START_DESIGN. When in doubt and the user did not use design-intent words, dispatch the build action; START_DESIGN is the opt-in path, not the default.
@@ -314,7 +314,7 @@ DESIGN-PARTNER MODE (Phase 3):
   "have Plan design the new auth flow" → [ACTION:DISPATCH_TO_AGENT] Plan ||| design the new auth flow
   NEVER use [ACTION:SEND] with target "Claude Code" / "Claude" — that's a CLI, not a macOS app; the keystrokes go nowhere. Use DISPATCH_TO_AGENT for anything destined for the Claude Code session.
 - [ACTION:MERGE_BRANCH] — run smoke_test.sh then merge the current feature/* branch into main. ONLY emit when the user explicitly says "merge it" or similar and we're on a feature branch. Never auto-emit.
-- [ACTION:RESTART_SELF] — spawn the detached restarter (scripts/restart.sh). Use ONLY for "restart yourself" / "restart jarvis" / "kick yourself". Acknowledge before restart kills the current process.
+- [ACTION:RESTART_SELF] — spawn the detached restarter (scripts/restart.sh). Use ONLY for "restart yourself" / "restart valet" / "kick yourself". Acknowledge before restart kills the current process.
 - [ACTION:LIST_PROJECTS] — read the authoritative list of projects from ~/Code/, ~/projects/, and the alias table. Emit this tag (no target) whenever the user asks what projects exist and you didn't fast-path it. Output gets spoken to the user.
 
 PROJECTS ARE AUTHORITATIVE — DO NOT FABRICATE:
@@ -351,7 +351,7 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
 - [ACTION:CANCEL_EVENT] query ||| on_date? — cancel a meeting by fuzzy title match.
   "cancel my dentist appointment" → [ACTION:CANCEL_EVENT] dentist
   "cancel the standup on Friday" → [ACTION:CANCEL_EVENT] standup ||| 2026-05-16
-- [ACTION:DRAFT_EMAIL] to ||| subject ||| body ||| cc? ||| bcc? — create a Gmail DRAFT. JARVIS NEVER sends mail — the user clicks Send themselves after reviewing. Use this for any "draft an email to X", "write an email saying Y", "compose a message" request. Write a complete, well-formed email body in the user's voice.
+- [ACTION:DRAFT_EMAIL] to ||| subject ||| body ||| cc? ||| bcc? — create a Gmail DRAFT. VALET NEVER sends mail — the user clicks Send themselves after reviewing. Use this for any "draft an email to X", "write an email saying Y", "compose a message" request. Write a complete, well-formed email body in the user's voice.
   "draft an email to sarah@example.com asking about the proposal" → [ACTION:DRAFT_EMAIL] sarah@example.com ||| Following up on the proposal ||| Hi Sarah,\n\nJust circling back on the proposal we discussed last week — let me know if you've had a chance to review it.\n\nThanks,\n{user_name}
   "write a quick note to my team about the all-hands tomorrow" → [ACTION:DRAFT_EMAIL] team@company.com ||| All-hands tomorrow ||| Team — quick reminder about the all-hands tomorrow at 2pm. See you then.\n\n{user_name}
   If the user doesn't specify a recipient, ASK them — don't guess.
@@ -382,7 +382,7 @@ CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're
   Use this when {user_name} says "remember this about me", "add to my bio", "I'm a __", or shares a foundational identity fact.
   "I'm a vegetarian and I live in Brooklyn" → [ACTION:BIO_ADD] {user_name} is a vegetarian living in Brooklyn.
 - [ACTION:CREATE_NOTE] title ||| body — create a new Apple Note. For saving plans, ideas, lists.
-  "save that as a note" → [ACTION:CREATE_NOTE] Day Plan March 19 ||| Morning: client calls. Afternoon: TikTok dashboard. Evening: JARVIS improvements.
+  "save that as a note" → [ACTION:CREATE_NOTE] Day Plan March 19 ||| Morning: client calls. Afternoon: TikTok dashboard. Evening: VALET improvements.
 - [ACTION:READ_NOTE] title search — read an existing Apple Note by title keyword.
 
 You use Claude Code as your tool to build, research, and write code — but YOU are the one doing the work. Never say "Claude Code did X" or "Claude Code is asking" — say "I built X", "I'm checking on that", "I found X". You ARE the intelligence. Claude Code is just your hands.
@@ -405,7 +405,7 @@ For DISPATCHES context below: if a recent completed result for a project is show
 # Dynamic context appended to the system prompt on every request. Kept in a
 # separate block so the (much larger) static prompt above can be served from
 # Anthropic's prompt cache. Only this dynamic tail varies request-to-request.
-JARVIS_DYNAMIC_CONTEXT = """\
+VALET_DYNAMIC_CONTEXT = """\
 CURRENT TIME: {current_time}
 WEATHER: {weather_info}
 
@@ -639,7 +639,7 @@ async def _speak(ws, msg: str) -> None:
     """Inline the synthesize+send_json speak pattern. Used by handlers that need
     to speak independently of the main voice loop's return path. Best-effort,
     swallows send failures. Strips em-dashes from the spoken text + caption
-    so JARVIS's voice doesn't read like an LLM transcript."""
+    so VALET's voice doesn't read like an LLM transcript."""
     clean = strip_em_dashes(msg)
     audio = await synthesize_speech(clean)
     if not audio or not ws:
@@ -801,7 +801,7 @@ async def _execute_start_design(topic: str, ws, new_project: bool = False):
 
     If `topic` is empty (the user opted into design mode via a generic phrase
     like "design mode" or "talk about a feature"), the session still starts
-    immediately so subsequent turns route through Opus, but Jarvis speaks a
+    immediately so subsequent turns route through Opus, but Valet speaks a
     prompt asking for the topic instead of acknowledging it. The next user
     turn becomes the first design-conversation message and Opus picks up
     from there.
@@ -923,7 +923,7 @@ async def _execute_confirm_dictation(ws, prompt: str):
 
     Uses the same paste_into_cursor_claude helper as design ship-it
     (Mode 1). On pre-flight failure (Cursor not focused), falls back to
-    writing .jarvis/inbox/<task_id>.md so the user still has the prompt
+    writing .valet/inbox/<task_id>.md so the user still has the prompt
     staged.
 
     Clears ws.dictation_* state on exit (success OR failure).
@@ -954,7 +954,7 @@ async def _execute_confirm_dictation(ws, prompt: str):
         await _speak(ws, "Sent, sir.")
         return
 
-    # Fallback path — write the prompt to .jarvis/inbox/<id>.md so the
+    # Fallback path — write the prompt to .valet/inbox/<id>.md so the
     # user can paste manually. Mirrors the chunk-21 Mode 1 fallback.
     reason = result.get("reason", "unknown")
     detail = result.get("detail", "")
@@ -966,7 +966,7 @@ async def _execute_confirm_dictation(ws, prompt: str):
     inbox_path = None
     if project_path:
         try:
-            inbox_dir = project_path / ".jarvis" / "inbox"
+            inbox_dir = project_path / ".valet" / "inbox"
             inbox_dir.mkdir(parents=True, exist_ok=True)
             stem = uuid.uuid4().hex[:8]
             inbox_path = inbox_dir / f"dictation-{stem}.md"
@@ -1102,7 +1102,7 @@ async def _execute_ship_design(ws):
 
     Two dispatch methods, picked by config/design_partner.json#ship_method:
 
-      file        — write to <project>/.jarvis/inbox/<id>.md, speak the path,
+      file        — write to <project>/.valet/inbox/<id>.md, speak the path,
                     transition to BUILDING. Safe, deterministic, default.
       applescript — bring Cursor to front, ask for explicit voice confirmation
                     ("ship it for real"), then clipboard-paste + Enter into
@@ -1138,7 +1138,7 @@ async def _execute_ship_design(ws):
     # fires. Once scaffolding succeeds, session.project_path is set and the
     # flow falls through to the regular auto_paste branch — which knows how
     # to window-target by project path. Greenfield is never self-mod (the
-    # new project is not the JARVIS repo), so the self-mod gate skips.
+    # new project is not the VALET repo), so the self-mod gate skips.
     if session.is_greenfield:
         from actions import new_cursor_project
         await _speak(ws, f"Scaffolding {session.new_project_name}, sir.")
@@ -1168,7 +1168,7 @@ async def _execute_ship_design(ws):
 
     # No-target fast path: paste the draft straight into Cursor's claude
     # terminal without project bookkeeping. The user explicitly wants to ship
-    # a prompt into whatever Cursor pane is in focus, even when no JARVIS
+    # a prompt into whatever Cursor pane is in focus, even when no VALET
     # project is the formal "target".
     if not session.has_target:
         from actions import paste_into_cursor_claude
@@ -1199,7 +1199,7 @@ async def _execute_ship_design(ws):
     # ── Phase 5 approval gate for self-modifications ──
     # Belt-and-suspenders: check both the session's self_mod flag AND the
     # path identity (in case the flag got out of sync somehow).
-    if session.self_mod or self_mod.is_jarvis_repo(session.project_path):
+    if session.self_mod or self_mod.is_valet_repo(session.project_path):
         ws.pending_offer = {
             "kind": "self_mod_confirm",
             "session_id": session.id,
@@ -1220,7 +1220,7 @@ async def _execute_ship_design(ws):
         # already frontmost), clipboard-paste the prompt, press Enter. The
         # helper handles clipboard save/restore so the user's clipboard
         # isn't clobbered. On any pre-flight or AppleScript failure, fall
-        # back to the file path — the prompt is staged at .jarvis/inbox/
+        # back to the file path — the prompt is staged at .valet/inbox/
         # so the user can paste manually.
         # Pass the project path so paste_into_cursor_claude can pick the
         # right Cursor window across multi-window setups (multi-monitor).
@@ -1486,7 +1486,7 @@ async def _handle_ship_confirm(transcript: str, ws) -> bool:
             )
             session.mark_building()
             await session.emit_state()
-            await _speak(ws, f"Staged at .jarvis/inbox/{out.name} instead.")
+            await _speak(ws, f"Staged at .valet/inbox/{out.name} instead.")
         except Exception as e:
             log.error(f"applescript fallback file write failed: {e}")
         return True
@@ -1507,7 +1507,7 @@ async def _execute_scrap_design(ws):
 
     Once the session has transitioned to BUILDING (shipped), scrap is a
     no-op + clarification — the inbox file (if any) is the user's now and
-    JARVIS doesn't delete it. To clean up an in-progress build the user
+    VALET doesn't delete it. To clean up an in-progress build the user
     deletes the inbox file manually.
     """
     import design_partner
@@ -1834,8 +1834,8 @@ def _find_project_dir(project_name: str) -> str | None:
 async def _execute_prompt_project(project_name: str, prompt: str, work_session: WorkSession, ws, dispatch_id: int = None, history: list[dict] = None, voice_state: dict = None):
     """Dispatch a prompt to Claude Code in a project directory.
 
-    Runs entirely in the background. JARVIS returns to conversation mode
-    immediately. When Claude Code finishes, JARVIS interrupts to report.
+    Runs entirely in the background. VALET returns to conversation mode
+    immediately. When Claude Code finishes, VALET interrupts to report.
     """
     async with process_bus.task_context(f"Dispatching to {project_name}", detail=prompt[:120]) as task_id:
         try:
@@ -1902,7 +1902,7 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
                             model="claude-haiku-4-5-20251001",
                             max_tokens=150,
                             system=(
-                                "You are JARVIS reporting back on what you found or built in a project. "
+                                "You are VALET reporting back on what you found or built in a project. "
                                 "Speak in first person — 'I found', 'I built', 'I reviewed'. "
                                 "Start with 'Sir, ' to get the user's attention. "
                                 "Be specific but concise — highlight the key findings or actions taken. "
@@ -1923,7 +1923,7 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
             log.info(f"Dispatch summary for {project_name}: {msg[:100]}")
             if voice_state and time.time() - voice_state["last_user_time"] < 3:
                 log.info(f"Skipping dispatch audio for {project_name} — user spoke recently")
-                # Result is still stored in history below so JARVIS can reference it
+                # Result is still stored in history below so VALET can reference it
             else:
                 audio = await synthesize_speech(strip_markdown_for_tts(msg))
                 if ws:
@@ -1938,7 +1938,7 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
                     except Exception as e:
                         log.error(f"Dispatch audio send failed: {e}")
 
-            # Store dispatch result in conversation history so JARVIS remembers it
+            # Store dispatch result in conversation history so VALET remembers it
             if history is not None:
                 history.append({"role": "assistant", "content": f"[Dispatch result for {project_name}]: {msg}"})
 
@@ -2056,7 +2056,7 @@ async def _execute_native_research(target: str, ws=None):
         client = anthropic_client.with_options(timeout=600.0, max_retries=1)
 
         system_prompt = (
-            f"You are JARVIS, {USER_NAME}'s assistant. {USER_NAME} asked a research "
+            f"You are VALET, {USER_NAME}'s assistant. {USER_NAME} asked a research "
             "question. Use web_search and web_fetch to find real, current information — "
             "real product names, prices, addresses, source URLs. Never invent listings.\n\n"
             "LOCALE: the user is in the United States. Prices must be in USD ($). If "
@@ -2071,7 +2071,7 @@ async def _execute_native_research(target: str, ws=None):
             "shallow and often missing the prices, specs, addresses, and metadata the "
             "user wants. The depth comes from fetching the actual pages.\n"
             "3. Only after fetching, write your final response.\n\n"
-            "JARVIS's UI relies on web_fetch events to render source-preview cards "
+            "VALET's UI relies on web_fetch events to render source-preview cards "
             "(thumbnail + page title + snippet) and to extract product images from "
             "fetched pages. Skipping web_fetch leaves the UI empty of imagery and "
             "robs {user} of the visual context they expect. Always fetch.\n\n"
@@ -2137,7 +2137,7 @@ async def _execute_native_research(target: str, ws=None):
                         "text": msg,
                     })
                     await ws.send_json({"type": "status", "state": "idle"})
-                    log.info(f"JARVIS: {msg}")
+                    log.info(f"VALET: {msg}")
             except Exception as e:
                 log.debug(f"mid-research interjection failed: {e}")
 
@@ -2162,7 +2162,7 @@ async def _execute_native_research(target: str, ws=None):
             # stream to resume.
             #
             # Visibility layer (chunk 16): every stream event is logged at
-            # INFO so a silent stall is visible in logs/jarvis.err.log.
+            # INFO so a silent stall is visible in logs/valet.err.log.
             # A 60s watchdog (wait_for around iterator.__anext__) aborts
             # the stream loudly if no event arrives within that window —
             # SSE can silently disconnect, and without this the symptom
@@ -2412,7 +2412,7 @@ async def _execute_native_research(target: str, ws=None):
                         model="claude-haiku-4-5-20251001",
                         max_tokens=80,
                         system=(
-                            "You are JARVIS. In ONE sentence, British butler tone, "
+                            "You are VALET. In ONE sentence, British butler tone, "
                             "first person, summarize the research finding for voice. "
                             "No markdown. End with 'sir' when natural."
                         ),
@@ -2428,7 +2428,7 @@ async def _execute_native_research(target: str, ws=None):
                             "text": msg,
                         })
                         await ws.send_json({"type": "status", "state": "idle"})
-                        log.info(f"JARVIS: {msg}")
+                        log.info(f"VALET: {msg}")
                 except Exception as e:
                     log.warning(f"research voice summary failed: {e}")
         except Exception as e:
@@ -2493,7 +2493,7 @@ async def generate_response(
     last_response: str = "",
     session_summary: str = "",
 ) -> str:
-    """Generate a JARVIS response using Anthropic API."""
+    """Generate a VALET response using Anthropic API."""
     # License gate: refuse to assist when the license isn't entitled (with a
     # 7-day offline grace window). No-op in dev fallback (no LICENSE_KEY).
     await _ensure_license()
@@ -2553,14 +2553,14 @@ async def generate_response(
     # Static block — identity, behavior rules, full action descriptions. This
     # only changes when USER_NAME/PROJECT_DIR/personal .env values change, so
     # Anthropic's prompt cache hits it on virtually every request.
-    static_system = JARVIS_SYSTEM_PROMPT.format(
+    static_system = VALET_SYSTEM_PROMPT.format(
         user_name=USER_NAME,
         project_dir=PROJECT_DIR,
         personal_context=personal_context,
     )
 
     # Dynamic block — live context that varies request-to-request. Not cached.
-    dynamic_system = JARVIS_DYNAMIC_CONTEXT.format(
+    dynamic_system = VALET_DYNAMIC_CONTEXT.format(
         current_time=current_time,
         weather_info=weather_info,
         screen_context=screen_ctx or "Not checked yet.",
@@ -2576,19 +2576,19 @@ async def generate_response(
     # Inject relevant memories and tasks
     memory_ctx = build_memory_context(text)
     if memory_ctx:
-        dynamic_system += f"\n\nJARVIS MEMORY:\n{memory_ctx}"
+        dynamic_system += f"\n\nVALET MEMORY:\n{memory_ctx}"
 
     # Three-tier memory — inject rolling summary of earlier conversation
     if session_summary:
         dynamic_system += f"\n\nSESSION CONTEXT (earlier in this conversation):\n{session_summary}"
 
-    # Self-awareness — remind JARVIS of last response to avoid repetition
+    # Self-awareness — remind VALET of last response to avoid repetition
     if last_response:
         dynamic_system += f'\n\nYOUR LAST RESPONSE (do not repeat this):\n"{last_response[:150]}"'
 
     # Runtime self-introspection — live wake phrases, agent registry, etc.
-    # Lets JARVIS answer "what are your wake phrases?" without hallucinating
-    # (we used to say "only jarvis, sir" because the LLM had no idea).
+    # Lets VALET answer "what are your wake phrases?" without hallucinating
+    # (we used to say "only valet, sir" because the LLM had no idea).
     try:
         import self_knowledge
         dynamic_system += "\n\n" + self_knowledge.get_self_knowledge_block()
@@ -2815,9 +2815,9 @@ return windowList
             except Exception as _wx_e:
                 log.debug(f"weather context refresh failed: {_wx_e}")
 
-            # Calendar — refresh today's events so JARVIS always knows the schedule.
+            # Calendar — refresh today's events so VALET always knows the schedule.
             # Without this, the system prompt forever reads "No calendar data yet"
-            # and JARVIS tells the user calendar isn't connected.
+            # and VALET tells the user calendar isn't connected.
             try:
                 import asyncio as _aio
                 events = _aio.run(get_todays_events())
@@ -2937,7 +2937,7 @@ async def lifespan(application: FastAPI):
     except Exception as e:
         log.warning(f"cleanup_stale_aliases failed: {e}")
 
-    log.info("JARVIS server starting")
+    log.info("VALET server starting")
 
     yield
 
@@ -2945,7 +2945,7 @@ async def lifespan(application: FastAPI):
     observability.shutdown_observability()
 
 
-app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="VALET Server", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2966,7 +2966,7 @@ app.mount("/screenshots", StaticFiles(directory=str(SCREENSHOTS_DIR)), name="scr
 
 @app.get("/api/health")
 async def health():
-    return {"status": "online", "name": "JARVIS", "version": "0.1.0"}
+    return {"status": "online", "name": "VALET", "version": "0.1.0"}
 
 
 @app.post("/api/_debug/emit-demo")
@@ -3068,7 +3068,7 @@ async def api_cancel_task(task_id: str):
 
 @app.get("/api/agents")
 async def api_list_agents():
-    """All Claude Code sub-agents JARVIS can dispatch to.
+    """All Claude Code sub-agents VALET can dispatch to.
 
     Sourced from <project>/.claude/agents/*.md, ~/.claude/agents/*.md, and
     a builtin list. The frontend's design-panel agent dropdown reads this;
@@ -3233,7 +3233,7 @@ _START_DESIGN_PATTERN = _action_re.compile(
 # Explicit design-mode opt-in phrases. Substring match, case-insensitive.
 # Matched AFTER _START_DESIGN_PATTERN so an utterance with a topic ("let's
 # design a recipe tracker") still captures the topic. These phrases trigger
-# START_DESIGN with no target — Jarvis prompts for the topic next turn.
+# START_DESIGN with no target — Valet prompts for the topic next turn.
 # See docs/design_handoff_diagnosis.md — Option C.
 _DESIGN_OPTIN_PHRASES = (
     "design mode",
@@ -3246,7 +3246,7 @@ _DESIGN_OPTIN_PHRASES = (
     "think about adding",
     "design before we build",
     # More natural openers for the design panel. Topic-less by design — these
-    # trigger START_DESIGN with no target, and JARVIS asks for the topic next
+    # trigger START_DESIGN with no target, and VALET asks for the topic next
     # turn (the "what should this feature do?" prompt).
     "design a feature",
     "design a new feature",
@@ -3292,7 +3292,7 @@ _MERGE_BRANCH_PHRASES = {
     "lets merge it",
 }
 _RESTART_SELF_PHRASES = {
-    "restart yourself", "restart jarvis", "kick yourself", "reboot yourself",
+    "restart yourself", "restart valet", "kick yourself", "reboot yourself",
     "bounce yourself", "restart the server", "kick the server",
 }
 
@@ -3345,7 +3345,7 @@ _OPEN_APP_NAMES = {
     # Other common web apps users open by voice
     "youtube", "github", "linear", "notion", "figma", "claude", "chatgpt",
     "openai", "anthropic", "console",
-    # JARVIS's own UI surfaces — keep "open the design panel" / "open the
+    # VALET's own UI surfaces — keep "open the design panel" / "open the
     # process panel" from being misrouted as a project lookup.
     "design panel", "process panel", "settings panel", "the design panel",
     "the process panel", "the settings panel",
@@ -3370,7 +3370,7 @@ _APP_KEYWORDS = {
 
 def _looks_like_app(name: str) -> bool:
     """True if `name` (captured by an _OPEN_PROJECT_PATTERNS regex) is more
-    plausibly a web/native app than a JARVIS project.
+    plausibly a web/native app than a VALET project.
 
     Three-strike matcher:
       1. Exact (lowercased) match against _OPEN_APP_NAMES.
@@ -3437,7 +3437,7 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
          are explicit design-intent signals and ARE allowed past the
          word-count gate below; without that exemption, the chunk-20 bug
          from 17:02:22 ("let's talk about a feature I want to add to
-         Jarvis Dash Main", 13 words) would still slip through to the LLM.
+         Valet Dash Main", 13 words) would still slip through to the LLM.
       3. Word-count gate — everything below this gate is restricted to
          short, command-shaped utterances (≤ 12 words). Long messages are
          conversation, not commands, and route to the LLM router.
@@ -3524,7 +3524,7 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
             if _phrase_hit(_SHOW_DRAFT_PHRASES):
                 return {"action": "show_draft"}
 
-    # Close / dismiss the process panel. Fast-path so JARVIS responds
+    # Close / dismiss the process panel. Fast-path so VALET responds
     # instantly without round-tripping through the LLM.
     if any(p in t for p in [
         "close it", "close that", "close the panel", "close panel",
@@ -3588,7 +3588,7 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # mean "the user's hometown" — empty target so the HOMETOWN_CITY fallback
     # fires. WITHOUT this, "weather for my hometown" captured "my hometown",
     # whose geocode degradation stripped to the bare token "my" and matched an
-    # obscure real place named "My" — JARVIS then said "The forecast for My,
+    # obscure real place named "My" — VALET then said "The forecast for My,
     # sir" and mounted a card for the wrong spot.
     _SELF_LOC = {
         "my hometown", "my home town", "my home", "my house", "my area",
@@ -3716,14 +3716,14 @@ async def handle_build(target: str) -> str:
 
         # Write prompt to a file, then pipe it to claude -p
         # This avoids all shell escaping issues
-        prompt_file = Path(path) / ".jarvis_prompt.txt"
+        prompt_file = Path(path) / ".valet_prompt.txt"
         prompt_file.write_text(target)
         await emit_step(task_id, "Prompt staged for Claude Code")
 
         script = (
             'tell application "Terminal"\n'
             "    activate\n"
-            f'    do script "cd {path} && cat .jarvis_prompt.txt | claude -p --dangerously-skip-permissions"\n'
+            f'    do script "cd {path} && cat .valet_prompt.txt | claude -p --dangerously-skip-permissions"\n'
             "end tell"
         )
         await asyncio.create_subprocess_exec(
@@ -3766,14 +3766,14 @@ async def handle_show_recent() -> str:
 # Background lookup system — spawns slow tasks, reports back via voice
 # ---------------------------------------------------------------------------
 
-# Track active lookups so JARVIS can report status
+# Track active lookups so VALET can report status
 _active_lookups: dict[str, dict] = {}  # id -> {"type": str, "status": str, "started": float}
 
 
 async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict] = None, voice_state: dict = None):
     """Run a slow lookup, then speak the result back.
 
-    JARVIS stays conversational — this runs completely off the main path.
+    VALET stays conversational — this runs completely off the main path.
     """
     lookup_id = str(uuid.uuid4())[:8]
     dispatch_time = time.time()
@@ -3815,7 +3815,7 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
 
         log.info(f"Lookup {lookup_type} complete: {result_text[:80]}")
 
-        # Store lookup result in conversation history so JARVIS remembers it
+        # Store lookup result in conversation history so VALET remembers it
         if history is not None:
             history.append({"role": "assistant", "content": f"[{lookup_type} check]: {result_text}"})
 
@@ -3855,7 +3855,7 @@ async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
     fetches Open-Meteo forecast, and mounts the weather panel on the frontend.
 
     Render-only: the forecast detail lives in the panel (current conditions,
-    today's outlook, 7-day strip, UV, severe-weather banner), so JARVIS does
+    today's outlook, 7-day strip, UV, severe-weather banner), so VALET does
     NOT read it aloud. This function returns a short butler acknowledgment for
     TTS instead — escalated to include the text of a *severe* alert, since
     that's worth hearing without looking at the screen. The `when` arg is
@@ -4143,7 +4143,7 @@ async def voice_handler(ws: WebSocket):
     voice_state = {"last_user_time": 0.0}
 
     # Self-awareness — track last spoken response to avoid repetition
-    last_jarvis_response = ""
+    last_valet_response = ""
 
     # Three-tier conversation memory
     session_buffer: list[dict] = []  # ALL messages, never truncated
@@ -4178,7 +4178,7 @@ async def voice_handler(ws: WebSocket):
                         await ws.send_json({"type": "status", "state": "speaking"})
                         await ws.send_json({"type": "audio", "data": encoded, "text": greeting})
                         history.append({"role": "assistant", "content": greeting})
-                        log.info(f"JARVIS: {greeting}")
+                        log.info(f"VALET: {greeting}")
                         await ws.send_json({"type": "status", "state": "idle"})
                 except Exception as e:
                     log.warning(f"Greeting failed: {e}")
@@ -4197,10 +4197,10 @@ async def voice_handler(ws: WebSocket):
             except json.JSONDecodeError:
                 continue
 
-            # ── Fix-self: activate work mode in JARVIS repo ──
+            # ── Fix-self: activate work mode in VALET repo ──
             if msg.get("type") == "fix_self":
-                jarvis_dir = str(Path(__file__).parent)
-                await work_session.start(jarvis_dir)
+                valet_dir = str(Path(__file__).parent)
+                await work_session.start(valet_dir)
                 response_text = "Work mode active in my own repo, sir. Tell me what needs fixing."
                 tts = strip_markdown_for_tts(response_text)
                 await ws.send_json({"type": "status", "state": "speaking"})
@@ -4351,7 +4351,7 @@ async def voice_handler(ws: WebSocket):
 
             # Mute action routing while native research is in flight. Without
             # this, ambient transcripts (TV, conversation) get dispatched to
-            # the LLM mid-research and Jarvis tries to "answer" them — which
+            # the LLM mid-research and Valet tries to "answer" them — which
             # was the source of every "got lost during research" report.
             # Only the cancel-word allowlist passes through; everything else
             # is logged and dropped silently.
@@ -4377,7 +4377,7 @@ async def voice_handler(ws: WebSocket):
                                 "text": cancel_msg,
                             })
                         await ws.send_json({"type": "status", "state": "idle"})
-                        log.info(f"JARVIS: {cancel_msg}")
+                        log.info(f"VALET: {cancel_msg}")
                     except Exception as e:
                         log.warning(f"cancel-speech failed: {e}")
                     continue
@@ -4474,14 +4474,14 @@ async def voice_handler(ws: WebSocket):
                     else:
                         response_text = "Already in conversation mode, sir."
 
-                # ── WORK MODE: speech → claude -p → Haiku summary → JARVIS voice ──
+                # ── WORK MODE: speech → claude -p → Haiku summary → VALET voice ──
                 elif work_session.active:
                     if is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
                             user_text, anthropic_client, task_manager,
                             cached_projects, history,
-                            last_response=last_jarvis_response,
+                            last_response=last_valet_response,
                             session_summary=session_summary,
                         )
                     else:
@@ -4522,7 +4522,7 @@ async def voice_handler(ws: WebSocket):
                                     model="claude-haiku-4-5-20251001",
                                     max_tokens=100,
                                     system=(
-                                        f"You are JARVIS reporting to the user ({USER_NAME}). Summarize what happened in 1-2 sentences. "
+                                        f"You are VALET reporting to the user ({USER_NAME}). Summarize what happened in 1-2 sentences. "
                                         "Speak in first person — 'I built', 'I found', 'I set up'. "
                                         "You are talking TO THE USER, not to a coding tool. "
                                         "NEVER give instructions like 'go ahead and build' or 'set up the frontend' — those are NOT for the user. "
@@ -4541,7 +4541,7 @@ async def voice_handler(ws: WebSocket):
                 else:
                     action = detect_action_fast(user_text, ws=ws)
 
-                    # close_panel is handled silently before any TTS — JARVIS
+                    # close_panel is handled silently before any TTS — VALET
                     # just dismisses the panel without speaking.
                     if action and action["action"] == "close_panel":
                         try:
@@ -4682,7 +4682,7 @@ async def voice_handler(ws: WebSocket):
                             response_text = await generate_response(
                                 user_text, anthropic_client, task_manager,
                                 cached_projects, history,
-                                last_response=last_jarvis_response,
+                                last_response=last_valet_response,
                                 session_summary=session_summary,
                             )
 
@@ -4705,7 +4705,7 @@ async def voice_handler(ws: WebSocket):
                                         response_text = "Right away, sir."
 
                                 if embedded_action["action"] == "build":
-                                    # Build in background — JARVIS stays conversational
+                                    # Build in background — VALET stays conversational
                                     target = embedded_action["target"]
                                     name = _generate_project_name(target)
                                     path = str(Path.home() / "Desktop" / name)
@@ -4870,7 +4870,7 @@ async def voice_handler(ws: WebSocket):
                                         asyncio.create_task(create_apple_note(title.strip(), body.strip()))
                                         log.info(f"Apple Note created: {title.strip()}")
                                     else:
-                                        asyncio.create_task(create_apple_note("JARVIS Note", target))
+                                        asyncio.create_task(create_apple_note("VALET Note", target))
                                 elif embedded_action["action"] == "screen":
                                     asyncio.create_task(_lookup_and_report("screen", _do_screen_lookup, ws, history=history, voice_state=voice_state))
                                 elif embedded_action["action"] == "read_note":
@@ -4935,8 +4935,8 @@ async def voice_handler(ws: WebSocket):
                     else:
                         await ws.send_json({"type": "text", "text": response_text})
                         await ws.send_json({"type": "status", "state": "idle"})
-                    log.info(f"JARVIS: {response_text}")
-                    last_jarvis_response = response_text
+                    log.info(f"VALET: {response_text}")
+                    last_valet_response = response_text
                 else:
                     await ws.send_json({"type": "status", "state": "idle"})
 
@@ -5160,7 +5160,7 @@ async def api_google_disconnect():
 async def api_regenerate_bio():
     """Synthesize a fresh user-profile summary from accumulated notes.
 
-    JARVIS pulls bio_notes (voice-added) and high-importance facts, then asks
+    VALET pulls bio_notes (voice-added) and high-importance facts, then asks
     Haiku to write a concise third-person profile. The result is persisted as
     type='bio_summary', importance=10 — so it flows into the system prompt
     via the existing get_important_memories() injection on every request.
@@ -5184,7 +5184,7 @@ async def api_regenerate_bio():
     if not identity_lines and not note_lines:
         set_bio_summary("")
         return {"success": True, "summary": "", "source_count": 0,
-                "message": "No notes available yet — JARVIS needs more conversations to write a profile."}
+                "message": "No notes available yet — VALET needs more conversations to write a profile."}
 
     body_parts = []
     if identity_lines:
@@ -5198,7 +5198,7 @@ async def api_regenerate_bio():
             model="claude-haiku-4-5-20251001",
             max_tokens=400,
             system=(
-                "You are JARVIS writing a private dossier on the user you serve. "
+                "You are VALET writing a private dossier on the user you serve. "
                 "Synthesize a tight 3-5 sentence profile in third person, factual and concrete. "
                 "Cover: who they are, how they operate, what matters to them, useful context for serving them well. "
                 "Plain prose only — no bullet lists, no headers, no markdown. "
@@ -5223,7 +5223,7 @@ async def api_regenerate_bio():
 async def api_get_config():
     # Read .env fresh so renaming the assistant only needs a backend restart.
     _, env_dict = _read_env()
-    name = env_dict.get("ASSISTANT_NAME", "").strip() or "jarvis"
+    name = env_dict.get("ASSISTANT_NAME", "").strip() or "vee"
     return {"assistant_name": name}
 
 # ---------------------------------------------------------------------------
@@ -5232,7 +5232,7 @@ async def api_get_config():
 
 @app.post("/api/restart")
 async def api_restart():
-    """Restart the JARVIS server."""
+    """Restart the VALET server."""
     log.info("Restart requested — shutting down in 2 seconds")
     async def _restart():
         await asyncio.sleep(2)
@@ -5244,14 +5244,14 @@ async def api_restart():
 
 @app.post("/api/fix-self")
 async def api_fix_self():
-    """Enter work mode in the JARVIS repo — JARVIS can now fix himself."""
-    jarvis_dir = str(Path(__file__).parent)
+    """Enter work mode in the VALET repo — VALET can now fix himself."""
+    valet_dir = str(Path(__file__).parent)
     # The work_session is per-WebSocket, so we set a flag that the handler picks up
     # For now, also open Terminal so user can see
     script = (
         'tell application "Terminal"\n'
         '    activate\n'
-        f'    do script "cd {jarvis_dir} && claude --dangerously-skip-permissions"\n'
+        f'    do script "cd {valet_dir} && claude --dangerously-skip-permissions"\n'
         'end tell'
     )
     await asyncio.create_subprocess_exec(
@@ -5259,8 +5259,8 @@ async def api_fix_self():
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    log.info("Work mode: JARVIS repo opened for self-improvement")
-    return {"status": "work_mode_active", "path": jarvis_dir}
+    log.info("Work mode: VALET repo opened for self-improvement")
+    return {"status": "work_mode_active", "path": valet_dir}
 
 
 # ---------------------------------------------------------------------------
@@ -5288,7 +5288,7 @@ if __name__ == "__main__":
     import argparse
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="JARVIS Server")
+    parser = argparse.ArgumentParser(description="VALET Server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host")
     parser.add_argument("--port", type=int, default=8340, help="Bind port")
     parser.add_argument("--reload", action="store_true", help="Auto-reload on changes")

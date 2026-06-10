@@ -1,5 +1,5 @@
 /**
- * JARVIS Design Panel — design-partner conversation surface.
+ * VALET Design Panel — design-partner conversation surface.
  *
  * Backend sends events as { type: "design_event", event: {...} } over WebSocket;
  * main.ts routes them here via `handleEvent()`. Mirrors processPanel.ts in
@@ -72,7 +72,7 @@ interface AgentEntry {
   source?: string;
 }
 
-const POSITION_KEY = "jarvis.designPanel.pos";
+const POSITION_KEY = "valet.designPanel.pos";
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -113,7 +113,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
             <div class="dp-build-branch" data-dp-build-branch></div>
           </div>
         </div>
-        <div class="dp-build-hint">Watch the Claude pane in Cursor — JARVIS will wait here.</div>
+        <div class="dp-build-hint">Watch the Claude pane in Cursor — VALET will wait here.</div>
         <div class="dp-actions">
           <button class="dp-btn dp-btn-scrap"  data-dp-build-scrap>Scrap branch</button>
           <button class="dp-btn dp-btn-ship"   data-dp-build-merge>Merge to main</button>
@@ -539,7 +539,7 @@ export function createDesignPanel(rootId: string = "design-panel-root"): DesignP
     onTargetSelect: (h) => { targetSelectHandler = h; },
     onAgentSelect: (h) => { agentSelectHandler = h; },
     onNewProjectSubmit: (h) => { newProjectHandler = h; },
-    /** Called from main.ts when JARVIS returns to idle. Closes the panel
+    /** Called from main.ts when VALET returns to idle. Closes the panel
      * ONLY if no design conversation is active — i.e. state is IDLE.
      * BUILDING-mode panels stay visible so the user keeps seeing the
      * spinner + merge/scrap buttons; DESIGNING-mode panels stay because

@@ -1,7 +1,7 @@
 """
-JARVIS warm-context loader.
+VALET warm-context loader.
 
-When a project is opened (via new_cursor_project / open_project), JARVIS reads
+When a project is opened (via new_cursor_project / open_project), VALET reads
 a light slice of context — file tree, CLAUDE.md, README, recent git log, and
 1–3 entry points — into memory so the design-partner conversation in Phase 3
 can be grounded without exhaustive code-indexing.
@@ -29,7 +29,7 @@ from watchdog.observers import Observer
 
 from process_events import bus, emit_context_event
 
-log = logging.getLogger("jarvis.project_context")
+log = logging.getLogger("valet.project_context")
 
 # Loaded contexts, keyed by absolute project path.
 _contexts: dict[Path, "ProjectContext"] = {}

@@ -1,5 +1,5 @@
 """
-JARVIS Process Event Bus — broadcasts structured events about what JARVIS
+VALET Process Event Bus — broadcasts structured events about what VALET
 is actively doing to subscribed WebSocket clients.
 
 The frontend uses these events to render a live "process panel" that shows
@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-log = logging.getLogger("jarvis.process_events")
+log = logging.getLogger("valet.process_events")
 
 
 class EventType(str, Enum):

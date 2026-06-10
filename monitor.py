@@ -1,8 +1,8 @@
 """
-JARVIS Conversation Monitor
+VALET Conversation Monitor
 
-Watches the JARVIS server logs in real-time, analyzes conversation quality,
-and reports issues that need fixing. Run alongside the JARVIS server.
+Watches the VALET server logs in real-time, analyzes conversation quality,
+and reports issues that need fixing. Run alongside the VALET server.
 
 Usage: python monitor.py
 """
@@ -48,37 +48,37 @@ class ConversationMonitor:
         latest = self.messages[-1]
         prev = self.messages[-2] if len(self.messages) > 1 else None
 
-        # ── Check JARVIS responses ──
-        if latest["role"] == "jarvis":
+        # ── Check VALET responses ──
+        if latest["role"] == "valet":
             text = latest["text"]
 
             # Too long for voice?
             sentences = text.split(". ")
             if len(sentences) > 4:
-                self.flag(f"JARVIS response too long for voice ({len(sentences)} sentences): {text[:80]}...")
+                self.flag(f"VALET response too long for voice ({len(sentences)} sentences): {text[:80]}...")
 
-            # Generic AI patterns that JARVIS shouldn't use
+            # Generic AI patterns that VALET shouldn't use
             bad_patterns = [
-                ("How can I help", "JARVIS doesn't ask 'how can I help' — he just acts"),
-                ("Is there anything else", "JARVIS doesn't ask 'is there anything else'"),
-                ("I'd be happy to", "Too corporate — JARVIS says 'Will do, sir' or just does it"),
-                ("Absolutely!", "JARVIS doesn't use filler enthusiasm"),
-                ("Great question", "JARVIS never says 'great question'"),
-                ("I don't have access", "JARVIS should say 'I'm afraid I don't have that information, sir'"),
-                ("As an AI", "JARVIS never breaks character"),
-                ("I cannot", "JARVIS says 'I'm afraid that's beyond my current capabilities, sir'"),
+                ("How can I help", "VALET doesn't ask 'how can I help' — he just acts"),
+                ("Is there anything else", "VALET doesn't ask 'is there anything else'"),
+                ("I'd be happy to", "Too corporate — VALET says 'Will do, sir' or just does it"),
+                ("Absolutely!", "VALET doesn't use filler enthusiasm"),
+                ("Great question", "VALET never says 'great question'"),
+                ("I don't have access", "VALET should say 'I'm afraid I don't have that information, sir'"),
+                ("As an AI", "VALET never breaks character"),
+                ("I cannot", "VALET says 'I'm afraid that's beyond my current capabilities, sir'"),
             ]
             for pattern, issue in bad_patterns:
                 if pattern.lower() in text.lower():
                     self.flag(f"BAD PATTERN: '{pattern}' detected. {issue}")
 
             # Not using "sir" enough?
-            jarvis_msgs = [m for m in self.messages if m["role"] == "jarvis"]
-            if len(jarvis_msgs) >= 5:
-                recent = jarvis_msgs[-5:]
+            valet_msgs = [m for m in self.messages if m["role"] == "valet"]
+            if len(valet_msgs) >= 5:
+                recent = valet_msgs[-5:]
                 sir_count = sum(1 for m in recent if "sir" in m["text"].lower())
                 if sir_count < 1:
-                    self.flag("JARVIS hasn't said 'sir' in the last 5 responses — should use it more")
+                    self.flag("VALET hasn't said 'sir' in the last 5 responses — should use it more")
 
             # Forgot context?
             if prev and prev["role"] == "user":
@@ -86,11 +86,11 @@ class ConversationMonitor:
                 # Check if user referenced something from earlier
                 if any(w in user_text for w in ["earlier", "before", "you said", "we talked about", "remember"]):
                     if "I don't recall" in text or "I'm not sure what" in text:
-                        self.flag("JARVIS failed to recall earlier conversation — memory issue")
+                        self.flag("VALET failed to recall earlier conversation — memory issue")
 
             # Response references Samantha?
             if "samantha" in text.lower():
-                self.flag("JARVIS referenced 'Samantha' — should never mention her, he IS the assistant")
+                self.flag("VALET referenced 'Samantha' — should never mention her, he IS the assistant")
 
         # ── Check user messages for complaints ──
         if latest["role"] == "user":
@@ -103,7 +103,7 @@ class ConversationMonitor:
             ]
             for pattern in complaint_patterns:
                 if pattern in text:
-                    self.flag(f"USER COMPLAINT detected: '{pattern}' — review JARVIS's previous response")
+                    self.flag(f"USER COMPLAINT detected: '{pattern}' — review VALET's previous response")
 
     def flag(self, issue: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -131,7 +131,7 @@ class ConversationMonitor:
 def main():
     monitor = ConversationMonitor()
 
-    print("🔍 JARVIS Conversation Monitor")
+    print("🔍 VALET Conversation Monitor")
     print("   Watching server output for quality issues...")
     print("   Press Ctrl+C to stop\n")
 
@@ -148,12 +148,12 @@ def main():
                 print(f"👤 {text}")
                 monitor.add_message("user", text)
 
-            # Parse JARVIS responses
-            jarvis_match = re.search(r"JARVIS: (.+)$", line)
-            if jarvis_match:
-                text = jarvis_match.group(1)
+            # Parse VALET responses
+            valet_match = re.search(r"VALET: (.+)$", line)
+            if valet_match:
+                text = valet_match.group(1)
                 print(f"🤖 {text[:80]}{'...' if len(text) > 80 else ''}")
-                monitor.add_message("jarvis", text)
+                monitor.add_message("valet", text)
 
             # Parse errors
             if "error" in line.lower() or "Error" in line:

@@ -1,4 +1,4 @@
-"""Langfuse observability for JARVIS.
+"""Langfuse observability for VALET.
 
 Adds tracing to every Anthropic LLM call in the app via OpenTelemetry
 auto-instrumentation (the approach Langfuse recommends for the raw Anthropic
@@ -15,7 +15,7 @@ Design notes:
   are missing), setup logs once and the app runs exactly as before — tracing is
   simply off. Nothing here is allowed to break the voice loop.
 - **PII masking.** A conservative `_mask` redactor strips emails and long digit
-  runs from traced input/output before anything leaves the machine. JARVIS reads
+  runs from traced input/output before anything leaves the machine. VALET reads
   Mail/Notes/Calendar, so this matters.
 
 Call `setup_observability()` once at startup (before the first LLM call) and
@@ -28,7 +28,7 @@ import logging
 import os
 import re
 
-log = logging.getLogger("jarvis.observability")
+log = logging.getLogger("valet.observability")
 
 # Module-level state. `_client` is the Langfuse singleton once configured.
 _client = None
