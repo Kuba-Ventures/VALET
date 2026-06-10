@@ -43,6 +43,7 @@ from pydantic import BaseModel
 
 from process_events import (
     bus as process_bus,
+    Event as ProcessEvent,
     emit_step,
     emit_browser_action,
     emit_screenshot,
@@ -56,6 +57,7 @@ from process_events import (
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
 from work_mode import WorkSession, is_casual_question
+import observability
 from screen import get_active_windows, take_screenshot, describe_screen, format_windows_for_context
 from calendar_access import get_todays_events, get_upcoming_events, get_next_event, format_events_for_context, format_schedule_summary, refresh_cache as refresh_calendar_cache, create_event as calendar_create_event, delete_event as calendar_delete_event, get_events_for_date as calendar_events_for_date
 from mail_access import get_unread_count, get_unread_messages, get_recent_messages, search_mail, read_message, format_unread_summary, format_messages_for_context, format_messages_for_voice, create_draft as mail_create_draft
@@ -814,6 +816,7 @@ def apply_speech_corrections(text: str) -> str:
 # LLM Intent Classifier (replaces keyword-based action detection)
 # ---------------------------------------------------------------------------
 
+@observability.observe(name="classify-intent", capture_input=False, capture_output=True)
 async def classify_intent(text: str, client: anthropic.AsyncAnthropic) -> dict:
     """Classify every user message using Haiku LLM.
 
@@ -1506,6 +1509,22 @@ async def _execute_dispatch_to_agent(ws, agent_raw: str, task: str):
         await _speak(ws, f"Couldn't reach Cursor to dispatch, sir. {reason}.")
 
 
+def _ship_sent_line(verified: bool) -> str:
+    """Spoken confirmation after a paste-ship, honest about verification.
+
+    `verified` comes from paste_into_cursor_claude — True only when we
+    confirmed the integrated terminal actually held focus for the paste. When
+    we couldn't confirm, say so instead of the old false "Sent to Claude Code,
+    sir" that fired whenever osascript merely exited 0.
+    """
+    if verified:
+        return "Sent to Claude Code, sir."
+    return (
+        "Pasted, sir, but I couldn't confirm it reached the Claude pane. "
+        "Have a glance to be sure."
+    )
+
+
 def _resolve_ship_prompt(session) -> tuple[str, Optional[str]]:
     """Compose the final ship prompt + the agent it should dispatch to.
 
@@ -1621,7 +1640,7 @@ async def _execute_ship_design(ws):
         if result.get("success"):
             session.mark_building()
             await session.emit_state()
-            await _speak(ws, "Sent to Claude Code, sir.")
+            await _speak(ws, _ship_sent_line(result.get("verified", False)))
         else:
             reason = result.get("reason", "unknown")
             detail = result.get("detail", "")
@@ -1674,7 +1693,7 @@ async def _execute_ship_design(ws):
                 session, status="building",
                 final_prompt=final_prompt, ship_method="auto_paste",
             )
-            await _speak(ws, "Sent to Claude Code, sir.")
+            await _speak(ws, _ship_sent_line(result.get("verified", False)))
             return
 
         # Pre-flight or paste failed — fall through to file fallback with
@@ -1792,36 +1811,39 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
         await _speak(ws, "I lost the session, sir. Try again.")
         return True
 
-    # Auto-snapshot any in-flight work on the current branch so the user's
-    # changes are never lost AND assert_clean_tree() inside
-    # create_feature_branch never blocks them. Runtime log noise + scratch
-    # dirs are now .gitignored, so most ships will hit the no-op path.
-    snapshot_sha = None
+    # Self-mod safety loop: snapshot any in-flight work, cut a feature/<topic>
+    # branch, THEN paste the prompt so Claude Code builds on the branch. This is
+    # what makes the BUILDING panel's "Merge to main" / "Scrap branch" buttons
+    # and the "merge it" / "scrap it" voice commands mean something — you review
+    # the self-mod on its branch and fold it in or throw it away cleanly. The
+    # earlier surprise ("it started building a branch") was really the paste
+    # failing on top of the branch; now that the paste lands, the branch is the
+    # point. Auto-snapshot keeps create_feature_branch's clean-tree assert happy.
     try:
         snapshot_sha = self_mod.commit_wip_snapshot(session.topic)
     except Exception as e:
         log.error(f"commit_wip_snapshot failed: {e}")
-        await _speak(ws, f"Couldn't snapshot the dirty tree, sir: {str(e)[:160]}")
+        await _speak(ws, f"Couldn't snapshot the working tree, sir: {str(e)[:160]}")
         return True
     if snapshot_sha:
         log.info(f"_handle_self_mod_confirm: snapshotted dirty tree as {snapshot_sha[:8]}")
 
+    parent_branch = self_mod.current_branch()  # where 'scrap it' returns to
     try:
         branch, pre_sha = self_mod.create_feature_branch(session.topic)
     except RuntimeError as e:
-        await _speak(ws, f"Couldn't branch: {str(e)[:200]}")
+        await _speak(ws, f"Couldn't branch, sir: {str(e)[:200]}")
         return True
-
-    # Record branch info on the session so 'merge it' can find it later.
     session.feature_branch = branch
     session.pre_build_sha = pre_sha
+    session.parent_branch = parent_branch
+    log.info(
+        "_handle_self_mod_confirm: on branch %s (from %s, pre_sha=%s)",
+        branch, parent_branch, (pre_sha or "")[:8],
+    )
 
-    # Compose + dispatch. Branch is already created; now paste the prompt
-    # directly into the matching Cursor window so the user can see Claude
-    # Code pick it up live. Falls back to file-ship if the paste fails (so
-    # the prompt isn't lost — they can copy from .jarvis/inbox/ manually).
     final_prompt, dispatch_agent = _resolve_ship_prompt(session)
-    log.info("_handle_self_mod_confirm: composing ship, agent=%r", dispatch_agent)
+    log.info("_handle_self_mod_confirm: composing ship on %s, agent=%r", branch, dispatch_agent)
     from actions import paste_into_cursor_claude
     paste_result = await paste_into_cursor_claude(
         final_prompt,
@@ -1836,15 +1858,17 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
             session, status="building",
             final_prompt=final_prompt, ship_method="auto_paste-self-mod",
         )
+        sent = _ship_sent_line(paste_result.get("verified", False))
         await _speak(
             ws,
-            f"Branched to {branch}, sir, and sent to Claude Code. "
-            f"Say 'merge it' when you're ready to fold into main, "
-            f"or 'scrap it' to abandon the branch."
+            f"{sent} You're on a fresh branch — say 'merge it' to fold into "
+            f"main once it checks out, or 'scrap it' to abandon it."
         )
         return True
 
-    # Paste failed — fall back to file ship so the prompt isn't lost.
+    # Paste failed — fall back to file ship so the prompt isn't lost. The branch
+    # is already cut, so the user can paste the staged prompt manually and still
+    # use the merge/scrap loop.
     log.warning(
         "_handle_self_mod_confirm: paste failed (reason=%s), falling back to file ship",
         paste_result.get("reason"),
@@ -1867,9 +1891,8 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
     reason = paste_result.get("reason", "unknown")
     await _speak(
         ws,
-        f"Branched to {branch}, sir. Paste failed ({reason}) — prompt staged at {rel}. "
-        f"Watch claude work in Cursor; say 'merge it' when you're ready to fold into main, "
-        f"or 'scrap it' to abandon the branch."
+        f"Branched, sir, but I couldn't paste ({reason}) — prompt staged at {rel}. "
+        f"Copy it into the Claude pane; then 'merge it' or 'scrap it' as usual."
     )
     return True
 
@@ -1951,6 +1974,25 @@ async def _execute_scrap_design(ws):
         return
 
     if session.state == "BUILDING":
+        # Shipped self-mod → "Scrap branch" should abandon the feature branch
+        # (discard the build, return to where we branched from). Only do this
+        # when we're actually still on that branch; otherwise it already merged
+        # or was a file-ship, and the old keep-the-inbox guidance applies.
+        import self_mod
+        branch = getattr(session, "feature_branch", None)
+        parent = getattr(session, "parent_branch", None) or "main"
+        if branch and self_mod.current_branch() == branch:
+            res = self_mod.abandon_feature_branch(branch, return_to=parent)
+            if res["success"]:
+                design_partner.persist(session, status="scrapped",
+                                       final_prompt=session.draft.render_markdown())
+                session.scrap()
+                await session.emit_state()
+                design_partner.stop_for_ws(ws)
+                await _speak(ws, f"Scrapped, sir. {res['message']} Clean slate.")
+            else:
+                await _speak(ws, f"Couldn't scrap the branch, sir: {res['message'][:200]}")
+            return
         await _speak(ws, "That one already shipped, sir. The inbox file is yours to keep or delete.")
         return
 
@@ -2443,6 +2485,7 @@ def _extract_fetch_snippet(content) -> str:
     return ""
 
 
+@observability.observe(name="native-research", capture_input=False, capture_output=False)
 async def _execute_native_research(target: str, ws=None):
     """Native research path — Opus 4.7 with server-side web_search + web_fetch.
 
@@ -2898,6 +2941,7 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
 # LLM Response
 # ---------------------------------------------------------------------------
 
+@observability.observe(name="generate-response", capture_input=False, capture_output=True)
 async def generate_response(
     text: str,
     client: anthropic.AsyncAnthropic,
@@ -3245,6 +3289,9 @@ return windowList
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects
+    # Enable Langfuse tracing before any LLM call so every Anthropic request is
+    # captured. No-op (and never raises) if Langfuse isn't configured.
+    observability.setup_observability()
     if ANTHROPIC_API_KEY:
         # max_retries=1 (default is 2): on 429 we want to surface the error
         # quickly instead of waiting through two exponential-backoff retries
@@ -3274,6 +3321,9 @@ async def lifespan(application: FastAPI):
     log.info("JARVIS server starting")
 
     yield
+
+    # Flush any buffered traces so nothing is lost on shutdown.
+    observability.shutdown_observability()
 
 
 app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
@@ -3540,9 +3590,23 @@ _NEW_PROJECT_DESIGN_PATTERN = _action_re.compile(
 
 # Start-design intent — "let's design X" / "design a Y" / "spec X" / "plan a Z".
 # Captures the topic so we can spawn a session with it immediately.
+#
+# Lead-in group is deliberately generous: people open the design panel with all
+# sorts of polite preambles ("I'd like to…", "could we…", "time to…"). The verb
+# set is the design-intent core; "spec out"/"scope out"/etc. are listed before
+# their bare forms so the trailing "out" is consumed as part of the verb, not
+# captured into the topic.
 _START_DESIGN_PATTERN = _action_re.compile(
-    r'^\s*(?:let\'?s |let us |i (?:want to|wanna|wish to) |can we |please )?'
-    r'(?:design|spec|architect|plan|think through|prototype)\s+'
+    r'^\s*(?:'
+    r"let'?s |let us |let me |"
+    r"i'?d (?:like|love) to |i would (?:like|love) to |"
+    r'i (?:want to|wanna|wish to|need to) |'
+    r'(?:want to|wanna|need to) |'
+    r'can we |could we |shall we |should we |we should |'
+    r'how about (?:we )?|what if we |time to |please '
+    r')?'
+    r'(?:design|spec out|spec|architect|plan|think through|'
+    r'brainstorm|prototype|scope out|scope|flesh out|sketch out|sketch|map out)\s+'
     r'(?:a |an |the |some )?(?P<topic>[\w .,\'\-]+?)\s*\??\.?\s*$',
     _action_re.IGNORECASE,
 )
@@ -3562,6 +3626,22 @@ _DESIGN_OPTIN_PHRASES = (
     "plan a feature",
     "think about adding",
     "design before we build",
+    # More natural openers for the design panel. Topic-less by design — these
+    # trigger START_DESIGN with no target, and JARVIS asks for the topic next
+    # turn (the "what should this feature do?" prompt).
+    "design a feature",
+    "design a new feature",
+    "design something",
+    "design a new",
+    "spec out a feature",
+    "plan a new feature",
+    "work on a new feature",
+    "feature idea",
+    "i have a feature idea",
+    "let's spec",
+    "lets spec",
+    "let's brainstorm",
+    "lets brainstorm",
 )
 
 # Dictation-mode opt-in phrases. Substring match, case-insensitive.
@@ -3793,11 +3873,36 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if ws is not None:
         import design_partner
         if design_partner.get_for_ws(ws) is not None:
-            if t in _SHIP_DESIGN_PHRASES or any(t.startswith(p + " ") for p in _SHIP_DESIGN_PHRASES):
+            # Strip conversational filler so "please ship now" / "sure ship it
+            # please" match the same as a bare "ship it". Without this, leading
+            # words ("please", "sure", "okay") and trailing politeness
+            # ("please", "for me") fell through to the LLM and the ship never
+            # fired — the user said "ship" several times before it took.
+            ts = t
+            for _suf in (" please", " for me", " thanks", " thank you", " now please"):
+                if ts.endswith(_suf):
+                    ts = ts[: -len(_suf)].strip()
+            _changed = True
+            while _changed:
+                _changed = False
+                for _pre in (
+                    "please ", "sure ", "ok ", "okay ", "yeah ", "yes ", "yep ",
+                    "alright ", "all right ", "right ", "now ", "can you ",
+                    "could you ", "would you ", "go ahead and ", "go ahead ",
+                    "let's ", "lets ", "just ",
+                ):
+                    if ts.startswith(_pre):
+                        ts = ts[len(_pre):].strip()
+                        _changed = True
+
+            def _phrase_hit(phrases) -> bool:
+                return ts in phrases or any(ts.startswith(p + " ") for p in phrases)
+
+            if _phrase_hit(_SHIP_DESIGN_PHRASES):
                 return {"action": "ship_design"}
-            if t in _SCRAP_DESIGN_PHRASES or any(t.startswith(p + " ") for p in _SCRAP_DESIGN_PHRASES):
+            if _phrase_hit(_SCRAP_DESIGN_PHRASES):
                 return {"action": "scrap_design"}
-            if t in _SHOW_DRAFT_PHRASES or any(t.startswith(p + " ") for p in _SHOW_DRAFT_PHRASES):
+            if _phrase_hit(_SHOW_DRAFT_PHRASES):
                 return {"action": "show_draft"}
 
     # Close / dismiss the process panel. Fast-path so JARVIS responds
@@ -3860,19 +3965,43 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         "this weekend", "the next few days", "the rest of today", "the rest of the day",
         "the rest of the week", "the rest of the weekend",
     }
+    # Self-referential location phrases ("my hometown", "here", "outside") all
+    # mean "the user's hometown" — empty target so the HOMETOWN_CITY fallback
+    # fires. WITHOUT this, "weather for my hometown" captured "my hometown",
+    # whose geocode degradation stripped to the bare token "my" and matched an
+    # obscure real place named "My" — JARVIS then said "The forecast for My,
+    # sir" and mounted a card for the wrong spot.
+    _SELF_LOC = {
+        "my hometown", "my home town", "my home", "my house", "my area",
+        "my town", "my city", "my place", "my location", "my region",
+        "my neighborhood", "my neighbourhood", "my spot", "home", "here",
+        "around here", "round here", "outside", "out", "out there",
+        "where i am", "where i live", "this area", "the area",
+    }
+
+    def _wx_target(cand: str) -> str:
+        """Empty (→ hometown) for time-scope / self-referential phrases."""
+        c = (cand or "").strip()
+        low = c.lower()
+        if not c or low in _TIME_SCOPE or low in _SELF_LOC:
+            return ""
+        # "my hometown today", "here right now" — leading possessive/self
+        # reference with a trailing time scope still means the hometown.
+        if low.startswith(("my ", "here ", "outside ", "around here ")):
+            return ""
+        return c
+
     wm = _action_re.match(r".*\bweather\s+(?:in|for|at)\s+(.+?)\s*\.?\s*$", t)
     if wm:
-        cand = wm.group(1).strip()
         # A weather query for sure; the token after for/in/at is either a place
-        # or just a time scope ("for tomorrow"). Time scope → hometown.
+        # or just a time scope / self-reference ("for tomorrow", "for my town").
         return {"action": "check_weather",
-                "target": "" if (not cand or cand in _TIME_SCOPE) else cand,
+                "target": _wx_target(wm.group(1)),
                 "when": _weather_when(t)}
     fm = _action_re.match(r".*\bforecast\s+(?:for|in|at)\s+(.+?)\s*\.?\s*$", t)
     if fm:
-        cand = fm.group(1).strip()
         return {"action": "check_weather",
-                "target": "" if (not cand or cand in _TIME_SCOPE) else cand,
+                "target": _wx_target(fm.group(1)),
                 "when": _weather_when(t)}
     if any(p in t for p in [
         "what's the weather", "whats the weather", "weather today", "weather right now",
@@ -4120,6 +4249,19 @@ async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
     import uuid as _uuid
 
     target = (location or "").strip()
+    # Self-referential phrases ("my hometown", "here", "outside") mean the
+    # user's hometown, not a place to geocode. The fast-path normalizes these,
+    # but the LLM embedded-action path passes the raw tag target through, so
+    # guard here too — otherwise geocode strips "my hometown" → "my" and hits
+    # an obscure real place named "My".
+    _self_ref = {
+        "my hometown", "my home town", "my home", "my house", "my area",
+        "my town", "my city", "my place", "my location", "my region",
+        "my neighborhood", "my neighbourhood", "home", "here", "around here",
+        "outside", "where i am", "where i live", "this area", "the area",
+    }
+    if target.lower() in _self_ref or target.lower().startswith("my "):
+        target = ""
     if not target:
         # Fallback chain: HOMETOWN_CITY → ADDRESS → ask
         _, env = _read_env()
@@ -4148,20 +4290,23 @@ async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
         "location": geo["name"],
     }
 
-    # Floating card on the frontend. result.weather is a new event type; the
-    # processPanel card builder mounts it via the existing floatingLayer.
+    # Floating card on the frontend. result.weather is a ProcessEvent type the
+    # processPanel card builder mounts via the existing floatingLayer. It MUST
+    # go through the bus so it's wrapped in a {"type":"process_event",...} frame
+    # — main.ts only routes process_event/design_event/etc. and silently drops a
+    # raw top-level {"type":"result.weather"} frame, which is why the panel
+    # never appeared.
     try:
-        await ws.send_json({
-            "type": "result.weather",
-            "task_id": "weather",
-            "id": _uuid.uuid4().hex[:10],
-            "status": "done",
-            "timestamp": time.time(),
-            "title": f"Weather: {geo['name']}",
-            "payload": card,
-        })
+        await process_bus.emit(ProcessEvent(
+            type="result.weather",
+            task_id="weather",
+            id=_uuid.uuid4().hex[:10],
+            status="done",
+            title=f"Weather: {geo['name']}",
+            payload=card,
+        ))
     except Exception as e:
-        log.debug(f"result.weather send failed: {e}")
+        log.debug(f"result.weather emit failed: {e}")
 
     # Render-only: the panel carries the forecast, so speak only a brief
     # acknowledgment. A severe alert is surfaced aloud anyway — safety detail
@@ -4343,6 +4488,13 @@ async def voice_handler(ws: WebSocket):
     await ws.accept()
     task_manager.register_websocket(ws)
     await process_bus.subscribe(ws)
+    # Per-connection Langfuse scope: groups every trace from this conversation
+    # under one session_id (and attributes them to the user) in the Sessions
+    # view. No-op when tracing is disabled. Closed in the finally below.
+    conversation_id = uuid.uuid4().hex
+    _obs_scope = observability.connection_scope(
+        session_id=conversation_id, user_id=USER_NAME, tags=["voice"]
+    ).enter()
     history: list[dict] = []
     work_session = WorkSession()
     planner = TaskPlanner()
@@ -5189,6 +5341,7 @@ async def voice_handler(ws: WebSocket):
     finally:
         task_manager.unregister_websocket(ws)
         await process_bus.unsubscribe(ws)
+        _obs_scope.close()
 
 
 # ---------------------------------------------------------------------------

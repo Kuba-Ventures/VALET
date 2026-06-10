@@ -13,6 +13,8 @@ import logging
 import tempfile
 from pathlib import Path
 
+import observability
+
 log = logging.getLogger("jarvis.screen")
 
 
@@ -151,6 +153,7 @@ async def take_screenshot(display_only: bool = True) -> str | None:
             pass
 
 
+@observability.observe(name="screen-describe", capture_input=False, capture_output=True)
 async def describe_screen(anthropic_client) -> str:
     """Describe what's on the user's screen.
 
