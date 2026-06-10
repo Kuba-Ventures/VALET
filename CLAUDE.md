@@ -131,3 +131,35 @@ frontend fetches `/screenshots/<task_id>/<file>.png`.
   message, or (c) `processPanel.close()` called by another module.
 - Draggable via the top handle; position persists in localStorage.
 - Becomes a full-width bottom overlay below 600px viewport.
+
+## Merge policy
+
+This repo runs a supervised PR factory. A PR auto-merges only when the factory review
+returns APPROVE-LOWRISK against this policy *and* auto-merge has been switched on (repo
+variable `FACTORY_AUTOMERGE`, currently unset = off, per the Phase 3 soak). Until then
+every PR is reviewed and labeled, and a human does the merge.
+
+**Low-risk surfaces (eligible for auto-merge):**
+- `frontend/src/**/*.css` and `frontend/src/processPanel.css` — styling / presentation only.
+- `docs/**` — documentation.
+- `README.md`, `CONTRIBUTING.md` — top-level docs.
+- Purely presentational frontend TypeScript (e.g. `frontend/src/orb.ts`,
+  `frontend/src/processPanel.ts`) **only when** the change is confined to visuals,
+  layout, or animation and does NOT touch WebSocket message handling, voice/audio
+  capture, the frontend state machine (`frontend/src/main.ts`, `frontend/src/voice.ts`),
+  or any data sent to the backend. If in doubt about a `.ts` change, it escalates.
+
+**Always escalate to a human (never auto-merge), regardless of how small the change:**
+- Anything touching trust, money, auth, sessions, secrets, billing, or pricing —
+  including `google_auth.py`, `google_credentials.json`, `.env*`, and the API-key paths.
+- All backend Python (`server.py`, `actions.py`, `self_mod.py`, `*_access.py`,
+  `memory.py`, `planner.py`, `browser.py`, `work_mode.py`, etc.) — runtime behavior,
+  system control, and Calendar/Mail/Notes/Terminal/Claude-Code integrations live here.
+- Database schema, migrations, or data deletion/retention (SQLite stores, `data/`).
+- Access control / permissions.
+- CI, workflows, build config, or dependency changes (`.github/**`, `requirements*.txt`,
+  `frontend/package.json`, `frontend/package-lock.json`).
+- Anything outside the low-risk surfaces above.
+
+The reviewer (`.claude/agents/pr-reviewer.md`) is the source of truth for how this policy
+is enforced. Tighten this block whenever something slips through.
