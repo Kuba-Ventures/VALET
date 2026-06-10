@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authorizeLicense } from "@/lib/proxy/auth";
-import { recordUsage } from "@/lib/proxy/usage";
+import { recordUsage, enforceAllowance } from "@/lib/proxy/usage";
 import { traceProxyCall } from "@/lib/proxy/langfuse";
 import { estimateTtsCost } from "@/lib/proxy/pricing";
+import { captureProxyError } from "@/lib/proxy/sentry";
 
 /**
  * Thin passthrough proxy for Fish Audio TTS. The app sends { text, format?,
@@ -16,6 +17,10 @@ const DEFAULT_VOICE_ID = "612b878b113047d9a770c069c8b4fdfe";
 export async function handleTtsProxy(req: NextRequest): Promise<Response> {
   const auth = await authorizeLicense(req);
   if (!auth.ok) return auth.response;
+
+  // Fair-use ceiling (warn/throttle/block per FAIR_USE_MODE).
+  const overLimit = await enforceAllowance(auth.licenseKey, "tts");
+  if (overLimit) return overLimit;
 
   const apiKey = process.env.FISH_AUDIO_KEY ?? process.env.FISH_API_KEY;
   if (!apiKey) {
@@ -55,6 +60,7 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
       body: JSON.stringify({ text, reference_id: referenceId, format }),
     });
   } catch (err) {
+    void captureProxyError("tts", err);
     const message = err instanceof Error ? err.message : "Upstream unreachable.";
     return NextResponse.json({ error: message }, { status: 502 });
   }

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authorizeLicense } from "@/lib/proxy/auth";
-import { recordUsage } from "@/lib/proxy/usage";
+import { recordUsage, enforceAllowance } from "@/lib/proxy/usage";
 import { traceProxyCall } from "@/lib/proxy/langfuse";
 import { estimateModelCost, type TokenUsage } from "@/lib/proxy/pricing";
+import { captureProxyError } from "@/lib/proxy/sentry";
 
 /**
  * Thin passthrough proxy for the Anthropic Messages API. The desktop app speaks
@@ -83,6 +84,10 @@ export async function handleAnthropicProxy(
   const auth = await authorizeLicense(req);
   if (!auth.ok) return auth.response;
 
+  // Fair-use ceiling (warn/throttle/block per FAIR_USE_MODE).
+  const overLimit = await enforceAllowance(auth.licenseKey, actionType);
+  if (overLimit) return overLimit;
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
@@ -137,6 +142,7 @@ export async function handleAnthropicProxy(
       body: JSON.stringify(body),
     });
   } catch (err) {
+    void captureProxyError(actionType, err);
     const message = err instanceof Error ? err.message : "Upstream unreachable.";
     return NextResponse.json({ error: message }, { status: 502 });
   }
