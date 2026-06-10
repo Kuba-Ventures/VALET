@@ -8,7 +8,7 @@ export const runtime = "nodejs";
  * URL. The browser then navigates to Stripe-hosted checkout.
  *
  * Plans:
- *  - "pro"   -> STRIPE_PRICE_ID         ($20/mo)
+ *  - "pro"   -> STRIPE_PRICE_ID_PRO      ($20/mo)
  *  - "ultra" -> STRIPE_PRICE_ID_ULTRA   ($50/mo)
  * The free tier never reaches this route (no Stripe subscription).
  *
@@ -18,7 +18,7 @@ export const runtime = "nodejs";
  *    set explicitly to collect the card during the trial)
  */
 const PRICE_ENV: Record<string, string> = {
-  pro: "STRIPE_PRICE_ID",
+  pro: "STRIPE_PRICE_ID_PRO",
   ultra: "STRIPE_PRICE_ID_ULTRA",
 };
 
