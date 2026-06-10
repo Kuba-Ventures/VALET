@@ -1,0 +1,53 @@
+/*
+ * Centralized design tokens for [PRODUCT_NAME].
+ * This is the single source of truth for the visual system. A future style
+ * guide swap replaces values here only. Do not hardcode colors, radii, or the
+ * type scale anywhere else in the app.
+ *
+ * Direction: deep near-black command surface, glassy translucent panels,
+ * restrained cyan / electric-blue accent glow. Mono for labels, sans for body.
+ */
+
+:root {
+  /* Surfaces */
+  --color-bg: #05070b;
+  --color-bg-elevated: #0a0e15;
+  --color-panel: rgba(18, 24, 34, 0.55);
+  --color-panel-border: rgba(120, 170, 220, 0.14);
+
+  /* Text */
+  --color-ink: #e8eef6;
+  --color-ink-dim: #9fb0c4;
+  --color-ink-faint: #5d6b7e;
+
+  /* Accent (cyan / electric blue) */
+  --color-accent: #38e1ff;
+  --color-accent-soft: rgba(56, 225, 255, 0.35);
+  --color-accent-deep: #1488c8;
+
+  /* Typography */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Menlo", monospace;
+
+  /* Type scale */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.5rem;
+  --text-3xl: 3.75rem;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+
+  /* Spacing */
+  --space-gutter: 1.5rem;
+  --space-section: 7rem;
+
+  /* Layout */
+  --width-shell: 1120px;
+}
