@@ -139,8 +139,26 @@ PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://jarvis-y.vercel.app").rstr
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # dev fallback only
 FISH_API_KEY = os.getenv("FISH_API_KEY", "")  # dev fallback only
-FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # VALET voice
+FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # VALET voice (British male)
 FISH_API_URL = "https://api.fish.audio/v1/tts"  # dev fallback only
+
+# Stage E: two selectable British voices. The persona (VALET, the butler) is
+# unchanged — only the Fish TTS model swaps. The active voice's reference_id is
+# sent on every TTS call (the proxy forwards it). VALET_VOICE = "male" | "female".
+VALET_VOICE_MALE_ID = os.getenv("VALET_VOICE_MALE_ID", "") or FISH_VOICE_ID
+VALET_VOICE_FEMALE_ID = os.getenv("VALET_VOICE_FEMALE_ID", "")  # set to a British female Fish reference_id
+
+
+def _active_voice_id() -> str:
+    """The currently selected voice's Fish reference_id, read live so a Settings
+    change takes effect without a restart. Falls back to male if female is
+    selected but no female id is configured yet."""
+    choice = (os.getenv("VALET_VOICE", "male") or "male").strip().lower()
+    male = (os.getenv("VALET_VOICE_MALE_ID", "").strip() or FISH_VOICE_ID)
+    female = os.getenv("VALET_VOICE_FEMALE_ID", "").strip()
+    if choice == "female" and female:
+        return female
+    return male
 USER_NAME = os.getenv("USER_NAME", "sir")
 DATE_OF_BIRTH = os.getenv("DATE_OF_BIRTH", "")
 ADDRESS = os.getenv("ADDRESS", "")
@@ -2456,14 +2474,15 @@ _last_greeting_time: float = 0
 async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio. Routes through the proxy's TTS endpoint when
     licensed (Fish Audio upstream); falls back to direct Fish in dev only."""
+    voice_id = _active_voice_id()
     if LICENSE_KEY:
         url = f"{PROXY_BASE_URL}/api/proxy/tts"
         headers = {"X-License-Key": LICENSE_KEY, "Content-Type": "application/json"}
-        payload = {"text": text, "format": "mp3"}
+        payload = {"text": text, "reference_id": voice_id, "format": "mp3"}
     elif FISH_API_KEY:
         url = FISH_API_URL
         headers = {"Authorization": f"Bearer {FISH_API_KEY}", "Content-Type": "application/json"}
-        payload = {"text": text, "reference_id": FISH_VOICE_ID, "format": "mp3"}
+        payload = {"text": text, "reference_id": voice_id, "format": "mp3"}
     else:
         log.warning("No LICENSE_KEY (or dev FISH_API_KEY) set, skipping TTS")
         return None
@@ -5080,7 +5099,7 @@ class PreferencesUpdate(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     # The app holds NO vendor secrets — only its license key and the proxy URL.
-    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
+    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "VALET_VOICE", "VALET_VOICE_MALE_ID", "VALET_VOICE_FEMALE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
@@ -5275,7 +5294,12 @@ async def api_get_config():
     # Read .env fresh so renaming the assistant only needs a backend restart.
     _, env_dict = _read_env()
     name = env_dict.get("ASSISTANT_NAME", "").strip() or "vee"
-    return {"assistant_name": name}
+    voice = (env_dict.get("VALET_VOICE", "").strip().lower() or "male")
+    return {
+        "assistant_name": name,
+        "voice": "female" if voice == "female" else "male",
+        "voice_female_available": bool(env_dict.get("VALET_VOICE_FEMALE_ID", "").strip()),
+    }
 
 # ---------------------------------------------------------------------------
 # Safety: global kill switch (Stage D)
