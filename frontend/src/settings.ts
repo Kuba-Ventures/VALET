@@ -22,8 +22,9 @@ interface StatusResponse {
   server_port: number;
   uptime_seconds: number;
   env_keys_set: {
-    anthropic: boolean;
-    fish_audio: boolean;
+    license: boolean;
+    proxy_base_url: string;
+    license_status: string;
     fish_voice_id: boolean;
     user_name: string;
   };
@@ -48,7 +49,7 @@ interface PreferencesResponse {
 let panelEl: HTMLElement | null = null;
 let isOpen = false;
 let isFirstTimeSetup = false;
-let setupStep = 0; // 0=anthropic, 1=fish, 2=name, 3=done
+let setupStep = 0; // 0=license, 1=test, 2=name, 3=done
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -97,30 +98,28 @@ function buildPanelHTML(): string {
         <!-- ─── COMPUTER SETTINGS TAB ───────────────────────────────── -->
         <div class="settings-tab-content" data-tab="computer" id="tab-content-computer">
 
-        <!-- API Keys -->
+        <!-- License -->
         <section class="settings-section" id="section-api-keys">
-          <h3>API Keys</h3>
+          <h3>License</h3>
 
           <div class="settings-field">
-            <label>Anthropic API Key</label>
+            <label>License Key</label>
             <div class="settings-input-row">
-              <input type="password" id="input-anthropic-key" placeholder="sk-ant-..." />
-              <button class="settings-btn" id="btn-test-anthropic">Test</button>
-              <span class="status-dot" id="status-anthropic"></span>
+              <input type="password" id="input-license-key" placeholder="PRODUCT-XXXX-XXXX-XXXX-XXXX" />
+              <button class="settings-btn" id="btn-test-license">Test</button>
+              <span class="status-dot" id="status-license"></span>
             </div>
           </div>
 
           <div class="settings-field">
-            <label>Fish Audio API Key</label>
+            <label>Proxy URL</label>
             <div class="settings-input-row">
-              <input type="password" id="input-fish-key" placeholder="Fish Audio key..." />
-              <button class="settings-btn" id="btn-test-fish">Test</button>
-              <span class="status-dot" id="status-fish"></span>
+              <input type="text" id="input-proxy-url" placeholder="https://jarvis-y.vercel.app" />
             </div>
           </div>
 
           <div class="settings-field">
-            <label>Fish Voice ID</label>
+            <label>Voice ID</label>
             <div class="settings-input-row">
               <input type="text" id="input-fish-voice-id" placeholder="612b878b113047d9a770c069c8b4fdfe" />
               <button class="settings-btn" id="btn-save-voice-id">Save</button>
@@ -128,7 +127,7 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-actions">
-            <button class="settings-btn primary" id="btn-save-keys">Save Keys</button>
+            <button class="settings-btn primary" id="btn-save-keys">Save</button>
           </div>
         </section>
 
@@ -295,9 +294,8 @@ async function loadStatus() {
     const serverDetail = document.getElementById("status-server-detail");
     if (serverDetail) serverDetail.textContent = `port ${status.server_port} | up ${formatUptime(status.uptime_seconds)}`;
 
-    // API key status dots
-    setDotStatus("status-anthropic", status.env_keys_set.anthropic ? "green" : "red");
-    setDotStatus("status-fish", status.env_keys_set.fish_audio ? "green" : "red");
+    // License status dot
+    setDotStatus("status-license", status.env_keys_set.license ? "green" : "red");
 
     // System info
     const memEl = document.getElementById("sysinfo-memory");
@@ -413,14 +411,14 @@ function wireEvents() {
 
   // Save keys
   document.getElementById("btn-save-keys")?.addEventListener("click", async () => {
-    const anthropicKey = (document.getElementById("input-anthropic-key") as HTMLInputElement).value.trim();
-    const fishKey = (document.getElementById("input-fish-key") as HTMLInputElement).value.trim();
+    const licenseKey = (document.getElementById("input-license-key") as HTMLInputElement).value.trim();
+    const proxyUrl = (document.getElementById("input-proxy-url") as HTMLInputElement).value.trim();
 
-    if (anthropicKey) {
-      await apiPost("/api/settings/keys", { key_name: "ANTHROPIC_API_KEY", key_value: anthropicKey });
+    if (licenseKey) {
+      await apiPost("/api/settings/keys", { key_name: "LICENSE_KEY", key_value: licenseKey });
     }
-    if (fishKey) {
-      await apiPost("/api/settings/keys", { key_name: "FISH_API_KEY", key_value: fishKey });
+    if (proxyUrl) {
+      await apiPost("/api/settings/keys", { key_name: "PROXY_BASE_URL", key_value: proxyUrl });
     }
     await loadStatus();
   });
@@ -433,27 +431,15 @@ function wireEvents() {
     }
   });
 
-  // Test Anthropic
-  document.getElementById("btn-test-anthropic")?.addEventListener("click", async () => {
-    setDotStatus("status-anthropic", "yellow");
-    const key = (document.getElementById("input-anthropic-key") as HTMLInputElement).value.trim();
+  // Test License (validates against the proxy)
+  document.getElementById("btn-test-license")?.addEventListener("click", async () => {
+    setDotStatus("status-license", "yellow");
+    const key = (document.getElementById("input-license-key") as HTMLInputElement).value.trim();
     try {
-      const result = await apiPost<{ valid: boolean; error?: string }>("/api/settings/test-anthropic", { key_value: key || undefined });
-      setDotStatus("status-anthropic", result.valid ? "green" : "red");
+      const result = await apiPost<{ valid: boolean; status?: string; error?: string }>("/api/settings/test-license", { key_value: key || undefined });
+      setDotStatus("status-license", result.valid ? "green" : "red");
     } catch {
-      setDotStatus("status-anthropic", "red");
-    }
-  });
-
-  // Test Fish
-  document.getElementById("btn-test-fish")?.addEventListener("click", async () => {
-    setDotStatus("status-fish", "yellow");
-    const key = (document.getElementById("input-fish-key") as HTMLInputElement).value.trim();
-    try {
-      const result = await apiPost<{ valid: boolean; error?: string }>("/api/settings/test-fish", { key_value: key || undefined });
-      setDotStatus("status-fish", result.valid ? "green" : "red");
-    } catch {
-      setDotStatus("status-fish", "red");
+      setDotStatus("status-license", "red");
     }
   });
 
@@ -624,7 +610,7 @@ export async function openSettings() {
   await loadPreferences();
 
   // Check for first-time setup
-  if (status && !status.env_keys_set.anthropic) {
+  if (status && !status.env_keys_set.license) {
     enterSetupMode();
   }
 }
@@ -648,7 +634,7 @@ export function isSettingsOpen(): boolean {
 export async function checkFirstTimeSetup(): Promise<boolean> {
   try {
     const status = await apiGet<StatusResponse>("/api/settings/status");
-    if (!status.env_keys_set.anthropic) {
+    if (!status.env_keys_set.license) {
       openSettings();
       return true;
     }
