@@ -22,7 +22,7 @@ from typing import Optional
 import actions
 from action_executor import ActionExecutor, ActionResult, Capability
 
-log = logging.getLogger("jarvis.executor")
+log = logging.getLogger("valet.executor")
 
 # Cap automatic file reads so a stray "read this" on a huge file can't blow up
 # the context or memory. Larger reads should chunk (a later concern).

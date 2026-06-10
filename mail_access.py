@@ -22,7 +22,7 @@ from datetime import datetime
 
 from google_auth import gmail_service, get_connected_email
 
-log = logging.getLogger("jarvis.mail")
+log = logging.getLogger("valet.mail")
 
 
 def _header(headers: list[dict], name: str) -> str:
@@ -233,7 +233,7 @@ async def create_draft(to: str, subject: str, body: str, cc: str = "", bcc: str 
     """Create a Gmail draft. Returns the draft object or None on failure.
 
     The draft lives in your Drafts folder until you click Send yourself —
-    JARVIS never sends mail automatically.
+    VALET never sends mail automatically.
     """
     return await asyncio.to_thread(_create_draft_blocking, to, subject, body, cc, bcc)
 

@@ -1,5 +1,5 @@
 """
-Feedback loop integration test for JARVIS.
+Feedback loop integration test for VALET.
 
 Tests the QA verification -> auto-retry -> success tracking pipeline
 using mocked Claude Code execution to guarantee deterministic behavior.

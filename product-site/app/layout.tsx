@@ -9,7 +9,7 @@ import "./globals.css";
 const GTM_ID = process.env.NEXT_PUBLIC_GTM_ID || "GTM-PV2FK8J3";
 
 export const metadata: Metadata = {
-  title: "[JARVIS] — talk to your computer",
+  title: "VALET — talk to your computer",
   description:
     "A voice-first assistant you talk to. It acts across your apps, stays fast for simple things and goes deep for hard ones. Everything included, no API key needed.",
 };

@@ -2,7 +2,7 @@ const STEPS = [
   {
     n: "1",
     title: "Install and sign in",
-    body: "Download [JARVIS], drop in your license key, and grant the permissions it needs to act on your machine.",
+    body: "Download VALET, drop in your license key, and grant the permissions it needs to act on your machine.",
   },
   {
     n: "2",

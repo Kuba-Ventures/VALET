@@ -19,7 +19,7 @@ from typing import Optional
 from pydantic import BaseModel
 from fastapi import WebSocket
 
-log = logging.getLogger("jarvis.tasks")
+log = logging.getLogger("valet.tasks")
 
 
 @dataclass
@@ -124,7 +124,7 @@ class ClaudeTaskManager:
         # Take first 3-4 meaningful words
         skip = {"a", "the", "an", "me", "build", "create", "make", "for", "with", "and", "to", "of"}
         meaningful = [w for w in words if w not in skip][:4]
-        name = "-".join(meaningful) if meaningful else "jarvis-project"
+        name = "-".join(meaningful) if meaningful else "valet-project"
         return name
 
     async def _run_task(self, task: ClaudeTask):
@@ -142,14 +142,14 @@ class ClaudeTaskManager:
             task.working_dir = work_dir
 
         # Write the prompt to a temp file so we can pipe it to claude
-        prompt_file = Path(work_dir) / ".jarvis_prompt.md"
+        prompt_file = Path(work_dir) / ".valet_prompt.md"
         prompt_file.write_text(task.prompt)
 
         # Open Terminal.app with claude running in the project directory
         applescript = f'''
         tell application "Terminal"
             activate
-            set newTab to do script "cd {work_dir} && cat .jarvis_prompt.md | claude -p --dangerously-skip-permissions | tee .jarvis_output.txt; echo '\\n--- JARVIS TASK COMPLETE ---'"
+            set newTab to do script "cd {work_dir} && cat .valet_prompt.md | claude -p --dangerously-skip-permissions | tee .valet_output.txt; echo '\\n--- VALET TASK COMPLETE ---'"
         end tell
         '''
 
@@ -162,7 +162,7 @@ class ClaudeTaskManager:
         task.pid = process.pid
 
         # Monitor the output file for completion
-        output_file = Path(work_dir) / ".jarvis_output.txt"
+        output_file = Path(work_dir) / ".valet_output.txt"
         start = time.time()
         timeout = 600  # 10 minutes
 
@@ -170,8 +170,8 @@ class ClaudeTaskManager:
             await asyncio.sleep(5)
             if output_file.exists():
                 content = output_file.read_text()
-                if "--- JARVIS TASK COMPLETE ---" in content or len(content) > 100:
-                    task.result = content.replace("--- JARVIS TASK COMPLETE ---", "").strip()
+                if "--- VALET TASK COMPLETE ---" in content or len(content) > 100:
+                    task.result = content.replace("--- VALET TASK COMPLETE ---", "").strip()
                     task.status = "completed"
                     break
         else:

@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from google_auth import calendar_service
 
-log = logging.getLogger("jarvis.calendar")
+log = logging.getLogger("valet.calendar")
 
 # Cache so back-to-back queries don't hammer the API.
 _cache: dict[str, list[dict]] = {"today": [], "upcoming": []}

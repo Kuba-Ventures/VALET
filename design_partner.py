@@ -1,5 +1,5 @@
 """
-JARVIS Design Partner — conversational pre-flight for Claude Code dispatch.
+VALET Design Partner — conversational pre-flight for Claude Code dispatch.
 
 The user talks out loud about a feature they want to build. Opus shapes what
 they're describing into a prompt clear enough to hand to a `claude` subprocess
@@ -14,7 +14,7 @@ patch to the running draft and emits design.* events directly to the originating
 WebSocket (Design Panel subscribes; Process Panel ignores).
 
 History is a SNAPSHOT of voice history at session start — see plan.md, the
-"three-Opus-loops" decision — so JARVIS chit-chat doesn't bleed into design
+"three-Opus-loops" decision — so VALET chit-chat doesn't bleed into design
 calls. The design session keeps its own message log from there.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-log = logging.getLogger("jarvis.design_partner")
+log = logging.getLogger("valet.design_partner")
 
 SessionState = Literal["IDLE", "DESIGNING", "BUILDING"]
 
@@ -38,7 +38,7 @@ SessionState = Literal["IDLE", "DESIGNING", "BUILDING"]
 # approved, edit deliberately).
 # ---------------------------------------------------------------------------
 
-_DESIGN_SYSTEM_PROMPT = """You are the design partner inside JARVIS, a voice-first macOS assistant. The
+_DESIGN_SYSTEM_PROMPT = """You are the design partner inside VALET, a voice-first macOS assistant. The
 user is talking out loud about a feature they want to build in {project_name}.
 Your job is to help them shape what they're describing into a prompt clear
 enough to hand to Claude Code — not to build it yourself.
@@ -590,7 +590,7 @@ def compose_final_prompt(session: DesignSession) -> str:
     # Warm context is injected for normal (cross-repo) ships so the dispatched
     # Claude has the target's docs in-prompt. For SELF-MOD it's both redundant
     # and harmful: the Claude session is already running *inside* this repo (it
-    # reads CLAUDE.md / README / source directly), and the JARVIS repo's own
+    # reads CLAUDE.md / README / source directly), and the VALET repo's own
     # docs are large enough (~43KB) to blow the clipboard paste past the size
     # the integrated terminal can reliably ingest before Enter fires — the
     # paste silently fails to land. Skip it. See paste_into_cursor_claude.
@@ -612,7 +612,7 @@ def compose_final_prompt(session: DesignSession) -> str:
 
 
 def ship_via_file(session: DesignSession, final_prompt: str) -> Path:
-    """Method A — write the composed prompt to <project>/.jarvis/inbox/<id>.md.
+    """Method A — write the composed prompt to <project>/.valet/inbox/<id>.md.
 
     Returns the resolved file path. Caller is expected to surface the path
     via voice + panel ("Prompt staged at … — paste into Cursor's claude
@@ -621,11 +621,11 @@ def ship_via_file(session: DesignSession, final_prompt: str) -> Path:
     if not session.project_path:
         raise ValueError("ship_via_file: session has no project_path")
 
-    inbox = session.project_path / ".jarvis" / "inbox"
+    inbox = session.project_path / ".valet" / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     out = inbox / f"{session.id}.md"
     header = (
-        f"<!-- JARVIS Design Session {session.id} — {session.topic}\n"
+        f"<!-- VALET Design Session {session.id} — {session.topic}\n"
         f"     Shipped at {time.strftime('%Y-%m-%d %H:%M:%S')} via ship_method=file\n"
         f"     Paste this file's body into Cursor's claude terminal to dispatch. -->\n\n"
     )
@@ -638,7 +638,7 @@ async def ship_via_applescript(session: DesignSession, final_prompt: str) -> boo
     """Method B — clipboard-paste into Cursor's frontmost terminal pane.
 
     Brittle by design: assumes the user has focus on Cursor's claude terminal
-    when JARVIS triggers the paste. Caller is expected to have asked for
+    when VALET triggers the paste. Caller is expected to have asked for
     explicit voice confirmation ('ship it for real') before reaching here.
 
     Returns True on AppleScript success, False otherwise. Does NOT verify

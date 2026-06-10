@@ -1,5 +1,5 @@
 """
-Runtime self-introspection — what does JARVIS know about itself?
+Runtime self-introspection — what does VALET know about itself?
 
 Scrapes runtime constants from source files (the WAKE_PREFIXES list in
 wakeWord.ts, the agent registry from agents.py, …) so the LLM can answer
@@ -9,7 +9,7 @@ into the dynamic system prompt (not cached) so refactors and additions
 are reflected immediately, without restart.
 
 Stays small on purpose: prompt tokens cost money on every turn. Each
-section is one terse line. Add more facts here as future "JARVIS doesn't
+section is one terse line. Add more facts here as future "VALET doesn't
 know that about itself" gaps come up.
 """
 from __future__ import annotations
@@ -19,10 +19,10 @@ import os
 import re
 from pathlib import Path
 
-log = logging.getLogger("jarvis.self_knowledge")
+log = logging.getLogger("valet.self_knowledge")
 
-JARVIS_ROOT = Path(__file__).resolve().parent
-WAKE_WORD_FILE = JARVIS_ROOT / "frontend" / "src" / "wakeWord.ts"
+VALET_ROOT = Path(__file__).resolve().parent
+WAKE_WORD_FILE = VALET_ROOT / "frontend" / "src" / "wakeWord.ts"
 
 
 # Regex pair to pull `const WAKE_PREFIXES = ["ok", "okay", "hey"] as const;`
@@ -50,7 +50,7 @@ def read_wake_prefixes() -> list[str]:
 def assistant_name() -> str:
     """Pull the configured assistant name from env, same source the
     frontend reads via /api/config. Lower-cased to match the wake regex."""
-    return (os.getenv("ASSISTANT_NAME", "") or "jarvis").lower()
+    return (os.getenv("ASSISTANT_NAME", "") or "valet").lower()
 
 
 def wake_phrases(name: str | None = None) -> list[str]:
@@ -80,7 +80,7 @@ def get_self_knowledge_block(name: str | None = None) -> str:
     # Sub-agents — the new dispatch surface (chunk 27).
     try:
         import agents  # local import; agents.py is sibling
-        agent_names = [a["name"] for a in agents.list_agents(JARVIS_ROOT)]
+        agent_names = [a["name"] for a in agents.list_agents(VALET_ROOT)]
         if agent_names:
             lines.append(
                 f"- Sub-agents you can dispatch ship-it work to: {', '.join(agent_names)}"

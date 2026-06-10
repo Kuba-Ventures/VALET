@@ -5,7 +5,7 @@
 
 set -eu
 
-JARVIS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$JARVIS_DIR"
+VALET_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$VALET_DIR"
 mkdir -p logs
 exec .venv/bin/python server.py

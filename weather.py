@@ -1,5 +1,5 @@
 """
-Native weather lookup for JARVIS.
+Native weather lookup for VALET.
 
 Replaces the generic [ACTION:RESEARCH] WebFetch path with a dedicated,
 fast Open-Meteo pipeline:
@@ -7,7 +7,7 @@ fast Open-Meteo pipeline:
   geocode(name) → {lat, lon, timezone}
   fetch_forecast(lat, lon, tz) → current conditions + 7-day daily slabs
   synthesize_alert(...) → severe / UV / heavy-rain banner string + level
-  format_voice_summary(...) → JARVIS-style 1-2 sentence butler line
+  format_voice_summary(...) → VALET-style 1-2 sentence butler line
   build_card_payload(...) → shape for the floating result.weather card
 
 Open-Meteo is free, no API key, and was already in use elsewhere in the
@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 import httpx
 
-log = logging.getLogger("jarvis.weather")
+log = logging.getLogger("valet.weather")
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +169,7 @@ async def fetch_forecast(lat: float, lon: float, timezone: str = "auto") -> Opti
 
     Single HTTP call. Returns the raw JSON (with `current` and `daily` blocks)
     or None on failure. Temperature unit is Fahrenheit, wind in mph — matches
-    JARVIS's existing US-centric voice copy. Easy to flip via params later.
+    VALET's existing US-centric voice copy. Easy to flip via params later.
     """
     params = {
         "latitude": lat,
