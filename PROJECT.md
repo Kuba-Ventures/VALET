@@ -1,93 +1,77 @@
 # JARVIS
-*Voice-first AI assistant for macOS with audio-reactive orb and live process panel.*
+*Voice-first macOS assistant being turned into a sellable, downloadable product.*
 
-*Last updated: 2026-06-10 10:17 ET by kuba-vault*
+*Last updated: 2026-06-10 16:50 ET by kuba-vault*
 
 ---
 
 ## TL;DR
 
-JARVIS is a local, voice-first macOS assistant — British-butler persona, audio-reactive Three.js orb, Claude under the hood, Fish Audio for TTS. It reads Calendar/Mail/Notes via AppleScript, browses the web with Playwright, and can spin up brand-new projects or modify its own repo through a design panel that pipes prompts directly into Cursor or Claude Code. The project is in post-MVP iteration; the recent window (2026-05-31 → 2026-06-08) was almost entirely about making the self-mod ship pipeline reliable (focus the right Cursor terminal, verify the Claude pane is live, fall back to a file ship, and clean up after scrapped branches), plus a render-only multi-day weather panel. As of today (2026-06-10) the repo is wired into the org's supervised PR factory (`chore/factory-init`, PR #1) ahead of a planned wave of major product changes. Self-directed, no live deploy.
+JARVIS is a local, voice-first macOS assistant — British-butler persona, audio-reactive Three.js orb, Claude under the hood, Fish Audio for TTS, AppleScript into Calendar/Mail/Notes, Playwright for the web, and a self-mod path that ships prompts into Cursor/Claude Code. Today (2026-06-10) we landed the bulk of a **Phase 2 re-scaffold** that converts the prototype into a product you can buy and download: a license-gated AI/TTS proxy hosted on the existing marketing site (`product-site/`), an app that no longer ships any vendor API keys (it carries a license key and routes all AI/TTS through the proxy), per-license usage metering with a soft-warn fair-use cap, and a new portable control layer (`ActionExecutor`) that decouples Mac control from AppleScript. Stage A (proxy) and Stage B1/B2 (app repoint + license gate + `server.py` split) are merged; Stage C (control layer) is in review as PR #12. Remaining: D (risk-tiered safety + confirmations), E (personas/voices + cut `self_mod`), F (Tauri/Electron packaging + signed download + error reporting). Self-directed; the bundled-AI model currently bills the owner's personal Anthropic + Fish keys, capped by fair-use metering.
 
 ---
 
 ## What it is
 
-**The problem:** Talking to LLM chat boxes is slow. Switching between Calendar, Mail, browser tabs, terminals and a coding agent to get one thing done is slower.
-**The solution:** A single voice loop on the Mac that routes intent — conversation, system lookup, research, design, ship-to-Cursor — without ever leaving the orb.
-**The user:** Solo builder on macOS who already lives in Claude Code, Cursor and the Apple suite.
-**The value:** Hands-free orchestration of the dev/personal stack with sub-second voice latency for the simple stuff and full Opus + web-tools for the hard stuff.
+**The problem:** Talking to LLM chat boxes is slow, and a normal user can't be expected to get an Anthropic key, a Fish key, generate SSL certs, and run two dev servers just to talk to an assistant.
+**The solution:** A single voice loop on the Mac that routes intent (conversation, system lookup, research, design, ship-to-Cursor) — packaged so a buyer pays one subscription, downloads an app, pastes a license key, and talks. No API keys, no setup. AI + TTS usage is bundled and metered behind a hosted proxy.
+**The user:** Two audiences now — (1) the original solo builder who lives in Claude Code/Cursor/the Apple suite, and (2) a paying end user who just wants a capable voice assistant without the plumbing.
+**The value:** Hands-free orchestration of the dev/personal stack with sub-second voice latency for the simple stuff and full Opus + web tools for the hard stuff — sold as a one-subscription download.
 
 ---
 
 ## Status
 
-- **Phase:** post-MVP iteration — now entering a "major product changes" wave, with the PR factory landed first to govern it
+- **Phase:** post-MVP iteration → **Phase 2 re-scaffold ("prototype → sellable product")**, mid-flight
 - **Engagement manager:** self-directed
 - **Lead:** Finley
-- **Cadence:** continuous (per-feature commits; self-mod cuts `feature/*` branches)
-- **Next milestone:** merge PR #1 (factory init) + add the `CLAUDE_CODE_OAUTH_TOKEN` secret, then start the major product changes on top of the factory
-- **Flags:** on-track
+- **Cadence:** continuous (per-feature commits / PRs through the supervised factory)
+- **Next milestone:** land Stage C (PR #12), then Stage D (risk-tiered safety + confirm card + kill switch)
+- **Flags:** shipping
 
 ---
 
 ## Where we are right now
 
-Two things are live this window. First, the self-mod ship pipeline got hardened across 2026-05-31 → 2026-06-08: it now focuses Cursor's integrated terminal by AXDescription (the terminal element is an `AXTextField` whose description contains "terminal" — the earlier AXTextArea assumption was the ship bug), verifies a Claude pane is actually live before pasting (reading the `ps` foreground process of every Cursor terminal pty), and falls back to a staged file ship instead of dumping the prompt at a shell prompt when it can't confirm. A separate fix stopped self-mod silently dropping a ~44KB paste into the Claude pane — `project_context.py` now hard-caps warm context at 6000 chars because an oversized clipboard paste raced the Enter key and never landed. `self_mod.abandon_feature_branch()` plus a "Scrap branch" path now clean up after a shipped-but-rejected build. Second, `weather.py` gained a render-only multi-day panel — `format_voice_summary(when=…)` now answers today / tomorrow / day-after / week.
-
-Today (2026-06-10) the repo was wired into the org's supervised PR factory, mirroring the soultech/Dharma pattern. PR #1 (`chore/factory-init`) is open against main with branch protection requiring both factory checks. It is intentionally not yet mergeable by the bot: it touches `.github/**`, so factory-review fails closed and needs an admin merge, and `CLAUDE_CODE_OAUTH_TOKEN` isn't in the repo yet. Worth attention: (1) the `.venv` still has a stale `jarvis-main` shebang after the local repo rename — see Risks; (2) `server.py` is now 5700 lines, still quoted as "~2300" in CLAUDE.md/README; (3) PR #1 is the gate for everything that follows.
+Phase 2 turns the local prototype into a downloadable product where the user brings no API key and pays one subscription. Today four stages landed. **Stage A** (merged PR #9, live in prod) added a license-gated AI/TTS proxy inside `product-site/` — it holds the Anthropic + Fish keys server-side, validates every call against the Supabase `licenses` table, meters per-license usage against a soft-warn fair-use cap, and traces everything to Langfuse. **Stage B1** (merged PR #10, live) repointed `server.py` at that proxy (Anthropic SDK `base_url` + `X-License-Key`; TTS via `/api/proxy/tts`) and added `licensing.py`, a license gate with a 7-day offline grace window; the in-app API-key entry path is gone and the assistant refuses to answer when the license isn't entitled. **Stage B2** (merged PR #11) split the ~5,790-line `server.py` down to ~5,325 by extracting the cleanly-decoupled `task_manager.py`, `voice_text.py`, and `project_scanner.py`; the tightly-coupled voice-dispatch core was deliberately left intact. **Stage C** (PR #12, in review) adds a portable `ActionExecutor` interface + macOS `applescript_executor.py` backend — not yet wired into `server.py` callers (that's Stage D). Worth attention: every shipped user's AI/TTS currently bills the owner's personal Anthropic + Fish keys (fair-use cap is the only guard); the public product name/domain is still the `[JARVIS]`/`[PRODUCT_NAME]` placeholder; and `self_mod.py` is still in the build, slated to be cut in Stage E.
 
 ---
 
 ## What's built
 
-**Frontend / UI**
-- Three.js particle orb that deforms to TTS audio (`frontend/src/orb.ts`)
-- Live "process panel" — draggable, holographic, auto-show/auto-dismiss, MCU-styled event feed beside the orb (`frontend/src/processPanel.{ts,css}`)
-- Design panel with target dropdown including "+ New project…" inline name+stack flow (`frontend/src/designPanel.{ts,css}`)
-- Floating result cards: research sources, product cards, web fetches, weather widget — independent panels that tile to the right (`frontend/src/floatingPanels.ts`)
-- Settings UI with hometown city, calendar accounts, API key management (`frontend/src/settings.ts`)
-- Wake-phrase detection ("ok jarvis", "hey jarvis") via Web Speech API (`frontend/src/wakeWord.ts`)
+**Product site / proxy (`product-site/`, Next.js on Vercel)**
+- Marketing + checkout site: hero, capabilities, 3-tier pricing (Free / Pro $20 / Ultra $50), FAQ, Stripe checkout, success page, GTM conversion events, orb favicon
+- **License-gated AI/TTS proxy** (Stage A, live): routes `app/api/proxy/{completion,research,tts,usage}` plus a native `app/api/proxy/v1/messages` route; logic in `lib/proxy/{auth,pricing,usage,langfuse,anthropic,fish}.ts`
+- Proxy holds the Anthropic + Fish Audio keys server-side — the downloadable app ships with **no** vendor secrets
+- Per-call license validation against the Supabase `licenses` table (`lib/proxy/auth.ts`); per-license metering of requests / tokens / est. cost against a fair-use allowance with **soft-warn** behavior (never blocks at launch)
+- Langfuse trace per call, keyed by license as user id, payloads scrubbed by default
+- `supabase/migration_usage.sql`: `license_usage` table + atomic `record_usage()` RPC (30-day rolling reset)
+- License issuance/validation: `app/api/license/validate`, `app/api/stripe/webhook`, `lib/license.ts`; download endpoint `app/api/download`
+- Smoke test: `scripts/smoke-proxy.sh`. Zero new npm deps for the proxy.
 
-**Backend / data**
-- FastAPI server, single file, WebSocket loop (`server.py` — 5700 lines)
-- Action system with tag-driven dispatch: `[ACTION:BUILD]`, `[ACTION:BROWSE]`, `[ACTION:RESEARCH]`, `[ACTION:CHECK_WEATHER]`, `[ACTION:PROMPT_PROJECT]`, `[ACTION:ADD_TASK]`, `[ACTION:REMEMBER]`, `[DISPATCH_TO_AGENT]`, `[ACTION:OPEN_PROJECT]`
-- Fast-path intent regex matchers that bypass the LLM for common utterances (weather, "open X", "new project for X", design opt-in, cancel words)
-- Native research via Claude Opus 4.7 web tools — streaming, source-preview cards, 10-min timeout, 25s voice interjections (`server.py` + chunks 7-18)
-- Design partner — Opus-driven conversational spec-er that hands off to Cursor (`design_partner.py`, 674 lines)
-- Self-modification machinery — JARVIS can edit its own repo behind a clean-tree gate, cut a `feature/*` branch, ship a prompt to the on-branch Claude pane, verify the paste landed, fall back to a staged file ship if not, and scrap the branch on rejection (`self_mod.py`, `actions.py`)
-- Cursor-terminal targeting for ship — focus the integrated terminal via AXDescription, classify each Cursor terminal pty by its foreground `ps` process so a paste only fires into a confirmed live Claude pane (`actions.py` `_focus_cursor_terminal`, `_cursor_terminal_pane_summary`)
-- Weather pipeline — Open-Meteo geocode + forecast, WMO code maps, severe/UV/precip alerts, and a render-only multi-day summary (today / tomorrow / day-after / week) (`weather.py`, 407 lines)
-- Memory system — SQLite with FTS5 (`memory.py`, 778 lines)
-- Process event bus — async pub/sub with `task_context()` async CM, broadcast to all connected WS clients (`process_events.py`)
-- Calendar (`calendar_access.py`), Mail read-only (`mail_access.py`), Notes (`notes_access.py`) — all via AppleScript
-- Browser automation (`browser.py`) — Playwright
-- Persistent Claude Code sessions (`work_mode.py`)
-- Greenfield project scaffolds — python/node/rust/go/other, all with stack-appropriate manifests + `.gitignore` + initial git commit (`actions.py` `new_cursor_project`)
+**App — frontend / UI**
+- Three.js particle orb that deforms to TTS audio (`frontend/src/orb.ts`)
+- Live "process panel" — draggable, holographic, auto-show/auto-dismiss event feed (`frontend/src/processPanel.{ts,css}`)
+- Design panel with target dropdown incl. "+ New project…" inline name+stack flow (`frontend/src/designPanel.{ts,css}`)
+- Floating result cards: research sources, product cards, web fetches, weather (`frontend/src/floatingPanels.ts`)
+- Settings UI now has **License Key + Proxy URL** fields (the old per-vendor API-key entry was removed; `test-anthropic`/`test-fish` replaced by `test-license`) (`frontend/src/settings.ts`)
+- Wake-phrase detection ("ok jarvis", "hey jarvis") via Web Speech API
+
+**App — backend / data**
+- FastAPI server, WebSocket loop (`server.py`, ~5,325 lines after the Stage B2 split)
+- **All AI + TTS now routes through the proxy**: Anthropic SDK `base_url` → proxy with `X-License-Key`; `synthesize_speech` posts to `/api/proxy/tts`
+- **`licensing.py`** — validates `LICENSE_KEY` against `{PROXY_BASE_URL}/api/license/validate`, 7-day offline grace, state persisted to `data/license_state.json`; assistant loop refuses when not entitled. Dev fallback (no `LICENSE_KEY` → direct keys) preserved for the internal repo only.
+- **Portable control layer (Stage C, PR #12):** `action_executor.py` (`ActionExecutor` ABC, `ActionResult`, `Capability` enum) + `applescript_executor.py` (macOS backend). Capabilities: open app/path, run app command, read/write/move/delete file (delete → Trash), list folder, send keystroke, navigate, run script. Detects app scriptability from the bundle's `.sdef`/Info.plist without launching the app; non-scriptable apps return a structured, logged `not_supported` result. Not yet wired into `server.py` callers.
+- Extracted modules (Stage B2): `task_manager.py`, `voice_text.py`, `project_scanner.py`
+- Action system with tag-driven dispatch (`[ACTION:BUILD/BROWSE/RESEARCH/CHECK_WEATHER/...]`, `[DISPATCH_TO_AGENT]`)
+- Native research via Claude Opus web tools; design partner (`design_partner.py`); self-mod machinery (`self_mod.py`, slated for removal in Stage E)
+- Weather pipeline (`weather.py`), memory (`memory.py`, SQLite + FTS5), process event bus (`process_events.py`)
+- Calendar / Mail (read-only) / Notes via AppleScript; Playwright browser; persistent Claude Code sessions (`work_mode.py`)
 
 **Infrastructure**
-- Supervised PR factory (on `chore/factory-init` / PR #1, not yet merged) — `.github/workflows/factory.yml` with two required checks, `pr-reviewer` subagent vendored to `.claude/agents/`, merge policy in `CLAUDE.md`, dev deps in `requirements-dev.txt` (see "Supervised PR factory" below)
-- macOS launchd service for auto-start (`scripts/com.jarvis.backend.plist`, `scripts/install-launchd.sh`)
-- Local SSL via self-signed certs (`cert.pem`, `key.pem`) — required for Web Speech API over HTTPS
-- Screenshots served via FastAPI StaticFiles at `/screenshots/`, dev-proxied by Vite
-- Smoke test script (`scripts/smoke_test.sh`)
-- Desktop overlay (Swift native) — early-stage companion UI (`desktop-overlay/JarvisOverlay.swift`)
-
----
-
-## Supervised PR factory  [rewrite]
-
-*Wired up 2026-06-10, mirroring the org's soultech/Dharma pattern. Lives on branch `chore/factory-init` (PR #1), not yet merged.*
-
-- **Workflow:** `.github/workflows/factory.yml` runs on every PR, two required checks:
-  - **factory-tests** — deterministic pytest gate. Runs only the hermetic mock-based suites `tests/test_e2e_pipeline.py` + `tests/test_feedback_loop.py` (26 tests, no network / no API key). The live-LLM `test_classifier.py` and network/Playwright `test_browser_integration.py` are intentionally excluded from the gate.
-  - **factory-review** — `pr-reviewer` subagent (`.claude/agents/pr-reviewer.md`, Sonnet) via `anthropics/claude-code-action`. Fail-closed: GREEN whenever the reviewer actually runs and writes a recognized verdict (`APPROVE-LOWRISK` or `ESCALATE`); RED when no real review happened (e.g. a PR touching `.github/**`, which the action skips by design).
-- **Merge policy** in `CLAUDE.md` `## Merge policy`: low-risk = CSS / docs / purely-presentational frontend TS; always-escalate = all backend Python, auth/money/secrets, DB/schema, and CI/deps/workflows.
-- **Branch protection** on `main`: both `factory-tests` and `factory-review` required, strict (up-to-date) enabled, `enforce_admins` off (so an admin can still merge a fail-closed PR).
-- **Auto-merge is OFF.** Gated behind repo variable `FACTORY_AUTOMERGE` (unset). Stays off until a ~2-week soak (Phase 3); until then every PR is reviewed + labeled and a human does the merge.
-- **Outstanding before it works end-to-end:**
-  - `CLAUDE_CODE_OAUTH_TOKEN` secret must be added to `jarvis-y` (repo currently has **zero** secrets) or factory-review can't authenticate.
-  - PR #1 must be merged manually by an admin — it adds `.github/**`, so it fails review closed by design.
+- Supervised PR factory: `.github/workflows/factory.yml` (factory-tests + fail-closed factory-review), merge policy in `CLAUDE.md`, `pr-reviewer` subagent. Auto-merge OFF behind repo var `FACTORY_AUTOMERGE` until a ~2-week soak (Phase 3).
+- macOS launchd auto-start; local SSL via self-signed certs (Web Speech API needs HTTPS)
+- Screenshots served via FastAPI StaticFiles at `/screenshots/`
 
 ---
 
@@ -95,20 +79,25 @@ Today (2026-06-10) the repo was wired into the org's supervised PR factory, mirr
 
 | Layer | Technology | Notes |
 |---|---|---|
-| Backend | FastAPI + Python 3.11+ | `server.py` (5700 lines — overdue for split) |
-| Frontend | Vite 6 + TypeScript 5.7 + Three.js 0.183 | `frontend/` |
+| App backend | FastAPI + Python 3.11+ | `server.py` (~5,325 lines) + extracted modules |
+| App frontend | Vite 6 + TypeScript 5.7 + Three.js 0.183 | `frontend/` |
+| Product site / proxy | Next.js (App Router) + Tailwind | `product-site/`, deployed on Vercel |
 | Communication | WebSocket (JSON + binary audio) | WSS over self-signed certs |
-| AI (fast) | Claude Haiku via Anthropic SDK | conversational, sub-second |
-| AI (deep) | Claude Opus 4.7 with web tools | research + design partner |
-| TTS | Fish Audio | JARVIS voice model `612b878b113047d9a770c069c8b4fdfe` |
+| AI (fast) | Claude Haiku 4.5 ($1 / $5 per MTok) | conversation, via proxy |
+| AI (deep) | Claude Opus 4.8 ($5 / $25 per MTok) | research / design, via proxy |
+| TTS | Fish Audio (~$15 / 1M chars) | via proxy; voice model `612b878b113047d9a770c069c8b4fdfe` |
 | STT | Chrome Web Speech API | client-side, free |
+| Licensing | `licenses` table (Supabase) + `licensing.py` | 7-day offline grace |
+| Metering | `license_usage` table + `record_usage()` RPC | 30-day rolling reset |
+| Observability | Langfuse | per-call trace, license = user id |
+| Payments | Stripe | $20/mo Pro + $50/mo Ultra price IDs configured |
+| Database | Supabase Postgres (project `jarvis` / `ufqvgujnphaejewqmugg`) | |
 | Memory | SQLite + FTS5 | `data/jarvis.db` |
 | Browser automation | Playwright | `browser.py` |
-| macOS integrations | AppleScript + Swift helper | Calendar, Mail (RO), Notes, Terminal |
+| macOS integrations | AppleScript + Swift helper / `applescript_executor.py` | Calendar, Mail (RO), Notes, Terminal |
 | Geocode + Weather | Open-Meteo | free, no API key |
-| Calendar (optional) | Google Calendar API | OAuth via `google_auth.py` |
-| Hosting | local-only | runs on the user's Mac |
-| CI / PR factory | GitHub Actions + `anthropics/claude-code-action` + pytest | `.github/workflows/factory.yml` (on `chore/factory-init`) |
+| Hosting | App: local on the user's Mac. Proxy + site: Vercel | |
+| CI / PR factory | GitHub Actions + `anthropics/claude-code-action` + pytest | `.github/workflows/factory.yml` |
 
 ---
 
@@ -116,76 +105,88 @@ Today (2026-06-10) the repo was wired into the org's supervised PR factory, mirr
 
 | Integration | Purpose | Cost | Status |
 |---|---|---|---|
-| Anthropic Claude API | Haiku for voice replies, Opus 4.7 for research + design + greenfield | usage-based | live |
-| Fish Audio TTS | JARVIS-voiced spoken responses | usage-based | live |
+| Anthropic Claude API | Haiku 4.5 conversation, Opus 4.8 research/design — server-side behind the proxy | usage-based ($1/$5 Haiku, $5/$25 Opus per MTok) | live |
+| Fish Audio TTS | JARVIS-voiced spoken responses, server-side behind the proxy | metered (~$15 / 1M chars) | live |
+| Supabase | `licenses` + `license_usage` tables, `record_usage()` RPC, auth/data | Pro plan | live |
+| Langfuse | per-call observability/tracing (license = user id, payloads scrubbed) | observability tier | live |
+| Stripe | subscriptions — $20/mo Pro, $50/mo Ultra | per-transaction fees | live |
+| Vercel | hosts `product-site` + the AI/TTS proxy | hosting tier | live |
 | Open-Meteo | geocoding + weather forecasts | free | live |
-| Google Calendar API | optional read of Google calendars (OAuth) | free tier | live (optional) |
-| Apple Calendar / Mail / Notes | local read via AppleScript (Mail is read-only by design) | free | live |
+| Apple Calendar / Mail / Notes | local read via AppleScript (Mail read-only by design) | free | live |
 | Playwright (Chromium) | web automation for browse / og:image enrichment | free | live |
-| Claude Code CLI | dispatched sub-agent tasks via `claude -p` streamed stdout | usage-based (inherits Claude plan) | live |
-| Cursor | paste target for design-panel ship handoff | external app | live |
+| Claude Code CLI | dispatched sub-agent tasks via `claude -p` (internal/dev) | usage-based | live (dev) |
+| Cursor | paste target for design-panel ship handoff (internal/dev) | external app | live (dev) |
 
-*Source: no MCP configs found in repo. Integrations inferred from `requirements.txt`, `.env.example`, `weather.py`, `google_auth.py`, `actions.py`, `work_mode.py`.*
+**Bundled-AI cost note:** because the app ships no keys, all users' AI + TTS currently bills the owner's *personal* Anthropic + Fish accounts. The fair-use cap (`FAIR_USE_MONTHLY_USD`, default $8/mo, soft-warn / never blocks) plus per-license metering are the only guards today. Move to an org billing account before scale.
+
+*Source: no MCP config files found in repo. Integrations read from `product-site/lib/proxy/*.ts`, `licensing.py`, `requirements.txt`, `.env.example`, and the git history.*
 
 ---
 
 ## Decisions log
 
-- **2026-06-10 — Supervised PR factory before the major-changes wave** — Wired in the org's soultech/Dharma factory pattern (two required checks, fail-closed reviewer, branch protection) ahead of a planned wave of major product changes, so risky edits land through a governed pipeline. Auto-merge deliberately left OFF until a ~2-week soak (Phase 3); the gate runs only hermetic mock tests (live-LLM and Playwright suites excluded so no secrets/network in CI).
-- **2026-06-04 — Target Cursor's terminal by AXDescription, not AXRole** — The integrated terminal's focused element is an `AXTextField` (not `AXTextArea` as earlier assumed — that was the ship bug); the palette/editor are also `AXTextField`, so AXRole can't discriminate. The terminal's AXDescription always contains "terminal", so the description is the reliable signal. Also dropped the unreliable "Focus Terminal" palette command for `Ctrl+\`` toggling.
-- **2026-06-04 — Verify the Claude pane is live before pasting, else file-ship** — A paste lands in whichever Cursor terminal has focus, and AppleScript can't tell which tty that is. So classify every Cursor terminal pty by its foreground `ps` process: only paste when a pane is confirmed running `claude`; if any pane is a bare shell (Claude exited or a fresh terminal spawned), fall back to a staged file ship rather than dumping the prompt at a `%` prompt. The spoken confirmation is now honest about whether the paste was verified.
-- **2026-06-03 — Hard-cap warm context at 6000 chars** — Self-mod ship silently dropped a ~44KB paste into the Claude pane: a clipboard paste that large races the Enter key and never lands. `project_context.py` now truncates composed context (`max_context_chars`, configurable in `config/design_partner.json`) with a visible marker so the ship prompt stays inside what auto-paste can reliably deliver.
-- **2026-05-22 — Dedicated weather pipeline instead of generic research** — Weather questions used to route through `[ACTION:RESEARCH]` (Haiku → Opus WebFetch on weather.gov), which was slow and noisy. Replaced with `[ACTION:CHECK_WEATHER]` + Open-Meteo (free, structured, no API key) and a purpose-built floating card.
-- **2026-05-21 — Greenfield projects scaffold before first prompt** — `new_cursor_project` runs an initial `git add -A && git commit` with explicit `-c user.name/email` overrides so the clean-tree gate doesn't block the first ship.
-- **2026-05-21 — Greenfield bypass for self-mod gate** — Brand-new projects skip the self-modification gate because the path isn't `JARVIS_REPO`.
-- **2026-05-21 — Smart `_looks_like_app()` matcher** — Fast-path was firing `OPEN_PROJECT` for any "open X" utterance whose target wasn't a literal entry in `_OPEN_APP_NAMES`. STT mishearings like "work gmail" got mis-routed; the matcher now distinguishes app-shaped tokens from project-shaped ones before dispatch.
-- **2026-05-21 — Strip em-dashes from LLM output at runtime** — Em-dashes were a giveaway tell of LLM-generated text; chunk 30 strips them from runtime responses to keep voice transcripts and on-screen text feeling human.
-- **2026-05-20 — Design-mode requires explicit opt-in (Option C)** — Chunk 19 diagnosed false-positive design routing; chunk 20 made design mode require an explicit phrase rather than inferring from intent.
-- **2026-05-19 — Auto-paste over file-default for ship handoff** — Mode 1 (auto-paste into target IDE) wins over Mode 2 (dictation). Chunk 21 shipped voice → Claude Code via auto-paste; chunks 22-23 cleaned up the `ship_method` whitelist regression.
-- **2026-05-18 — Temporarily swapped design_partner Opus → Sonnet during 529 incident** — Documented as a temp swap during an Anthropic 529 incident (chunk 24). Should be re-verified that the swap was reverted.
-- **2026-05-17 — Native research via Opus 4.7 web tools, no scratch folders** — Replaced the older folder-based research output with native Opus web tools and streaming source-preview cards (chunk 7+).
-- **Architectural — Mail is read-only by design** — All Apple Mail integration is read-only. Sending mail is intentionally out of scope.
-- **Architectural — AppleScript over OAuth** — Calendar/Mail/Notes all use native AppleScript so no token management, no consent flows. Google Calendar is the one exception.
-- **Architectural — Single `server.py` file** — All backend logic lives in one file. Conscious tradeoff for speed of iteration; the file is now 5504 lines and overdue for a split.
+- **2026-06-10 — Bundled + metered AI, no user API key** — The product ships zero vendor secrets; the user pays one subscription and all AI/TTS routes through a hosted proxy that holds the keys and meters usage. Rejected: making each buyer bring/manage their own Anthropic + Fish keys (kills the "download and talk" value prop). Accepted cost risk: all usage bills the owner's personal accounts until an org account is set up; mitigated by fair-use metering.
+- **2026-06-10 — Proxy lives in the existing `product-site` (one repo, one deploy)** — The AI/TTS proxy is a set of Next.js routes inside the marketing/checkout site rather than a standalone service. One Vercel deploy, the keys already live where Stripe/Supabase do, zero new infra. Rejected: a separate proxy service (more ops surface for no near-term gain).
+- **2026-06-10 — App speaks the native Anthropic Messages dialect** — Because the proxy exposes a native `/v1/messages` route, repointing the app was just a `base_url` + `X-License-Key` header swap on the existing Anthropic SDK — no client rewrite. Keeps the app's LLM code idiomatic and future SDK upgrades cheap.
+- **2026-06-10 — Fair-use is soft-warn at launch** — Metering warns past the allowance (`FAIR_USE_MONTHLY_USD`, default $8/mo) but never blocks a call at launch, to avoid cutting off early paying users over a number we haven't tuned. Hard enforcement is deferred until the allowance is validated against real usage.
+- **2026-06-10 — 7-day offline grace for license validation** — `licensing.py` keeps the app working for 7 days after a successful validation through transient network failures, but a key that validates as canceled/past_due/invalid disables the assistant loop immediately. Balances offline resilience against revocation.
+- **2026-06-10 — Stop the `server.py` split at the decoupled modules** — Extracted `task_manager.py`, `voice_text.py`, `project_scanner.py` (clean boundaries) but deliberately left the voice-dispatch loop + `_execute_*` handlers in `server.py`. Splitting that tightly-coupled core would create a fake module boundary with high regression risk for no architectural gain.
+- **2026-06-10 — Risk tiering is NOT in the control layer (Stage C)** — `ActionExecutor` only exposes capabilities and reports `not_supported` (structured + logged) for non-scriptable apps. Confirmations, Tier 0/1 risk gating, and the kill switch are Stage D, which *wraps* the executor — keeping the portable interface clean and OS-independent.
+- **2026-06-10 — Deletes go to Trash, never permanent erase** — Backends must send `delete_file` to Trash. A destructive action should always be recoverable.
+- **2026-06-10 — `self_mod.py` to be cut from the shipped build (Stage E)** — Self-modification stays for internal dev use but is removed from the distributable: a product that can rewrite its own source is the wrong trust surface for a paying end user.
+- **2026-06-10 — Supervised PR factory before the major-changes wave** *(carried)* — Risky edits land through a governed pipeline (two required checks, fail-closed reviewer, branch protection). Auto-merge OFF until a ~2-week soak (Phase 3).
+- **2026-06-04 — Target Cursor's terminal by AXDescription, not AXRole** — The integrated terminal's focused element is an `AXTextField`; AXDescription always contains "terminal", so it's the reliable signal.
+- **2026-06-04 — Verify the Claude pane is live before pasting, else file-ship** — Classify every Cursor terminal pty by its foreground `ps` process; only paste into a confirmed live `claude`, otherwise stage a file ship.
+- **2026-06-03 — Hard-cap warm context at 6000 chars** — A ~44KB clipboard paste raced the Enter key and never landed; `project_context.py` now truncates composed context with a visible marker.
+- **2026-05-22 — Dedicated weather pipeline instead of generic research** — Replaced `[ACTION:RESEARCH]` weather routing with `[ACTION:CHECK_WEATHER]` + Open-Meteo.
+- **2026-05-21 — Greenfield projects scaffold before first prompt** — `new_cursor_project` runs an initial commit so the clean-tree gate doesn't block the first ship.
+- **2026-05-21 — Strip em-dashes from LLM output at runtime** — Em-dashes were an LLM tell; stripped from runtime responses.
+- **2026-05-20 — Design-mode requires explicit opt-in (Option C)** — Design mode requires an explicit phrase rather than inferring from intent.
+- **2026-05-19 — Auto-paste over file-default for ship handoff** — Mode 1 (auto-paste into target IDE) wins over Mode 2 (dictation).
+- **2026-05-17 — Native research via Opus web tools, no scratch folders** — Replaced folder-based research output with native Opus web tools + streaming source cards.
+- **Architectural — Mail is read-only by design**; **AppleScript over OAuth** (Google Calendar excepted).
 
 ---
 
 ## Open loops
 
-- [ ] Add `CLAUDE_CODE_OAUTH_TOKEN` secret to `jarvis-y` (repo has zero secrets) so factory-review can authenticate — owner: Finley
-- [ ] Admin-merge PR #1 (`chore/factory-init`) — fails review closed by design (touches `.github/**`) — owner: Finley (admin)
-- [ ] Fix stale `.venv` `jarvis-main` shebang after the local repo rename (rebuild venv or repoint) — owner: Finley
-- [ ] Split `server.py` (5700 lines) — likely along action-handler boundaries — owner: Finley
-- [ ] Update README.md + CLAUDE.md line-count references (still say "~2300 lines") — owner: Finley
-- [ ] Verify chunk 24 design_partner Sonnet→Opus revert actually happened post-529 incident — owner: Finley
-- [ ] Add demo GIF/screenshot to README (TODO marker in line 11) — owner: Finley
-- [ ] Scope the upcoming "major product changes" wave — owner: Finley
-- [ ] After ~2-week factory soak, decide whether to flip `FACTORY_AUTOMERGE` on (Phase 3) — owner: Finley
+- [ ] Land Stage C — review + merge PR #12 (`ActionExecutor` + AppleScript backend) — owner: Finley
+- [ ] Stage D — risk-tiered safety wrapping the Stage C executor: Tier 0 (auto) vs Tier 1 (confirm-first), confirm card in the holographic panel, deletes-to-Trash, global kill switch — owner: Finley
+- [ ] Stage E — selectable personas/voices + remove `self_mod.py` from the distributable — owner: Finley
+- [ ] Stage F — Tauri-or-Electron packaging, signed + notarized download wired into `product-site` `/api/download`, error reporting (Sentry-style) with PII scrubbing + telemetry consent — owner: Finley
+- [ ] **Decide:** final public product name + domain (currently `[PRODUCT_NAME]` / `[JARVIS]` placeholder) — owner: Finley
+- [ ] **Decide:** exact fair-use allowance number (`FAIR_USE_MONTHLY_USD`, default $8/mo) — owner: Finley
+- [ ] **Decide:** Tauri vs Electron for packaging — owner: Finley
+- [ ] **Decide:** Sentry vs alternative for error reporting — owner: Finley
+- [ ] Move bundled AI/TTS off the owner's personal Anthropic + Fish accounts to an org billing account before scale — owner: Finley
+- [ ] After the ~2-week factory soak, decide whether to flip `FACTORY_AUTOMERGE` on (Phase 3) — owner: Finley
+- [ ] Update README.md / CLAUDE.md line-count references (still say "~2300 lines") — owner: Finley
+- [ ] Fix stale `.venv` `jarvis-main` shebang after the local repo rename — owner: Finley
 
 ---
 
 ## Risks & known issues
 
-- **Stale `.venv` shebang after repo rename** — the local repo was renamed `jarvis-main` → `jarvis` (GitHub remote is `jarvis-y`), but `.venv/bin/pip*` (and other console scripts) still hardcode `#!/Users/finley/Code/jarvis-main/.venv/bin/python3.12`. Those wrappers will break until the venv is rebuilt or repointed; `.venv/bin/python -m pip …` still works as a workaround.
-- **Factory not yet functional end-to-end** — factory-review will fail on every PR until `CLAUDE_CODE_OAUTH_TOKEN` is added; main is protected on a check that currently can't pass, so all merges need an admin until that secret lands and PR #1 is in.
-- `server.py` size (5700 lines) is a maintainability risk — any cross-cutting refactor touches the whole file, and it's an always-escalate surface under the new merge policy
-- Self-mod ship path is sensitive to the Cursor build's accessibility tree (`AXFocusedUIElement` / AXDescription) and to the `ps` process layout of integrated terminals; a Cursor update could move either out from under it
-- Self-signed certs require manual Chrome trust on first run; not documented in `README.md` beyond the openssl command
-- Self-modification machinery (`self_mod.py`) gates on clean tree; runtime logs previously tripped it — chunks 7b/7c/7d added pathspec exclusions, but the surface is fragile
-- Voice fast-path regex set is growing; risk of overlap/order-sensitivity (chunk 31 already had to fix `_NEW_PROJECT_DESIGN_PATTERN` matching before `_START_DESIGN_PATTERN`)
-- Background context thread re-hits geocode every 30s if `_ctx_cache["_weather_geo"]` clears; documented but not load-tested
-- No CI — tests in `tests/` are run manually
-- Fish Audio is single-vendor for TTS with no fallback configured
-- 529s from Anthropic during the design panel turn caused chunk 24's emergency Sonnet swap; no resilience layer added since
+- **All users' AI/TTS bills the owner's personal Anthropic + Fish keys** — the bundled model means cost lands on personal accounts. Fair-use metering + the soft-warn cap are the only guards, and the cap is soft (never blocks) at launch. A runaway or abusive license can spend real money before anyone notices; an org billing account + the right cap are not yet in place.
+- **Fair-use number is unvalidated** — `FAIR_USE_MONTHLY_USD` default ($8/mo) is a placeholder; too low frustrates buyers, too high invites cost. Needs real-usage tuning before hard enforcement.
+- **Single-vendor AI and TTS** — both Anthropic and Fish Audio are single points of failure with no fallback; a proxy/vendor outage takes the whole product down for every licensed user.
+- **License gate / offline grace edge cases** — a 7-day offline grace plus an entitlement check means revocation isn't instant offline, and a misconfigured `PROXY_BASE_URL` or `licenses` row could lock out (or over-grant) a paying user. Not yet load- or failure-tested.
+- **Stage C executor is unwired** — `ActionExecutor` exists but no `server.py` caller uses it yet; the AppleScript-only v1 floor means non-scriptable apps are `not_supported` until later stages.
+- **`self_mod.py` still in the build** — a self-rewriting code path remains shippable until Stage E removes it.
+- **`server.py` size (~5,325 lines)** — still large and an always-escalate surface under the merge policy.
+- **Self-signed certs** require manual Chrome trust on first run; not documented beyond the openssl command.
+- **No app-side CI** — `tests/` outside the factory gate are run manually.
+- **Stale `.venv` shebang** after the `jarvis-main` → `jarvis` local rename; console-script wrappers break until the venv is rebuilt.
 
 ---
 
 ## Links
 
-- **Live URL:** local-only (`http://localhost:5173`)
+- **Live URL (product site + proxy):** https://jarvis-y.vercel.app
+- **App:** local-only (`http://localhost:5173`)
+- **Supabase project:** `jarvis` (`ufqvgujnphaejewqmugg`)
+- **GitHub:** https://github.com/Kuba-Ventures/jarvis-y (local dir `~/Code/jarvis`)
 - **Staging:** n/a
-- **GitHub:** https://github.com/Kuba-Ventures/jarvis-y (org remote; local dir is `~/Code/jarvis`)
-- **PR #1 (factory init):** https://github.com/Kuba-Ventures/jarvis-y/pull/1
 - **Client Drive folder:** n/a
 - **Slack channel:** n/a
 - **Related repos:** Kuba-Ventures soultech / Dharma (the PR-factory pattern this repo mirrors)
@@ -194,22 +195,16 @@ Today (2026-06-10) the repo was wired into the org's supervised PR factory, mirr
 
 ## Changelog
 
-- **2026-06-10:** kuba-vault refresh — caught up 9 commits (2026-05-31 → 2026-06-08): self-mod ship reliability (AXDescription terminal focus, live-pane verify + file-ship fallback, 44KB paste fix, scrap-branch loop), render-only multi-day weather panel, repo-rename cleanup. Recorded the supervised PR factory wired up today (PR #1, factory.yml + 2 required checks, branch protection, merge policy); flagged the missing `CLAUDE_CODE_OAUTH_TOKEN` secret and the stale `jarvis-main` venv shebang.
-- **2026-06-10:** Supervised PR factory wired up — `chore/factory-init` / PR #1, `factory.yml` (factory-tests: 26 mock tests; factory-review: fail-closed pr-reviewer subagent), merge policy in CLAUDE.md, pr-reviewer vendored to `.claude/agents/`, branch protection on main requiring both checks. Auto-merge OFF until a ~2-week soak.
-- **2026-06-04:** Self-mod ship hardened — focus Cursor terminal by AXDescription, verify the Claude pane is live before paste (else file-ship), honest spoken confirmation, `abandon_feature_branch()` + scrap-branch path.
-- **2026-06-03:** Render-only multi-day weather panel (`format_voice_summary(when=…)`: today/tomorrow/day-after/week); ship-phrase fix (`_phrase_hit` strips filler); repo-rename cleanup (`jarvis-main` → `jarvis` references).
-- **2026-05-31:** Fixed self-mod silently dropping a ~44KB paste into the Claude pane — `project_context.py` hard-caps warm context at 6000 chars.
-- **2026-05-26:** kuba-vault refresh — no new commits since 2026-05-22, working tree clean; bumped timestamp, flagged 4-day quiet stretch and 42 unpushed commits.
-- **2026-05-22:** kuba-vault initial PROJECT.md superdoc — scanned repo, reconciled README/CLAUDE.md against current state, summarized chunks 0-33.
-- **2026-05-22:** chunk 33 shipped — native `[ACTION:CHECK_WEATHER]` via Open-Meteo, floating weather card with 7-day strip + alert banner, hometown_city preference.
-- **2026-05-21:** chunk 32 shipped — greenfield projects: design + scaffold + ship in one flow, stack picker (python/node/rust/go/other).
-- **2026-05-21:** chunk 31 shipped — `_looks_like_app()` matcher fixes "open X" mis-routing to OPEN_PROJECT.
-- **2026-05-21:** chunk 30 shipped — strip em-dashes from runtime LLM responses.
-- **2026-05-21:** chunk 29 shipped — demo prep: style-steward sweep, panel auto-close, web-app routing fix.
-- **2026-05-21:** chunk 28 shipped — runtime self-introspection + `[DISPATCH_TO_AGENT]` tag + Claude-Code typeinto reroute.
-- **2026-05-21:** chunk 27 shipped — Claude Code sub-agent dispatch + design panel build-view bug fix.
-- **2026-05-21:** chunk 26 shipped — "hey jarvis" wake-phrase alias.
-- **2026-05-19:** chunks 21-25 shipped — voice → Claude Code via auto-paste (Mode 1) and dictation (Mode 2), self-mod paste route, design-panel paste-target dropdown.
-- **2026-05-18:** chunks 19-20 shipped — design routing diagnosis + explicit design-mode opt-in.
-- **2026-05-17:** chunks 7-18 shipped — native Opus 4.7 research, streaming source-preview cards, floating result panels, USD-only price guard, card lifecycle.
-- **2026-05-17:** chunks 0-6 shipped — baseline phases 1-5 (process panel, haiku middleware, result cards, ship-it handoff, self-modification machinery).
+- **2026-06-10:** Phase 2 re-scaffold (prototype → sellable product) — **Stage A** (PR #9, live): license-gated AI/TTS proxy in `product-site/` (`app/api/proxy/*` + native `/v1/messages`, `lib/proxy/*.ts`), holds Anthropic+Fish keys server-side, validates against Supabase `licenses`, per-license metering with soft-warn fair-use cap (`FAIR_USE_MONTHLY_USD` default $8), Langfuse tracing, `migration_usage.sql` (`license_usage` + `record_usage()` RPC). **Stage B1** (PR #10, live): `server.py` routes all AI/TTS through the proxy (base_url + `X-License-Key`, TTS via `/api/proxy/tts`); new `licensing.py` (7-day offline grace, `data/license_state.json`); in-app API-key entry removed, settings now License Key + Proxy URL; loop refuses when not entitled. **Stage B2** (PR #11): split `server.py` ~5,790 → ~5,325 via `task_manager.py`, `voice_text.py`, `project_scanner.py`. **Stage C** (PR #12, in review): portable `action_executor.py` + `applescript_executor.py` (capabilities incl. delete-to-Trash, scriptability detection via `.sdef`/Info.plist, structured `not_supported`). Decisions locked: bundled+metered AI, proxy-in-product-site, native Messages dialect, soft-warn fair-use, cut `self_mod` in Stage E. Open decisions: product name/domain, fair-use number, Tauri vs Electron, Sentry vs alt.
+- **2026-06-10:** kuba-vault refresh — caught up self-mod ship reliability (AXDescription terminal focus, live-pane verify + file-ship fallback, 44KB paste fix), render-only multi-day weather panel; recorded the supervised PR factory (PR #1).
+- **2026-06-10:** Supervised PR factory wired up — `factory.yml` (factory-tests + fail-closed factory-review), merge policy in CLAUDE.md, branch protection on main. Auto-merge OFF until a ~2-week soak.
+- **2026-06-04:** Self-mod ship hardened — AXDescription terminal focus, verify Claude pane live before paste (else file-ship), `abandon_feature_branch()` + scrap-branch path.
+- **2026-06-03:** Render-only multi-day weather panel; ship-phrase fix; repo-rename cleanup.
+- **2026-05-31:** Fixed self-mod silently dropping a ~44KB paste — `project_context.py` caps warm context at 6000 chars.
+- **2026-05-26:** kuba-vault refresh — no new commits since 2026-05-22; flagged quiet stretch.
+- **2026-05-22:** kuba-vault initial PROJECT.md superdoc.
+- **2026-05-22:** chunk 33 — native `[ACTION:CHECK_WEATHER]` via Open-Meteo + floating weather card.
+- **2026-05-21:** chunk 32 — greenfield projects (design + scaffold + ship), stack picker.
+- **2026-05-21:** chunks 26-31 — wake-phrase alias, sub-agent dispatch, em-dash strip, `_looks_like_app()` fix.
+- **2026-05-19:** chunks 21-25 — voice → Claude Code via auto-paste + dictation, design-panel paste-target dropdown.
+- **2026-05-17:** chunks 0-18 — process panel, haiku middleware, native Opus research + streaming source cards, floating result panels, self-modification machinery.
