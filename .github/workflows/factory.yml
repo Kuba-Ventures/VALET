@@ -37,6 +37,18 @@ jobs:
         # (network + Playwright) are intentionally excluded from the merge gate.
         run: |
           python -m pytest tests/test_e2e_pipeline.py tests/test_feedback_loop.py -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend type-check + build
+        # tsc (strict) + vite build. Catches type errors and broken imports across
+        # the whole frontend before a PR can merge. Deterministic, no secrets.
+        run: |
+          cd frontend
+          npm ci
+          npm run build
 
   factory-review:
     name: factory-review
