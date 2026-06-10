@@ -13,3 +13,4 @@ watchdog>=4.0
 # Observability — Langfuse tracing for all Anthropic LLM calls (see observability.py)
 langfuse>=3.2.0
 opentelemetry-instrumentation-anthropic>=0.40.0
+sentry-sdk>=2.0

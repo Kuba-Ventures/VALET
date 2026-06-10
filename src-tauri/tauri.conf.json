@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VALET",
+  "version": "0.1.0",
+  "identifier": "ai.valet.desktop",
+  "build": {
+    "frontendDist": "./loading"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "VALET",
+        "label": "main",
+        "url": "index.html",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 560,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Talk to your computer.",
+    "longDescription": "VALET is a voice-first AI assistant for macOS. Speak to it and it acts across your apps.",
+    "externalBin": ["binaries/valet-backend"],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "entitlements": "entitlements.plist",
+      "exceptionDomain": "localhost",
+      "signingIdentity": null,
+      "providerShortName": null
+    }
+  }
+}
