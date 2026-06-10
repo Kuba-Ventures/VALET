@@ -24,6 +24,14 @@ export default function CheckoutButton({
   async function startCheckout() {
     setLoading(true);
     setError(null);
+    // GTM analytics: intent to start a trial. Configure as a tag in GTM.
+    window.dataLayer = window.dataLayer || [];
+    window.dataLayer.push({
+      event: "begin_checkout",
+      plan,
+      value: plan === "ultra" ? 50 : 20,
+      currency: "USD",
+    });
     try {
       const res = await fetch("/api/checkout", {
         method: "POST",
