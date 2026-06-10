@@ -139,8 +139,48 @@ PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://jarvis-y.vercel.app").rstr
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # dev fallback only
 FISH_API_KEY = os.getenv("FISH_API_KEY", "")  # dev fallback only
-FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # VALET voice
+FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # VALET voice (British male)
 FISH_API_URL = "https://api.fish.audio/v1/tts"  # dev fallback only
+
+# Stage E: two selectable British voices. The persona (VALET, the butler) is
+# unchanged — only the Fish TTS model swaps. The active voice's reference_id is
+# sent on every TTS call (the proxy forwards it). VALET_VOICE = "male" | "female".
+VALET_VOICE_MALE_ID = os.getenv("VALET_VOICE_MALE_ID", "") or FISH_VOICE_ID
+VALET_VOICE_FEMALE_ID = os.getenv("VALET_VOICE_FEMALE_ID", "")  # set to a British female Fish reference_id
+
+
+def _active_voice_id() -> str:
+    """The currently selected voice's Fish reference_id, read live so a Settings
+    change takes effect without a restart. Falls back to male if female is
+    selected but no female id is configured yet."""
+    choice = (os.getenv("VALET_VOICE", "male") or "male").strip().lower()
+    male = (os.getenv("VALET_VOICE_MALE_ID", "").strip() or FISH_VOICE_ID)
+    female = os.getenv("VALET_VOICE_FEMALE_ID", "").strip()
+    if choice == "female" and female:
+        return female
+    return male
+
+
+def _is_shipped_build() -> bool:
+    """True in a packaged/distributed build. Self-modification is disabled and
+    self_mod.py is excluded from such builds (Stage E / F). Detected by the
+    VALET_SHIPPED flag or the absence of a .git directory."""
+    if os.getenv("VALET_SHIPPED", "").strip():
+        return True
+    return not (Path(__file__).parent / ".git").exists()
+
+
+def _load_self_mod():
+    """Lazy-load the dev-only self-modification tool. Returns None in a shipped
+    build (where self_mod.py is excluded) so callers no-op instead of importing
+    it. In the dev repo this returns the module, preserving existing behavior."""
+    if _is_shipped_build():
+        return None
+    try:
+        import self_mod
+        return self_mod
+    except ImportError:
+        return None
 USER_NAME = os.getenv("USER_NAME", "sir")
 DATE_OF_BIRTH = os.getenv("DATE_OF_BIRTH", "")
 ADDRESS = os.getenv("ADDRESS", "")
@@ -1118,7 +1158,8 @@ async def _execute_ship_design(ws):
     and require the explicit voice word "confirmed" before any composition
     or dispatch happens. NOT optional per the plan.
     """
-    import design_partner, self_mod
+    import design_partner
+    self_mod = _load_self_mod()  # None in a shipped build → self-mod disabled
 
     session = design_partner.get_for_ws(ws)
     if session is None:
@@ -1203,7 +1244,7 @@ async def _execute_ship_design(ws):
     # ── Phase 5 approval gate for self-modifications ──
     # Belt-and-suspenders: check both the session's self_mod flag AND the
     # path identity (in case the flag got out of sync somehow).
-    if session.self_mod or self_mod.is_valet_repo(session.project_path):
+    if self_mod is not None and (session.self_mod or self_mod.is_valet_repo(session.project_path)):
         ws.pending_offer = {
             "kind": "self_mod_confirm",
             "session_id": session.id,
@@ -1348,7 +1389,11 @@ async def _handle_self_mod_confirm(transcript: str, ws) -> bool:
         await _speak(ws, "Cancelled, sir. Self-mod requires the word 'confirmed'.")
         return True
 
-    import design_partner, self_mod
+    import design_partner
+    self_mod = _load_self_mod()
+    if self_mod is None:
+        await _speak(ws, "Self-modification isn't available in this build, sir.")
+        return True
 
     session = None
     for s in design_partner._active.values():
@@ -1526,10 +1571,10 @@ async def _execute_scrap_design(ws):
         # (discard the build, return to where we branched from). Only do this
         # when we're actually still on that branch; otherwise it already merged
         # or was a file-ship, and the old keep-the-inbox guidance applies.
-        import self_mod
+        self_mod = _load_self_mod()
         branch = getattr(session, "feature_branch", None)
         parent = getattr(session, "parent_branch", None) or "main"
-        if branch and self_mod.current_branch() == branch:
+        if self_mod and branch and self_mod.current_branch() == branch:
             res = self_mod.abandon_feature_branch(branch, return_to=parent)
             if res["success"]:
                 design_partner.persist(session, status="scrapped",
@@ -1558,7 +1603,10 @@ async def _execute_merge_branch(ws):
     auto-resetting — user decides what to do with a failed feature branch).
     Never deletes the feature branch after merge.
     """
-    import self_mod
+    self_mod = _load_self_mod()
+    if self_mod is None:
+        await _speak(ws, "Branch merging isn't available in this build, sir.")
+        return
     cur = self_mod.current_branch()
     if not cur.startswith("feature/"):
         await _speak(ws, f"Not on a feature branch, sir. Currently on {cur}. Nothing to merge.")
@@ -1584,7 +1632,12 @@ async def _execute_restart_self(ws):
     """Phase 5 — spawn the detached restarter. Speaks confirmation BEFORE the
     restarter kills the current process (otherwise the speech doesn't make it
     to the user)."""
-    import self_mod
+    self_mod = _load_self_mod()
+    if self_mod is None:
+        # restart_self lives in the dev-only self_mod module; a packaged build
+        # restarts via its host shell (wired in Stage F packaging).
+        await _speak(ws, "I can't restart myself in this build, sir.")
+        return
     await _speak(ws, "Restarting in a couple seconds, sir.")
     # Give the TTS time to actually send before the restarter pkills us.
     await asyncio.sleep(0.8)
@@ -2456,14 +2509,15 @@ _last_greeting_time: float = 0
 async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio. Routes through the proxy's TTS endpoint when
     licensed (Fish Audio upstream); falls back to direct Fish in dev only."""
+    voice_id = _active_voice_id()
     if LICENSE_KEY:
         url = f"{PROXY_BASE_URL}/api/proxy/tts"
         headers = {"X-License-Key": LICENSE_KEY, "Content-Type": "application/json"}
-        payload = {"text": text, "format": "mp3"}
+        payload = {"text": text, "reference_id": voice_id, "format": "mp3"}
     elif FISH_API_KEY:
         url = FISH_API_URL
         headers = {"Authorization": f"Bearer {FISH_API_KEY}", "Content-Type": "application/json"}
-        payload = {"text": text, "reference_id": FISH_VOICE_ID, "format": "mp3"}
+        payload = {"text": text, "reference_id": voice_id, "format": "mp3"}
     else:
         log.warning("No LICENSE_KEY (or dev FISH_API_KEY) set, skipping TTS")
         return None
@@ -5080,7 +5134,7 @@ class PreferencesUpdate(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     # The app holds NO vendor secrets — only its license key and the proxy URL.
-    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
+    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "VALET_VOICE", "VALET_VOICE_MALE_ID", "VALET_VOICE_FEMALE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
@@ -5275,7 +5329,12 @@ async def api_get_config():
     # Read .env fresh so renaming the assistant only needs a backend restart.
     _, env_dict = _read_env()
     name = env_dict.get("ASSISTANT_NAME", "").strip() or "vee"
-    return {"assistant_name": name}
+    voice = (env_dict.get("VALET_VOICE", "").strip().lower() or "male")
+    return {
+        "assistant_name": name,
+        "voice": "female" if voice == "female" else "male",
+        "voice_female_available": bool(env_dict.get("VALET_VOICE_FEMALE_ID", "").strip()),
+    }
 
 # ---------------------------------------------------------------------------
 # Safety: global kill switch (Stage D)

@@ -516,6 +516,20 @@ body.wake-sleeping #orb-canvas {
   color: rgba(124, 104, 240, 0.8);
 }
 
+/* Voice picker (Stage E) — two-option toggle */
+.settings-voice-toggle { gap: 8px; }
+.voice-opt { flex: 1; }
+.voice-opt.active {
+  background: rgba(124, 104, 240, 0.2);
+  border-color: rgba(124, 104, 240, 0.55);
+  color: rgba(200, 190, 255, 0.95);
+}
+.settings-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(180, 200, 215, 0.5);
+}
+
 .settings-btn.primary:hover {
   background: rgba(124, 104, 240, 0.2);
   color: #00d4ff;
