@@ -125,10 +125,18 @@ _log_startup_banner()
 # Config
 # ---------------------------------------------------------------------------
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-FISH_API_KEY = os.getenv("FISH_API_KEY", "")
+# Stage B: the app calls the hosted proxy instead of vendors directly. It stores
+# only a license key and the proxy base URL — no vendor secrets ship with it.
+# The proxy validates the license, holds the real Anthropic/Fish keys, and meters
+# usage. ANTHROPIC_API_KEY / FISH_API_KEY remain as a DEV-ONLY fallback for this
+# internal repo (used only when LICENSE_KEY is unset); they are not shipped.
+LICENSE_KEY = os.getenv("LICENSE_KEY", "")
+PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://jarvis-y.vercel.app").rstrip("/")
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # dev fallback only
+FISH_API_KEY = os.getenv("FISH_API_KEY", "")  # dev fallback only
 FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # JARVIS (MCU)
-FISH_API_URL = "https://api.fish.audio/v1/tts"
+FISH_API_URL = "https://api.fish.audio/v1/tts"  # dev fallback only
 USER_NAME = os.getenv("USER_NAME", "sir")
 DATE_OF_BIRTH = os.getenv("DATE_OF_BIRTH", "")
 ADDRESS = os.getenv("ADDRESS", "")
@@ -2906,25 +2914,23 @@ _last_greeting_time: float = 0
 # ---------------------------------------------------------------------------
 
 async def synthesize_speech(text: str) -> Optional[bytes]:
-    """Generate speech audio from text using Fish Audio TTS."""
-    if not FISH_API_KEY:
-        log.warning("FISH_API_KEY not set, skipping TTS")
+    """Generate speech audio. Routes through the proxy's TTS endpoint when
+    licensed (Fish Audio upstream); falls back to direct Fish in dev only."""
+    if LICENSE_KEY:
+        url = f"{PROXY_BASE_URL}/api/proxy/tts"
+        headers = {"X-License-Key": LICENSE_KEY, "Content-Type": "application/json"}
+        payload = {"text": text, "format": "mp3"}
+    elif FISH_API_KEY:
+        url = FISH_API_URL
+        headers = {"Authorization": f"Bearer {FISH_API_KEY}", "Content-Type": "application/json"}
+        payload = {"text": text, "reference_id": FISH_VOICE_ID, "format": "mp3"}
+    else:
+        log.warning("No LICENSE_KEY (or dev FISH_API_KEY) set, skipping TTS")
         return None
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
-            response = await http.post(
-                FISH_API_URL,
-                headers={
-                    "Authorization": f"Bearer {FISH_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "reference_id": FISH_VOICE_ID,
-                    "format": "mp3",
-                },
-            )
+            response = await http.post(url, headers=headers, json=payload)
             if response.status_code == 200:
                 _session_tokens["tts_calls"] += 1
                 _append_usage_entry(0, 0, "tts")
@@ -3292,13 +3298,27 @@ async def lifespan(application: FastAPI):
     # Enable Langfuse tracing before any LLM call so every Anthropic request is
     # captured. No-op (and never raises) if Langfuse isn't configured.
     observability.setup_observability()
-    if ANTHROPIC_API_KEY:
-        # max_retries=1 (default is 2): on 429 we want to surface the error
-        # quickly instead of waiting through two exponential-backoff retries
-        # (which is what caused those 10-15s response stalls during heavy use).
+    # max_retries=1 (default is 2): on 429 we want to surface the error quickly
+    # instead of waiting through two exponential-backoff retries (which caused
+    # those 10-15s response stalls during heavy use).
+    if LICENSE_KEY:
+        # Route every model call through the proxy. base_url makes the SDK POST
+        # to <proxy>/api/proxy/v1/messages; the proxy injects the real vendor key
+        # (the placeholder api_key below is ignored) and meters usage per license.
+        anthropic_client = anthropic.AsyncAnthropic(
+            api_key="license-proxy",
+            base_url=f"{PROXY_BASE_URL}/api/proxy",
+            default_headers={"X-License-Key": LICENSE_KEY},
+            max_retries=1,
+            timeout=20.0,
+        )
+        log.info(f"LLM via proxy: {PROXY_BASE_URL}/api/proxy")
+    elif ANTHROPIC_API_KEY:
+        # Dev-only fallback (internal repo): direct vendor access, no license.
         anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY, max_retries=1, timeout=20.0)
+        log.warning("LLM via direct ANTHROPIC_API_KEY (dev fallback — no proxy/license)")
     else:
-        log.warning("ANTHROPIC_API_KEY not set — LLM features disabled")
+        log.warning("No LICENSE_KEY or ANTHROPIC_API_KEY — LLM features disabled")
     cached_projects = []
 
     # Start context refresh in a separate thread (never touches event loop)
