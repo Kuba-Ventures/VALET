@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
 
   // Placeholder: a short README the app build will replace later.
   const readme = [
-    "[PRODUCT_NAME]",
+    "[JARVIS]",
     `Placeholder build ${PLACEHOLDER_VERSION}`,
     "",
     "Thank you. Your license is active.",
