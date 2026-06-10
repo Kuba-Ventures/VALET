@@ -1,6 +1,6 @@
-# [PRODUCT_NAME] marketing + checkout site
+# [JARVIS] marketing + checkout site
 
-The public front door for [PRODUCT_NAME]: a marketing landing page, Stripe
+The public front door for [JARVIS]: a marketing landing page, Stripe
 subscription checkout with a 7 day free trial, license issuance into Supabase,
 and a license validation endpoint the local app calls to gate access.
 
@@ -91,7 +91,7 @@ key. That one line flips the route from placeholder to real installer.
 
 ## Open questions (surfaced, not blocking)
 
-- Final public product name and domain (everything uses `[PRODUCT_NAME]`).
+- Final public product name and domain (everything uses `[JARVIS]`).
 - Bundled key cost model: confirms whether "everything included, no API key"
   copy is accurate at launch.
 - Real download artifact format (signed DMG, Tauri/Electron wrapper, installer).

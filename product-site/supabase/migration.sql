@@ -1,4 +1,4 @@
--- [PRODUCT_NAME] license + entitlement store.
+-- [JARVIS] license + entitlement store.
 -- Run this once against your Supabase project (SQL editor or psql).
 
 create extension if not exists "pgcrypto";

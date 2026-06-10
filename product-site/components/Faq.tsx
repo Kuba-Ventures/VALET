@@ -1,7 +1,7 @@
 const FAQS = [
   {
     q: "What does it run on?",
-    a: "[PRODUCT_NAME] runs on your own Mac. You download and install it, then it works locally and acts on your machine. An agent that controls your computer has to run on your computer, so there is no browser-only version.",
+    a: "[JARVIS] runs on your own Mac. You download and install it, then it works locally and acts on your machine. An agent that controls your computer has to run on your computer, so there is no browser-only version.",
   },
   {
     q: "What does the free trial include?",
