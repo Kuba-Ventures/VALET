@@ -18,6 +18,7 @@ from typing import Optional
 import anthropic
 
 from templates import TEMPLATES, get_template
+import observability
 
 log = logging.getLogger("jarvis.planner")
 
@@ -123,6 +124,7 @@ def _quick_classify(text: str) -> str:
     return "simple"
 
 
+@observability.observe(name="planner-mode", capture_input=False, capture_output=True)
 async def _classify_planning_mode_llm(
     text: str, client: anthropic.AsyncAnthropic
 ) -> PlanningDecision:
@@ -673,6 +675,7 @@ class TaskPlanner:
 
     # -- Private helpers --
 
+    @observability.observe(name="planner-classify", capture_input=False, capture_output=True)
     async def _classify_request(self, text: str, client: anthropic.AsyncAnthropic) -> dict:
         """Use Haiku to classify request type and extract known info."""
         try:
