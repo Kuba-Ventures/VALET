@@ -12,6 +12,7 @@ import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { createProcessPanel, type ProcessEvent } from "./processPanel";
 import { createDesignPanel, type DesignEvent } from "./designPanel";
+import { createConfirmCard, type ConfirmRequest } from "./confirmCard";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -86,6 +87,31 @@ orb.setAnalyser(audioPlayer.getAnalyser());
 // Live "what VALET is doing" panel. Hidden until the first event arrives.
 const processPanel = createProcessPanel();
 const designPanel = createDesignPanel();
+
+// Tier 1 confirmation card (Stage D) — appears when a risky action needs approval.
+const confirmCard = createConfirmCard();
+
+// Global kill switch — always available; halts in-progress actions + the loop.
+const killBtn = document.createElement("button");
+killBtn.className = "kill-switch";
+killBtn.type = "button";
+killBtn.textContent = "■ STOP";
+document.body.appendChild(killBtn);
+let killEngaged = false;
+function setKillEngaged(on: boolean) {
+  killEngaged = on;
+  killBtn.classList.toggle("engaged", on);
+  killBtn.textContent = on ? "■ STOPPED — reset" : "■ STOP";
+  if (on) {
+    audioPlayer.stop();
+    confirmCard.hide();
+  }
+}
+killBtn.addEventListener("click", async () => {
+  const url = killEngaged ? "/api/safety/kill/reset" : "/api/safety/kill";
+  setKillEngaged(!killEngaged); // optimistic; server also broadcasts kill_state
+  try { await fetch(url, { method: "POST" }); } catch { /* ignore */ }
+});
 
 // Ship/Scrap button handlers → synthesize a fake transcript so the existing
 // fast-action path runs (single source of truth for the ship/scrap pipeline).
@@ -284,6 +310,14 @@ socket.onMessage((msg) => {
   } else if (type === "close_panel") {
     // Server-side voice intent ("close it", "dismiss", etc.) closes the panel.
     processPanel.close();
+  } else if (type === "confirm_request") {
+    // Tier 1 action awaiting approval — show the confirm card, reply with the choice.
+    const req = msg as unknown as ConfirmRequest;
+    confirmCard.show(req, (allow) => {
+      socket.send({ type: "confirm_response", id: req.id, allow });
+    });
+  } else if (type === "kill_state") {
+    setKillEngaged(Boolean((msg as { engaged?: boolean }).engaged));
   } else if (type === "design_event") {
     // Design-partner emissions — drive the Design Panel beside the orb.
     const event = msg.event as DesignEvent | undefined;
