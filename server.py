@@ -385,6 +385,12 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
 4. Never mention a project named in a prior conversation as currently existing unless KNOWN PROJECTS confirms it AND the user just referenced it.
 - [ACTION:DELETE_FILE] absolute_path — move a file to Trash via Finder (recoverable, not permanent). YOU CAN delete files when the user asks. Don't say you can't.
   "delete the screenshot on my desktop" → [ACTION:DELETE_FILE] /Users/{user_name}/Desktop/Screenshot 2026-05-15 at 4.43.13 PM.png
+- [ACTION:WRITE_FILE] absolute_path ||| file contents — create or overwrite a text file. Overwriting an existing file asks the user to confirm first.
+  "save a note to my desktop saying call mom" → [ACTION:WRITE_FILE] /Users/{user_name}/Desktop/note.txt ||| Call mom
+- [ACTION:MOVE_FILE] source_path ||| destination_path — move or rename a file (asks to confirm).
+  "move that screenshot to my documents" → [ACTION:MOVE_FILE] /Users/{user_name}/Desktop/shot.png ||| /Users/{user_name}/Documents/shot.png
+- [ACTION:LIST_FOLDER] absolute_path — list a folder's contents (read-only, no confirm).
+  "what's in my downloads folder" → [ACTION:LIST_FOLDER] /Users/{user_name}/Downloads
   If you don't know the exact filename, use [ACTION:APPLESCRIPT] to list the desktop first and find it, or [ACTION:OPEN_APP] Desktop so the user can identify it.
 - [ACTION:TYPE] app_name ||| text — activate an app and type text into it (no Enter). For filling form fields, address bars, partial input, etc.
   "type 'hello world' into the search bar" → [ACTION:TYPE] Google Chrome ||| hello world
@@ -551,7 +557,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2731,6 +2737,33 @@ async def _run_gated_action(ws: "WebSocket", result_coro) -> None:
     except Exception:
         pass
 
+
+# Tier 1 actions that don't route through the gated SafeExecutor (they have
+# their own orchestration) but still need an explicit confirmation: calendar
+# create/modify and sending keystrokes (outbound). Delete/move/write/applescript
+# already confirm via the executor.
+_CONFIRM_ACTIONS = {"create_event", "cancel_event", "send"}
+
+
+async def _confirm_action(ws: "WebSocket", ea: dict) -> bool:
+    """Ask the user to confirm a Tier 1 action. Returns True to allow. Speaks the
+    cancellation on deny."""
+    target = (ea.get("target") or "")[:140]
+    summaries = {
+        "create_event": f"Create a calendar event: {target}",
+        "cancel_event": f"Cancel a calendar event: {target}",
+        "send": f"Type and send into an app: {target}",
+    }
+    allowed = await confirmations.request(
+        summary=summaries.get(ea["action"], f"Run {ea['action']}?"),
+        targets=[target] if target else [],
+        tier=1,
+    )
+    if not allowed:
+        await _speak(ws, "Cancelled, sir.")
+    return allowed
+
+
 # Usage tracking — logs every call with timestamp, persists to disk
 _USAGE_FILE = Path(__file__).parent / "data" / "usage_log.jsonl"
 _session_start = time.time()
@@ -4827,7 +4860,13 @@ async def voice_handler(ws: WebSocket):
                                     else:
                                         response_text = "Right away, sir."
 
-                                if embedded_action["action"] == "build":
+                                # Phase H: global kill switch halts ALL actions;
+                                # Tier 1 actions outside the gated executor confirm here.
+                                if kill_switch.is_engaged():
+                                    await _speak(ws, "Halted, sir.")
+                                elif embedded_action["action"] in _CONFIRM_ACTIONS and not await _confirm_action(ws, embedded_action):
+                                    pass  # denied — _confirm_action already spoke
+                                elif embedded_action["action"] == "build":
                                     # Build in background — VALET stays conversational
                                     target = embedded_action["target"]
                                     name = _generate_project_name(target)
@@ -4904,6 +4943,17 @@ async def voice_handler(ws: WebSocket):
                                 elif embedded_action["action"] == "delete_file":
                                     # Tier 1: confirm-first (to Trash) via the safety gate.
                                     asyncio.create_task(_run_gated_action(ws, executor.delete_file(embedded_action["target"])))
+                                elif embedded_action["action"] == "write_file":
+                                    # "path ||| contents". Tier 1 when overwriting (gated in executor).
+                                    _wp, _, _wc = embedded_action["target"].partition("|||")
+                                    asyncio.create_task(_run_gated_action(ws, executor.write_file(_wp.strip(), _wc.strip())))
+                                elif embedded_action["action"] == "move_file":
+                                    # "src ||| dst". Tier 1 (gated in executor).
+                                    _ms, _, _md = embedded_action["target"].partition("|||")
+                                    asyncio.create_task(_run_gated_action(ws, executor.move_file(_ms.strip(), _md.strip())))
+                                elif embedded_action["action"] == "list_folder":
+                                    # Tier 0: read-only listing.
+                                    asyncio.create_task(_run_gated_action(ws, executor.list_folder(embedded_action["target"])))
                                 elif embedded_action["action"] == "applescript":
                                     # Tier 1: arbitrary AppleScript confirms first.
                                     asyncio.create_task(_run_gated_action(ws, executor.run_script(embedded_action["target"])))
