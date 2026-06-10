@@ -119,9 +119,18 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-field">
-            <label>Voice ID</label>
+            <label>Voice</label>
+            <div class="settings-input-row settings-voice-toggle">
+              <button class="settings-btn voice-opt active" id="voice-male" data-voice="male" type="button">British Male</button>
+              <button class="settings-btn voice-opt" id="voice-female" data-voice="female" type="button">British Female</button>
+            </div>
+            <div class="settings-hint" id="voice-female-hint" hidden>Add a British female Fish voice ID below to enable.</div>
+          </div>
+
+          <div class="settings-field">
+            <label>Voice ID (advanced)</label>
             <div class="settings-input-row">
-              <input type="text" id="input-fish-voice-id" placeholder="612b878b113047d9a770c069c8b4fdfe" />
+              <input type="text" id="input-fish-voice-id" placeholder="Fish reference_id override" />
               <button class="settings-btn" id="btn-save-voice-id">Save</button>
             </div>
           </div>
@@ -404,6 +413,33 @@ function wireEvents() {
   // Tab switching
   document.getElementById("tab-btn-computer")?.addEventListener("click", () => activateTab("computer"));
   document.getElementById("tab-btn-user")?.addEventListener("click", () => activateTab("user"));
+
+  // Voice picker (British Male / British Female). Persona is unchanged — this
+  // only swaps the Fish TTS model. Writes VALET_VOICE; takes effect on the next
+  // spoken reply (no restart needed).
+  const setActiveVoice = (voice: string) => {
+    document.querySelectorAll<HTMLElement>(".voice-opt").forEach((b) => {
+      b.classList.toggle("active", b.dataset.voice === voice);
+    });
+  };
+  async function loadVoice() {
+    try {
+      const cfg = await apiGet<{ voice?: string; voice_female_available?: boolean }>("/api/config");
+      setActiveVoice(cfg.voice === "female" ? "female" : "male");
+      const hint = document.getElementById("voice-female-hint");
+      if (hint) hint.hidden = !!cfg.voice_female_available;
+    } catch {
+      /* keep default */
+    }
+  }
+  document.querySelectorAll<HTMLElement>(".voice-opt").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const voice = btn.dataset.voice || "male";
+      setActiveVoice(voice);
+      await apiPost("/api/settings/keys", { key_name: "VALET_VOICE", key_value: voice });
+    });
+  });
+  void loadVoice();
 
   // Close
   document.getElementById("settings-close")?.addEventListener("click", closeSettings);
