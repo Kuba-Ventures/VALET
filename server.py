@@ -57,6 +57,7 @@ from process_events import (
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
 from work_mode import WorkSession, is_casual_question
+import observability
 from screen import get_active_windows, take_screenshot, describe_screen, format_windows_for_context
 from calendar_access import get_todays_events, get_upcoming_events, get_next_event, format_events_for_context, format_schedule_summary, refresh_cache as refresh_calendar_cache, create_event as calendar_create_event, delete_event as calendar_delete_event, get_events_for_date as calendar_events_for_date
 from mail_access import get_unread_count, get_unread_messages, get_recent_messages, search_mail, read_message, format_unread_summary, format_messages_for_context, format_messages_for_voice, create_draft as mail_create_draft
@@ -815,6 +816,7 @@ def apply_speech_corrections(text: str) -> str:
 # LLM Intent Classifier (replaces keyword-based action detection)
 # ---------------------------------------------------------------------------
 
+@observability.observe(name="classify-intent", capture_input=False, capture_output=True)
 async def classify_intent(text: str, client: anthropic.AsyncAnthropic) -> dict:
     """Classify every user message using Haiku LLM.
 
@@ -2483,6 +2485,7 @@ def _extract_fetch_snippet(content) -> str:
     return ""
 
 
+@observability.observe(name="native-research", capture_input=False, capture_output=False)
 async def _execute_native_research(target: str, ws=None):
     """Native research path — Opus 4.7 with server-side web_search + web_fetch.
 
@@ -2938,6 +2941,7 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
 # LLM Response
 # ---------------------------------------------------------------------------
 
+@observability.observe(name="generate-response", capture_input=False, capture_output=True)
 async def generate_response(
     text: str,
     client: anthropic.AsyncAnthropic,
@@ -3285,6 +3289,9 @@ return windowList
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects
+    # Enable Langfuse tracing before any LLM call so every Anthropic request is
+    # captured. No-op (and never raises) if Langfuse isn't configured.
+    observability.setup_observability()
     if ANTHROPIC_API_KEY:
         # max_retries=1 (default is 2): on 429 we want to surface the error
         # quickly instead of waiting through two exponential-backoff retries
@@ -3314,6 +3321,9 @@ async def lifespan(application: FastAPI):
     log.info("JARVIS server starting")
 
     yield
+
+    # Flush any buffered traces so nothing is lost on shutdown.
+    observability.shutdown_observability()
 
 
 app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
@@ -4478,6 +4488,13 @@ async def voice_handler(ws: WebSocket):
     await ws.accept()
     task_manager.register_websocket(ws)
     await process_bus.subscribe(ws)
+    # Per-connection Langfuse scope: groups every trace from this conversation
+    # under one session_id (and attributes them to the user) in the Sessions
+    # view. No-op when tracing is disabled. Closed in the finally below.
+    conversation_id = uuid.uuid4().hex
+    _obs_scope = observability.connection_scope(
+        session_id=conversation_id, user_id=USER_NAME, tags=["voice"]
+    ).enter()
     history: list[dict] = []
     work_session = WorkSession()
     planner = TaskPlanner()
@@ -5324,6 +5341,7 @@ async def voice_handler(ws: WebSocket):
     finally:
         task_manager.unregister_websocket(ws)
         await process_bus.unsubscribe(ws)
+        _obs_scope.close()
 
 
 # ---------------------------------------------------------------------------

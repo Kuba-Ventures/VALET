@@ -48,7 +48,7 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
 
   const mat = new THREE.PointsMaterial({
-    color: 0x4169e1, size: 0.4, transparent: true, opacity: 0.6,
+    color: 0x0a0f2e, size: 0.4, transparent: true, opacity: 0.6,
     sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
 
@@ -63,7 +63,7 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   lineGeo.setDrawRange(0, 0);
 
   const lineMat = new THREE.LineBasicMaterial({
-    color: 0x4169e1, transparent: true, opacity: 0.0,
+    color: 0x0a0f2e, transparent: true, opacity: 0.0,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
 
@@ -78,7 +78,7 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   electronGeo.setDrawRange(0, 0);
 
   const electronMat = new THREE.PointsMaterial({
-    color: 0xffffff, size: 0.8, transparent: true, opacity: 1.0,
+    color: 0x3a4fb0, size: 0.8, transparent: true, opacity: 1.0,
     sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
 
@@ -126,16 +126,16 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
 
     switch (state) {
       case "idle":
-        targetRadius = 28; targetSpeed = 0.2; targetBright = 0.5; targetSize = 0.35;
+        targetRadius = 28; targetSpeed = 0.2; targetBright = 0.65; targetSize = 0.35;
         targetLineAmount = 0.15; targetElectronRate = 0; break;
       case "listening":
-        targetRadius = 22; targetSpeed = 0.3; targetBright = 0.65; targetSize = 0.4;
+        targetRadius = 22; targetSpeed = 0.3; targetBright = 0.8; targetSize = 0.4;
         targetLineAmount = 0.4; targetElectronRate = 0; break;
       case "thinking":
-        targetRadius = 16; targetSpeed = 0.5; targetBright = 0.7; targetSize = 0.3;
+        targetRadius = 16; targetSpeed = 0.5; targetBright = 0.85; targetSize = 0.3;
         targetLineAmount = 1.0; targetElectronRate = 0.015; break;
       case "speaking":
-        targetRadius = 18; targetSpeed = 0.2; targetBright = 0.7; targetSize = 0.4;
+        targetRadius = 18; targetSpeed = 0.2; targetBright = 0.85; targetSize = 0.4;
         targetLineAmount = 0.8; targetElectronRate = 0; break;
     }
 
@@ -297,9 +297,9 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     mat.opacity = currentBright + bass * 0.08;
     mat.size = currentSize + bass * 0.05;
 
-    // Particles + lines: single uniform royal blue (#4169E1) across all states.
-    mat.color.lerp(new THREE.Color(0x4169e1), 0.015);
-    lineMat.color.lerp(new THREE.Color(0x4169e1), 0.015);
+    // Particles + lines: single uniform deep navy (#0a0f2e) across all states.
+    mat.color.lerp(new THREE.Color(0x0a0f2e), 0.015);
+    lineMat.color.lerp(new THREE.Color(0x0a0f2e), 0.015);
 
     camera.position.x = Math.sin(t * 0.02) * 5;
     camera.position.y = Math.cos(t * 0.03) * 3;

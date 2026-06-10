@@ -1,0 +1,4 @@
+# Dev/test dependencies for the supervised PR factory's deterministic test gate.
+# The runtime deps live in requirements.txt; these are CI-only.
+pytest>=8.0
+pytest-asyncio>=0.23

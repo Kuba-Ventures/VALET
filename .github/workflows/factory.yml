@@ -1,0 +1,123 @@
+name: factory
+
+# Supervised PR factory. Every PR runs two checks:
+#   factory-tests  — the deterministic Python safety net (mock-based, no secrets/network)
+#   factory-review — the supervised reviewer, turned into a fail-closed pass/fail check
+#
+# factory-review is GREEN whenever the reviewer actually RAN and produced a verdict
+# (APPROVE-LOWRISK or ESCALATE) — so a human can merge an escalated PR normally, no admin
+# override needed. It is RED only when no real review happened (fail-closed) — e.g. a PR that
+# modifies .github/** which the Claude action skips by design, or an unrecognized verdict.
+#
+# The verdict still governs AUTO-merge: only APPROVE-LOWRISK is auto-merge-eligible (gated
+# behind the repo variable FACTORY_AUTOMERGE, unset = off). ESCALATE is reviewed + labeled,
+# then left for a human to merge deliberately. Auto-merge is enabled only after a soak.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  factory-tests:
+    name: factory-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run deterministic test gate
+        # Only the mock-based, hermetic tests run here: no live LLM calls, no network,
+        # no API key. test_classifier.py (live Anthropic) and test_browser_integration.py
+        # (network + Playwright) are intentionally excluded from the merge gate.
+        run: |
+          python -m pytest tests/test_e2e_pipeline.py tests/test_feedback_loop.py -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend type-check + build
+        # tsc (strict) + vite build. Catches type errors and broken imports across
+        # the whole frontend before a PR can merge. Deterministic, no secrets.
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+  factory-review:
+    name: factory-review
+    needs: factory-tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Supervised review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          claude_args: '--allowed-tools "Read,Grep,Glob,Write,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(git diff:*),Bash(git fetch:*),Bash(git log:*)"'
+          prompt: |
+            You are the reviewer for a supervised PR factory. Review pull request
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            The factory-tests job has already passed — this job depends on it.
+
+            Use the **pr-reviewer** subagent defined at .claude/agents/pr-reviewer.md and
+            follow its instructions exactly:
+              1. Read the `## Merge policy` block in CLAUDE.md to learn this repo's low-risk
+                 surfaces and its always-escalate surfaces.
+              2. Read the PR diff against the base branch.
+              3. Walk the escalation gates and decide APPROVE-LOWRISK or ESCALATE. When in
+                 doubt, ESCALATE — this is a paying client's product.
+
+            Then take exactly these actions, IN THIS ORDER:
+              1. FIRST, write your decision as a single bare token to a file named
+                 `.factory-verdict` in the repository root — either `APPROVE-LOWRISK` or
+                 `ESCALATE` and nothing else. This file is how the gate is computed, so write
+                 it before anything else.
+              2. Post your review as a PR comment, ending with the exact VERDICT line
+                 (`VERDICT: APPROVE-LOWRISK` or `VERDICT: ESCALATE — <reason>`).
+              3. If APPROVE-LOWRISK: add the label `factory:lowrisk` to the PR.
+                 If ESCALATE: add the label `factory:escalate` to the PR.
+
+            Do NOT merge the PR under any circumstances.
+
+      - name: Compute merge gate (fail-closed)
+        run: |
+          # GREEN if the reviewer ran and produced a recognized verdict (low-risk OR escalate),
+          # so escalated PRs stay human-mergeable without an admin override. RED (fail-closed)
+          # only when no real review happened — a missing verdict file means the action skipped
+          # (e.g. a PR touching .github/**), which must never count as a pass.
+          if [ ! -f .factory-verdict ]; then
+            echo "::error::No .factory-verdict written — the reviewer did not run (e.g. a PR that modifies .github/** which the Claude action skips by design). Failing closed; a human admin must review and override."
+            exit 1
+          fi
+          verdict="$(tr -d '[:space:]' < .factory-verdict)"
+          echo "Reviewer verdict: '${verdict}'"
+          case "$verdict" in
+            APPROVE-LOWRISK)
+              echo "APPROVE-LOWRISK — low-risk; eligible for auto-merge." ;;
+            ESCALATE)
+              echo "ESCALATE — reviewed and flagged for a human. Mergeable by a person; will not auto-merge." ;;
+            *)
+              echo "::error::Unrecognized verdict '${verdict}' — failing closed."
+              exit 1 ;;
+          esac
+          exit 0
