@@ -19,6 +19,7 @@ data/*.jsonl
 data/active_session.json
 data/.jarvis_output.txt
 data/google_tokens.json
+data/license_state.json
 data/screenshots/
 
 # Runtime logs — modified on every server restart, would otherwise trip

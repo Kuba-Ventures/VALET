@@ -2958,6 +2958,13 @@ async def generate_response(
     session_summary: str = "",
 ) -> str:
     """Generate a JARVIS response using Anthropic API."""
+    # License gate: refuse to assist when the license isn't entitled (with a
+    # 7-day offline grace window). No-op in dev fallback (no LICENSE_KEY).
+    await _ensure_license()
+    _blocked = assistant_blocked_message()
+    if _blocked:
+        return _blocked
+
     now = datetime.now()
     current_time = now.strftime("%A, %B %d, %Y at %I:%M %p")
 
@@ -3292,6 +3299,51 @@ return windowList
     log.info("Context refresh thread started")
 
 
+# ---------------------------------------------------------------------------
+# License gate
+# ---------------------------------------------------------------------------
+
+_last_license_check = 0.0
+
+
+def _license_status_label() -> str:
+    """Settings-panel label for license state ('dev' when running keyless)."""
+    if not LICENSE_KEY:
+        return "dev"
+    try:
+        import licensing
+        return licensing.status_label()
+    except Exception:
+        return "unknown"
+
+
+async def _ensure_license() -> None:
+    """Lazily revalidate the license at most every ~15 minutes."""
+    global _last_license_check
+    if not LICENSE_KEY:
+        return
+    import time as _t
+    import licensing
+    now = _t.time()
+    if now - _last_license_check > 900:
+        _last_license_check = now
+        await licensing.validate(LICENSE_KEY, PROXY_BASE_URL)
+
+
+def assistant_blocked_message() -> Optional[str]:
+    """Butler line to speak instead of working when the license is not entitled.
+    Returns None when entitled or in dev fallback (no LICENSE_KEY → no gate)."""
+    if not LICENSE_KEY:
+        return None
+    import licensing
+    if licensing.is_entitled():
+        return None
+    return (
+        "Apologies, sir — my licence requires attention before I can assist. "
+        "Do review your subscription."
+    )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects
@@ -3319,6 +3371,17 @@ async def lifespan(application: FastAPI):
         log.warning("LLM via direct ANTHROPIC_API_KEY (dev fallback — no proxy/license)")
     else:
         log.warning("No LICENSE_KEY or ANTHROPIC_API_KEY — LLM features disabled")
+
+    # Validate the license up front. The assistant loop is gated on this (with a
+    # 7-day offline grace window); dev fallback (no LICENSE_KEY) skips the gate.
+    if LICENSE_KEY:
+        import licensing
+        state = await licensing.validate(LICENSE_KEY, PROXY_BASE_URL)
+        if licensing.is_entitled():
+            log.info(f"license OK: {licensing.status_label()}")
+        else:
+            log.warning(f"license NOT entitled: status={state.get('status')} — assistant loop disabled")
+
     cached_projects = []
 
     # Start context refresh in a separate thread (never touches event loop)
@@ -5429,44 +5492,31 @@ class PreferencesUpdate(BaseModel):
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
-    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
+    # The app holds NO vendor secrets — only its license key and the proxy URL.
+    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
     return {"success": True}
 
-@app.post("/api/settings/test-anthropic")
-async def api_test_anthropic(body: KeyTest):
-    key = body.key_value or os.getenv("ANTHROPIC_API_KEY", "")
+@app.post("/api/settings/test-license")
+async def api_test_license(body: KeyTest):
+    """Validate the license against the proxy. Replaces the old per-vendor key
+    tests — the app no longer holds Anthropic/Fish keys."""
+    import licensing
+    key = (body.key_value or os.getenv("LICENSE_KEY", "")).strip()
+    base = (os.getenv("PROXY_BASE_URL", "") or PROXY_BASE_URL).rstrip("/")
     if not key:
-        return {"valid": False, "error": "No key provided"}
-    try:
-        client = anthropic.AsyncAnthropic(api_key=key)
-        await client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=10, messages=[{"role": "user", "content": "Hi"}])
-        return {"valid": True}
-    except Exception as e:
-        return {"valid": False, "error": str(e)[:200]}
-
-@app.post("/api/settings/test-fish")
-async def api_test_fish(body: KeyTest):
-    key = body.key_value or os.getenv("FISH_API_KEY", "")
-    if not key:
-        return {"valid": False, "error": "No key provided"}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.fish.audio/v1/tts",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"text": "test", "reference_id": FISH_VOICE_ID},
-            )
-            if resp.status_code in (200, 201):
-                return {"valid": True}
-            elif resp.status_code == 401:
-                return {"valid": False, "error": "Invalid API key"}
-            else:
-                return {"valid": False, "error": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"valid": False, "error": str(e)[:200]}
+        return {"valid": False, "error": "No license key provided"}
+    state = await licensing.validate(key, base)
+    status = state.get("status", "invalid")
+    if status in licensing.ENTITLED:
+        return {"valid": True, "status": status}
+    if status == "offline":
+        ok = licensing.is_entitled()
+        return {"valid": ok, "status": "offline",
+                "error": None if ok else "Cannot reach the licensing server."}
+    return {"valid": False, "status": status, "error": f"License is {status}."}
 
 @app.get("/api/settings/status")
 async def api_settings_status():
@@ -5499,8 +5549,9 @@ async def api_settings_status():
         "server_port": 8340,
         "uptime_seconds": int(time.time() - _session_start),
         "env_keys_set": {
-            "anthropic": bool(env_dict.get("ANTHROPIC_API_KEY", "").strip() and env_dict.get("ANTHROPIC_API_KEY", "") != "your-anthropic-api-key-here"),
-            "fish_audio": bool(env_dict.get("FISH_API_KEY", "").strip() and env_dict.get("FISH_API_KEY", "") != "your-fish-audio-api-key-here"),
+            "license": bool(env_dict.get("LICENSE_KEY", "").strip()),
+            "proxy_base_url": (env_dict.get("PROXY_BASE_URL", "").strip() or PROXY_BASE_URL),
+            "license_status": _license_status_label(),
             "fish_voice_id": bool(env_dict.get("FISH_VOICE_ID", "").strip()),
             "user_name": env_dict.get("USER_NAME", ""),
         },
