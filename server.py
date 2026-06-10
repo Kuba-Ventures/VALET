@@ -125,10 +125,18 @@ _log_startup_banner()
 # Config
 # ---------------------------------------------------------------------------
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-FISH_API_KEY = os.getenv("FISH_API_KEY", "")
+# Stage B: the app calls the hosted proxy instead of vendors directly. It stores
+# only a license key and the proxy base URL — no vendor secrets ship with it.
+# The proxy validates the license, holds the real Anthropic/Fish keys, and meters
+# usage. ANTHROPIC_API_KEY / FISH_API_KEY remain as a DEV-ONLY fallback for this
+# internal repo (used only when LICENSE_KEY is unset); they are not shipped.
+LICENSE_KEY = os.getenv("LICENSE_KEY", "")
+PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://jarvis-y.vercel.app").rstrip("/")
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # dev fallback only
+FISH_API_KEY = os.getenv("FISH_API_KEY", "")  # dev fallback only
 FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # JARVIS (MCU)
-FISH_API_URL = "https://api.fish.audio/v1/tts"
+FISH_API_URL = "https://api.fish.audio/v1/tts"  # dev fallback only
 USER_NAME = os.getenv("USER_NAME", "sir")
 DATE_OF_BIRTH = os.getenv("DATE_OF_BIRTH", "")
 ADDRESS = os.getenv("ADDRESS", "")
@@ -2906,25 +2914,23 @@ _last_greeting_time: float = 0
 # ---------------------------------------------------------------------------
 
 async def synthesize_speech(text: str) -> Optional[bytes]:
-    """Generate speech audio from text using Fish Audio TTS."""
-    if not FISH_API_KEY:
-        log.warning("FISH_API_KEY not set, skipping TTS")
+    """Generate speech audio. Routes through the proxy's TTS endpoint when
+    licensed (Fish Audio upstream); falls back to direct Fish in dev only."""
+    if LICENSE_KEY:
+        url = f"{PROXY_BASE_URL}/api/proxy/tts"
+        headers = {"X-License-Key": LICENSE_KEY, "Content-Type": "application/json"}
+        payload = {"text": text, "format": "mp3"}
+    elif FISH_API_KEY:
+        url = FISH_API_URL
+        headers = {"Authorization": f"Bearer {FISH_API_KEY}", "Content-Type": "application/json"}
+        payload = {"text": text, "reference_id": FISH_VOICE_ID, "format": "mp3"}
+    else:
+        log.warning("No LICENSE_KEY (or dev FISH_API_KEY) set, skipping TTS")
         return None
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
-            response = await http.post(
-                FISH_API_URL,
-                headers={
-                    "Authorization": f"Bearer {FISH_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "reference_id": FISH_VOICE_ID,
-                    "format": "mp3",
-                },
-            )
+            response = await http.post(url, headers=headers, json=payload)
             if response.status_code == 200:
                 _session_tokens["tts_calls"] += 1
                 _append_usage_entry(0, 0, "tts")
@@ -2952,6 +2958,13 @@ async def generate_response(
     session_summary: str = "",
 ) -> str:
     """Generate a JARVIS response using Anthropic API."""
+    # License gate: refuse to assist when the license isn't entitled (with a
+    # 7-day offline grace window). No-op in dev fallback (no LICENSE_KEY).
+    await _ensure_license()
+    _blocked = assistant_blocked_message()
+    if _blocked:
+        return _blocked
+
     now = datetime.now()
     current_time = now.strftime("%A, %B %d, %Y at %I:%M %p")
 
@@ -3286,19 +3299,89 @@ return windowList
     log.info("Context refresh thread started")
 
 
+# ---------------------------------------------------------------------------
+# License gate
+# ---------------------------------------------------------------------------
+
+_last_license_check = 0.0
+
+
+def _license_status_label() -> str:
+    """Settings-panel label for license state ('dev' when running keyless)."""
+    if not LICENSE_KEY:
+        return "dev"
+    try:
+        import licensing
+        return licensing.status_label()
+    except Exception:
+        return "unknown"
+
+
+async def _ensure_license() -> None:
+    """Lazily revalidate the license at most every ~15 minutes."""
+    global _last_license_check
+    if not LICENSE_KEY:
+        return
+    import time as _t
+    import licensing
+    now = _t.time()
+    if now - _last_license_check > 900:
+        _last_license_check = now
+        await licensing.validate(LICENSE_KEY, PROXY_BASE_URL)
+
+
+def assistant_blocked_message() -> Optional[str]:
+    """Butler line to speak instead of working when the license is not entitled.
+    Returns None when entitled or in dev fallback (no LICENSE_KEY → no gate)."""
+    if not LICENSE_KEY:
+        return None
+    import licensing
+    if licensing.is_entitled():
+        return None
+    return (
+        "Apologies, sir — my licence requires attention before I can assist. "
+        "Do review your subscription."
+    )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects
     # Enable Langfuse tracing before any LLM call so every Anthropic request is
     # captured. No-op (and never raises) if Langfuse isn't configured.
     observability.setup_observability()
-    if ANTHROPIC_API_KEY:
-        # max_retries=1 (default is 2): on 429 we want to surface the error
-        # quickly instead of waiting through two exponential-backoff retries
-        # (which is what caused those 10-15s response stalls during heavy use).
+    # max_retries=1 (default is 2): on 429 we want to surface the error quickly
+    # instead of waiting through two exponential-backoff retries (which caused
+    # those 10-15s response stalls during heavy use).
+    if LICENSE_KEY:
+        # Route every model call through the proxy. base_url makes the SDK POST
+        # to <proxy>/api/proxy/v1/messages; the proxy injects the real vendor key
+        # (the placeholder api_key below is ignored) and meters usage per license.
+        anthropic_client = anthropic.AsyncAnthropic(
+            api_key="license-proxy",
+            base_url=f"{PROXY_BASE_URL}/api/proxy",
+            default_headers={"X-License-Key": LICENSE_KEY},
+            max_retries=1,
+            timeout=20.0,
+        )
+        log.info(f"LLM via proxy: {PROXY_BASE_URL}/api/proxy")
+    elif ANTHROPIC_API_KEY:
+        # Dev-only fallback (internal repo): direct vendor access, no license.
         anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY, max_retries=1, timeout=20.0)
+        log.warning("LLM via direct ANTHROPIC_API_KEY (dev fallback — no proxy/license)")
     else:
-        log.warning("ANTHROPIC_API_KEY not set — LLM features disabled")
+        log.warning("No LICENSE_KEY or ANTHROPIC_API_KEY — LLM features disabled")
+
+    # Validate the license up front. The assistant loop is gated on this (with a
+    # 7-day offline grace window); dev fallback (no LICENSE_KEY) skips the gate.
+    if LICENSE_KEY:
+        import licensing
+        state = await licensing.validate(LICENSE_KEY, PROXY_BASE_URL)
+        if licensing.is_entitled():
+            log.info(f"license OK: {licensing.status_label()}")
+        else:
+            log.warning(f"license NOT entitled: status={state.get('status')} — assistant loop disabled")
+
     cached_projects = []
 
     # Start context refresh in a separate thread (never touches event loop)
@@ -5409,44 +5492,31 @@ class PreferencesUpdate(BaseModel):
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
-    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
+    # The app holds NO vendor secrets — only its license key and the proxy URL.
+    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
     return {"success": True}
 
-@app.post("/api/settings/test-anthropic")
-async def api_test_anthropic(body: KeyTest):
-    key = body.key_value or os.getenv("ANTHROPIC_API_KEY", "")
+@app.post("/api/settings/test-license")
+async def api_test_license(body: KeyTest):
+    """Validate the license against the proxy. Replaces the old per-vendor key
+    tests — the app no longer holds Anthropic/Fish keys."""
+    import licensing
+    key = (body.key_value or os.getenv("LICENSE_KEY", "")).strip()
+    base = (os.getenv("PROXY_BASE_URL", "") or PROXY_BASE_URL).rstrip("/")
     if not key:
-        return {"valid": False, "error": "No key provided"}
-    try:
-        client = anthropic.AsyncAnthropic(api_key=key)
-        await client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=10, messages=[{"role": "user", "content": "Hi"}])
-        return {"valid": True}
-    except Exception as e:
-        return {"valid": False, "error": str(e)[:200]}
-
-@app.post("/api/settings/test-fish")
-async def api_test_fish(body: KeyTest):
-    key = body.key_value or os.getenv("FISH_API_KEY", "")
-    if not key:
-        return {"valid": False, "error": "No key provided"}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.fish.audio/v1/tts",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"text": "test", "reference_id": FISH_VOICE_ID},
-            )
-            if resp.status_code in (200, 201):
-                return {"valid": True}
-            elif resp.status_code == 401:
-                return {"valid": False, "error": "Invalid API key"}
-            else:
-                return {"valid": False, "error": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"valid": False, "error": str(e)[:200]}
+        return {"valid": False, "error": "No license key provided"}
+    state = await licensing.validate(key, base)
+    status = state.get("status", "invalid")
+    if status in licensing.ENTITLED:
+        return {"valid": True, "status": status}
+    if status == "offline":
+        ok = licensing.is_entitled()
+        return {"valid": ok, "status": "offline",
+                "error": None if ok else "Cannot reach the licensing server."}
+    return {"valid": False, "status": status, "error": f"License is {status}."}
 
 @app.get("/api/settings/status")
 async def api_settings_status():
@@ -5479,8 +5549,9 @@ async def api_settings_status():
         "server_port": 8340,
         "uptime_seconds": int(time.time() - _session_start),
         "env_keys_set": {
-            "anthropic": bool(env_dict.get("ANTHROPIC_API_KEY", "").strip() and env_dict.get("ANTHROPIC_API_KEY", "") != "your-anthropic-api-key-here"),
-            "fish_audio": bool(env_dict.get("FISH_API_KEY", "").strip() and env_dict.get("FISH_API_KEY", "") != "your-fish-audio-api-key-here"),
+            "license": bool(env_dict.get("LICENSE_KEY", "").strip()),
+            "proxy_base_url": (env_dict.get("PROXY_BASE_URL", "").strip() or PROXY_BASE_URL),
+            "license_status": _license_status_label(),
             "fish_voice_id": bool(env_dict.get("FISH_VOICE_ID", "").strip()),
             "user_name": env_dict.get("USER_NAME", ""),
         },
