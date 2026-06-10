@@ -1,0 +1,19 @@
+[package]
+name = "valet"
+version = "0.1.0"
+description = "VALET desktop shell"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tokio = { version = "1", features = ["time", "rt", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[features]
+# this feature is used for production builds where `devUrl` is not used.
+custom-protocol = ["tauri/custom-protocol"]
