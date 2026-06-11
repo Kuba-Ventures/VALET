@@ -516,6 +516,10 @@ body.wake-sleeping #orb-canvas {
   color: rgba(124, 104, 240, 0.8);
 }
 
+/* First-run: show only the bare minimum (license key). The proxy/voice/voice-id/
+   telemetry fields are .setup-hide and return in normal settings. */
+.settings-panel.first-run .setup-hide { display: none; }
+
 /* Voice picker (Stage E) — two-option toggle */
 .settings-voice-toggle { gap: 8px; }
 .voice-opt { flex: 1; }
