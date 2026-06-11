@@ -170,8 +170,10 @@ def _active_voice_id() -> str:
     change takes effect without a restart. Falls back to male if female is
     selected but no female id is configured yet."""
     choice = (os.getenv("VALET_VOICE", "male") or "male").strip().lower()
-    male = (os.getenv("VALET_VOICE_MALE_ID", "").strip() or FISH_VOICE_ID)
-    female = os.getenv("VALET_VOICE_FEMALE_ID", "").strip()
+    # Read live (Settings change applies without restart), falling back to the
+    # bundled defaults so both voices work out of the box.
+    male = (os.getenv("VALET_VOICE_MALE_ID", "").strip() or VALET_VOICE_MALE_ID)
+    female = (os.getenv("VALET_VOICE_FEMALE_ID", "").strip() or VALET_VOICE_FEMALE_ID)
     if choice == "female" and female:
         return female
     return male
