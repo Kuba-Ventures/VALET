@@ -19,7 +19,7 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
   if (!auth.ok) return auth.response;
 
   // Fair-use ceiling (warn/throttle/block per FAIR_USE_MODE).
-  const overLimit = await enforceAllowance(auth.licenseKey, "tts");
+  const overLimit = await enforceAllowance(auth.licenseKey, "tts", auth.plan);
   if (overLimit) return overLimit;
 
   const apiKey = process.env.FISH_AUDIO_KEY ?? process.env.FISH_API_KEY;

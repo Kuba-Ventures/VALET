@@ -4,8 +4,14 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 /**
  * Fair-use metering against the license_usage table (see migration_usage.sql).
  *
- * Allowance is estimated USD cost per rolling monthly window. Behavior at the
- * ceiling is set by FAIR_USE_MODE:
+ * Allowance is estimated USD vendor cost per rolling monthly window, and is
+ * PER PLAN: Ultra gets more headroom than Pro, with a base fallback for trials
+ * and unknown plans. Tune via env (all optional):
+ *   - FAIR_USE_USD_PRO    — Pro allowance   (falls back to FAIR_USE_MONTHLY_USD)
+ *   - FAIR_USE_USD_ULTRA  — Ultra allowance (falls back to FAIR_USE_MONTHLY_USD)
+ *   - FAIR_USE_MONTHLY_USD — base / fallback (default 8)
+ *
+ * Behavior at the ceiling is set by FAIR_USE_MODE:
  *   - "warn"     (default) — never block; the app shows an honest banner.
  *   - "throttle" — block only the expensive deep-research path; everything else
  *                  keeps working.
@@ -14,9 +20,24 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 
 const PERIOD_DAYS = 30;
 
-function allowanceUsd(): number {
-  const v = Number(process.env.FAIR_USE_MONTHLY_USD ?? "8");
-  return Number.isFinite(v) ? v : 8;
+function envNum(name: string, fallback: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) ? v : fallback;
+}
+
+/**
+ * Per-plan monthly allowance in USD. `plan` is the Stripe price id stored on the
+ * license; it maps to the Pro/Ultra allowance, otherwise the base fallback.
+ */
+export function planAllowanceUsd(plan: string | null | undefined): number {
+  const base = envNum("FAIR_USE_MONTHLY_USD", 8);
+  if (plan && plan === process.env.STRIPE_PRICE_ID_ULTRA) {
+    return envNum("FAIR_USE_USD_ULTRA", base);
+  }
+  if (plan && plan === process.env.STRIPE_PRICE_ID_PRO) {
+    return envNum("FAIR_USE_USD_PRO", base);
+  }
+  return base;
 }
 
 function fairUseMode(): "warn" | "throttle" | "block" {
@@ -32,10 +53,11 @@ function fairUseMode(): "warn" | "throttle" | "block" {
 export async function enforceAllowance(
   licenseKey: string,
   action: string,
+  plan?: string | null,
 ): Promise<NextResponse | null> {
   const mode = fairUseMode();
   if (mode === "warn") return null; // soft launch — never blocks
-  const status = await getUsageStatus(licenseKey);
+  const status = await getUsageStatus(licenseKey, plan);
   if (!status.over_allowance) return null;
   if (mode === "throttle" && action !== "research") return null; // throttle = deep research only
   // Alert signal — surfaces in Vercel logs / log drains for over-allowance.
@@ -98,9 +120,12 @@ export async function recordUsage(args: {
   }
 }
 
-/** Read current allowance status for a license. */
-export async function getUsageStatus(licenseKey: string): Promise<UsageStatus> {
-  const allowance = allowanceUsd();
+/** Read current allowance status for a license, against its plan's allowance. */
+export async function getUsageStatus(
+  licenseKey: string,
+  plan?: string | null,
+): Promise<UsageStatus> {
+  const allowance = planAllowanceUsd(plan);
   const empty: UsageStatus = {
     period_start: null,
     period_days: PERIOD_DAYS,

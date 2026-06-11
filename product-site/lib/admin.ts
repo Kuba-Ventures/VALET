@@ -65,7 +65,10 @@ export async function getAllAccounts(): Promise<AdminAccount[]> {
       trialEndsAt: (row.trial_ends_at as string | null) ?? null,
       createdAt: row.created_at as string,
       claimed: Boolean(row.user_id),
-      usage: await getUsageStatus(row.license_key as string),
+      usage: await getUsageStatus(
+        row.license_key as string,
+        (row.plan as string | null) ?? null,
+      ),
     })),
   );
 }
