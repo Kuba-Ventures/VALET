@@ -77,11 +77,12 @@ function UsagePanel({ usage }: { usage: AccountLicense["usage"] }) {
         </div>
         <div>
           <div className="text-2xl font-bold tracking-tight">
-            ${usage.estimated_cost_usd.toFixed(2)}
+            {Math.round(pct)}%
           </div>
-          <div className="label-mono mt-1">
-            of ${usage.allowance_usd.toFixed(0)} fair-use
-          </div>
+          {/* Percentage only — never expose the dollar spend or the limit to
+              the customer. The raw figures stay server-side (this is a server
+              component, so they never reach the browser). */}
+          <div className="label-mono mt-1">Monthly usage</div>
         </div>
       </div>
       <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-bg">
