@@ -12,12 +12,18 @@ import { createSupabaseBrowserClient } from "@/lib/auth/client";
 export default function UpdatePasswordForm() {
   const router = useRouter();
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (password !== confirm) {
+      setError("Those passwords don't match.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -47,9 +53,19 @@ export default function UpdatePasswordForm() {
       ) : (
         <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
           <label className="flex flex-col gap-1.5">
-            <span className="label-mono">New password</span>
+            <div className="flex items-center justify-between">
+              <span className="label-mono">New password</span>
+              <button
+                type="button"
+                onClick={() => setShow((s) => !s)}
+                className="text-xs text-ink-faint transition-colors hover:text-accent"
+                aria-pressed={show}
+              >
+                {show ? "Hide" : "Show"}
+              </button>
+            </div>
             <input
-              type="password"
+              type={show ? "text" : "password"}
               required
               minLength={8}
               autoComplete="new-password"
@@ -57,6 +73,20 @@ export default function UpdatePasswordForm() {
               onChange={(e) => setPassword(e.target.value)}
               className="input-field"
               placeholder="At least 8 characters"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="label-mono">Confirm new password</span>
+            <input
+              type={show ? "text" : "password"}
+              required
+              minLength={8}
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              className="input-field"
+              placeholder="Re-enter your new password"
             />
           </label>
 
