@@ -44,11 +44,10 @@ function extractActions(text: string): string[] {
   ACTION_RE.lastIndex = 0;
   while ((m = ACTION_RE.exec(text)) !== null) {
     const type = m[1].toLowerCase();
+    out.push(type); // bare action type, always -> clean "actions done most" leaderboard
     if (KEEP_TARGET.has(m[1])) {
       const target = (m[2] || "").trim().slice(0, 48);
-      out.push(target ? `${type}:${target}` : type);
-    } else {
-      out.push(type);
+      if (target) out.push(`app:${target}`); // app/project name as its own tag
     }
   }
   return out;
