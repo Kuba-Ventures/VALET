@@ -5496,15 +5496,35 @@ async def api_get_config():
 
 
 def _build_id() -> str:
-    """A stamp unique to each packaged build (written by build-macos.sh, bundled
-    by PyInstaller). The onboarding re-runs whenever this changes, so every new
-    download walks the user through setup again. Falls back to 'dev' unpackaged."""
+    """A stamp the onboarding keys off: it re-runs whenever this changes. Combines
+    the build stamp (new on every release) with the installed app's creation time
+    (new on every fresh install, even of the same build, since a drag-install
+    copies the bundle). So onboarding runs on every new download AND every
+    reinstall, even if the user previously installed and deleted it. Falls back to
+    'dev' unpackaged."""
     base = Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-    f = base / "build_id.txt"
     try:
-        return f.read_text().strip() or "dev"
+        stamp = (base / "build_id.txt").read_text().strip() or "dev"
     except Exception:
-        return "dev"
+        stamp = "dev"
+    inst = _install_stamp()
+    return f"{stamp}.{inst}" if inst else stamp
+
+
+def _install_stamp() -> str:
+    """Creation time of the installed .app bundle. A drag-install copies the
+    bundle, giving the copy a fresh birth time, so this differs on every reinstall
+    even when the build is identical. Empty when not running from a .app."""
+    if not getattr(sys, "frozen", False):
+        return ""
+    try:
+        # sys.executable = .../VALET.app/Contents/MacOS/valet-backend
+        app = Path(sys.executable).resolve().parents[2]
+        if app.suffix == ".app":
+            return str(int(os.stat(app).st_birthtime))
+    except Exception:
+        pass
+    return ""
 
 # ---------------------------------------------------------------------------
 # Safety: global kill switch (Stage D)
