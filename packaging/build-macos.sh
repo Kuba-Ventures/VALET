@@ -53,7 +53,9 @@ echo "==> 2/5 PyInstaller backend"
 # Invoke via `python -m` so a stale venv shebang (e.g. after a repo rename)
 # can't break the build — the python symlink resolves even when console-script
 # shebangs still point at an old path.
-./.venv/bin/python -m PyInstaller packaging/valet.spec --noconfirm
+# --clean wipes the PyInstaller build cache every time: without it, an
+# incremental build can bundle a stale server.py or frontend/dist (it did once).
+./.venv/bin/python -m PyInstaller packaging/valet.spec --noconfirm --clean
 
 echo "==> 3/5 place sidecar (Tauri requires the <name>-<target-triple> suffix)"
 mkdir -p src-tauri/binaries
