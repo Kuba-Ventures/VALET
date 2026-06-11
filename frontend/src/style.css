@@ -457,6 +457,7 @@ body.wake-sleeping #orb-canvas {
 
 .settings-field input[type="text"],
 .settings-field input[type="password"],
+.settings-field input[type="date"],
 .settings-field select,
 .settings-field textarea {
   width: 100%;
@@ -469,6 +470,8 @@ body.wake-sleeping #orb-canvas {
   font-family: inherit;
   outline: none;
   transition: border-color 0.2s;
+  /* Render the native date picker (and its calendar icon) in dark mode. */
+  color-scheme: dark;
 }
 
 .settings-field input:focus,
