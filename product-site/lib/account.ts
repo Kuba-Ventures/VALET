@@ -126,7 +126,10 @@ export async function getAccountLicenses(
       currentPeriodEnd: (row.current_period_end as string | null) ?? null,
       trialEndsAt: (row.trial_ends_at as string | null) ?? null,
       hasBilling: Boolean(row.stripe_customer_id),
-      usage: await getUsageStatus(row.license_key as string),
+      usage: await getUsageStatus(
+        row.license_key as string,
+        (row.plan as string | null) ?? null,
+      ),
     })),
   );
 }

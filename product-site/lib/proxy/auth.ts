@@ -13,6 +13,7 @@ export interface Authorized {
   ok: true;
   licenseKey: string;
   status: LicenseStatus;
+  plan: string | null;
 }
 
 export interface Unauthorized {
@@ -38,11 +39,12 @@ export async function authorizeLicense(
   }
 
   let status: LicenseStatus = "invalid";
+  let plan: string | null = null;
   try {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
       .from("licenses")
-      .select("status")
+      .select("status, plan")
       .eq("license_key", licenseKey)
       .maybeSingle();
     if (error) {
@@ -55,6 +57,7 @@ export async function authorizeLicense(
       };
     }
     status = (data?.status as LicenseStatus) ?? "invalid";
+    plan = (data?.plan as string | null) ?? null;
   } catch (err) {
     const message = err instanceof Error ? err.message : "Store unavailable.";
     return { ok: false, response: NextResponse.json({ error: message }, { status: 500 }) };
@@ -72,5 +75,5 @@ export async function authorizeLicense(
     };
   }
 
-  return { ok: true, licenseKey, status };
+  return { ok: true, licenseKey, status, plan };
 }
