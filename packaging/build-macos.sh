@@ -83,11 +83,17 @@ if [ "$UNSIGNED" = "1" ]; then
 fi
 
 echo "==> 5/5 notarize + staple"
-ZIP="$(mktemp -d)/VALET.zip"
-ditto -c -k --keepParent "$APP" "$ZIP"
-xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-xcrun stapler staple "$APP"
-[ -n "${DMG:-}" ] && xcrun stapler staple "$DMG" || true
+# Notarize the .dmg DIRECTLY (the distributed artifact). The .app inside is
+# already signed, but the .app bundle is consumed during DMG creation, so
+# notarizing the .app zip then stapling it fails ("VALET.app does not exist").
+# Submitting the .dmg and stapling the ticket onto it is the correct path: it
+# installs cleanly offline with no Gatekeeper warning.
+if [ -z "${DMG:-}" ]; then
+  echo "ERROR: no .dmg found at src-tauri/target/release/bundle/dmg/ to notarize"
+  exit 1
+fi
+xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+xcrun stapler staple "$DMG"
 
 echo
 echo "DONE. Verify Gatekeeper:"
