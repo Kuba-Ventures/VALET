@@ -130,3 +130,62 @@ export async function getAccountLicenses(
     })),
   );
 }
+
+/** Snapshot the desktop app pushes to /api/proxy/sync (see migration_sync.sql). */
+export interface AccountSync {
+  profile: {
+    name?: string;
+    honorific?: string;
+    date_of_birth?: string;
+    location?: string;
+    work_email?: string;
+    personal_email?: string;
+  } | null;
+  stats: {
+    total_tasks?: number;
+    success_rate?: number;
+    avg_duration_seconds?: number;
+    top_actions?: { action: string; count: number }[];
+  } | null;
+  connections: { calendar?: boolean; mail?: boolean; notes?: boolean } | null;
+  appVersion: string | null;
+  updatedAt: string;
+}
+
+/**
+ * Most recent sync snapshot across this user's licenses (a user with one app
+ * install has one). Returns null until the desktop app has synced at least once.
+ */
+export async function getLatestAccountSync(
+  userId: string,
+): Promise<AccountSync | null> {
+  const supabase = getSupabaseAdmin();
+  const { data: lic } = await supabase
+    .from("licenses")
+    .select("license_key")
+    .eq("user_id", userId);
+  const keys = (lic ?? []).map((r) => r.license_key as string);
+  if (!keys.length) return null;
+
+  const { data, error } = await supabase
+    .from("account_sync")
+    .select("profile, stats, connections, app_version, updated_at")
+    .in("license_key", keys)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("getLatestAccountSync failed:", error.message);
+    return null;
+  }
+  if (!data) return null;
+
+  return {
+    profile: (data.profile as AccountSync["profile"]) ?? null,
+    stats: (data.stats as AccountSync["stats"]) ?? null,
+    connections: (data.connections as AccountSync["connections"]) ?? null,
+    appVersion: (data.app_version as string | null) ?? null,
+    updatedAt: data.updated_at as string,
+  };
+}
