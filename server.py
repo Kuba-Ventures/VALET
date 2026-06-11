@@ -5408,7 +5408,7 @@ async def api_get_config():
     _, env_dict = _read_env()
     name = env_dict.get("ASSISTANT_NAME", "").strip() or "vee"
     voice = (env_dict.get("VALET_VOICE", "").strip().lower() or "male")
-    telemetry = env_dict.get("VALET_TELEMETRY", "").strip().lower() in ("1", "on", "true", "yes")
+    telemetry = env_dict.get("VALET_TELEMETRY", "on").strip().lower() not in ("0", "off", "false", "no")
     return {
         "assistant_name": name,
         "voice": "female" if voice == "female" else "male",

@@ -17,8 +17,9 @@ log = logging.getLogger("valet.telemetry")
 
 
 def telemetry_enabled() -> bool:
-    """User consent AND a DSN are both required."""
-    consent = os.getenv("VALET_TELEMETRY", "").strip().lower() in ("1", "on", "true", "yes")
+    """On by default (crash reports help us fix what breaks); the user can opt out
+    in Settings. Still requires a SENTRY_DSN to actually send anything."""
+    consent = os.getenv("VALET_TELEMETRY", "on").strip().lower() not in ("0", "off", "false", "no")
     return consent and bool(os.getenv("SENTRY_DSN", "").strip())
 
 
