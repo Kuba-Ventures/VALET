@@ -59,24 +59,39 @@ function escapeRegExp(s: string): string {
  */
 const WAKE_PREFIXES = ["ok", "okay", "hey", "yo", "hi", "hello", "hey there", "morning"] as const;
 
+// Speech recognizers rarely transcribe the one-syllable "vee" cleanly — they
+// hear "V", "B", "Bee", "Vi", etc. When the name is "vee" we match all of these
+// so the wake phrase fires regardless. Single letters (v/b) are allowed ONLY
+// after a wake prefix ("hey v"), never as a bare re-engage (too noisy alone).
+const VEE_WAKE_VARIANTS = ["vee", "vi", "vie", "v", "b", "bee"];
+const VEE_SOFT_VARIANTS = ["vee", "vi", "vie", "bee"];
+
+function nameAlternation(name: string, soft: boolean): string {
+  if (name === "vee") {
+    return (soft ? VEE_SOFT_VARIANTS : VEE_WAKE_VARIANTS).map(escapeRegExp).join("|");
+  }
+  return escapeRegExp(name);
+}
+
 function buildWakeRegex(name: string): RegExp {
-  // Match any prefix from WAKE_PREFIXES followed by the name, tolerating
-  // commas/periods/other punctuation that speech recognizers occasionally
-  // insert between the prefix and the name.
+  // Match any prefix from WAKE_PREFIXES followed by the name (or a mishearing of
+  // it), tolerating commas/periods/other punctuation speech recognizers insert.
   const prefixAlt = WAKE_PREFIXES.map(escapeRegExp).join("|");
+  const nameAlt = nameAlternation(name.toLowerCase(), false);
   return new RegExp(
-    `\\b(?:${prefixAlt})\\b[^\\w]*\\b${escapeRegExp(name.toLowerCase())}\\b`,
+    `\\b(?:${prefixAlt})\\b[^\\w]*\\b(?:${nameAlt})\\b`,
     "i",
   );
 }
 
 /**
  * Soft re-engage: the bare name as the WHOLE utterance ("vee", "vee?", "vee.").
- * Anchored start-to-end so a stray "vee" inside a sentence won't wake. Names of
- * one character (e.g. "v") are rejected by the caller to avoid Web Speech noise.
+ * Anchored start-to-end so a stray "vee" inside a sentence won't wake. Bare
+ * single letters (v/b) are excluded here to avoid Web Speech noise.
  */
 function buildSoftRegex(name: string): RegExp {
-  return new RegExp(`^\\s*${escapeRegExp(name.toLowerCase())}\\s*[?.!]*\\s*$`, "i");
+  const nameAlt = nameAlternation(name.toLowerCase(), true);
+  return new RegExp(`^\\s*(?:${nameAlt})\\s*[?.!]*\\s*$`, "i");
 }
 
 function normalizeName(raw: string): string {
