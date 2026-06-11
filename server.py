@@ -191,22 +191,64 @@ def _voice_speed() -> float:
 
 
 def _start_parent_watchdog() -> None:
-    """In a packaged build the backend runs as the PyInstaller bootloader's child.
-    When the Tauri shell kills the bootloader on app close, this child would
-    orphan and keep holding :8340, blocking the next launch (and causing the
-    respawn churn). Exit cleanly once orphaned (reparented to launchd, pid 1)."""
+    """In a packaged build the backend runs as a PyInstaller bootloader + child.
+    The Tauri shell passes its own PID as VALET_PARENT_PID. When that shell is
+    gone (app closed, or force-quit by macOS for a permission change), exit so the
+    backend stops holding :8340 and the next launch can bind immediately.
+
+    Checking getppid()==1 alone is NOT enough here: the child's parent is the
+    bootloader, which stays alive, so the child never reads as orphaned even after
+    the shell dies. Watching the shell PID directly is what makes reopen reliable."""
     if not os.environ.get("VALET_SHIPPED"):
         return
     import threading
 
+    try:
+        parent_pid = int(os.environ.get("VALET_PARENT_PID", "0"))
+    except ValueError:
+        parent_pid = 0
+
+    def _shell_alive() -> bool:
+        if parent_pid <= 0:
+            return True  # unknown -> don't act on it
+        try:
+            os.kill(parent_pid, 0)
+            return True
+        except ProcessLookupError:
+            return False  # shell is gone
+        except PermissionError:
+            return True   # exists, just not ours
+        except Exception:
+            return True
+
     def _watch() -> None:
         while True:
             try:
-                if os.getppid() == 1:
+                if os.getppid() == 1 or not _shell_alive():
                     os._exit(0)
             except Exception:
                 pass
             time.sleep(0.5)  # quick, so an orphaned backend frees :8340 fast
+
+    def _watch_stdin() -> None:
+        # Immediate detection: the shell holds our stdin pipe, so when it dies
+        # (even a force-quit), the pipe closes and this read returns EOF at once,
+        # with no waiting for the OS to reap the shell. A lingering backend keeps
+        # macOS thinking the app is still "running" and blocks reopen, so dying
+        # promptly is what makes the next launch work. Only a clean EOF exits; if
+        # stdin isn't a watchable pipe we just bail and let the PID poll handle it.
+        try:
+            stream = getattr(sys.stdin, "buffer", None) or sys.stdin
+            if stream is None:
+                return
+            while True:
+                if not stream.read(4096):  # clean EOF -> shell closed the pipe
+                    os._exit(0)
+        except Exception:
+            return  # not a watchable pipe; rely on the PID poll
+
+    threading.Thread(target=_watch, daemon=True).start()
+    threading.Thread(target=_watch_stdin, daemon=True).start()
 
 
 def _await_port_free(host: str, port: int, timeout: float = 8.0) -> None:
@@ -228,8 +270,6 @@ def _await_port_free(host: str, port: int, timeout: float = 8.0) -> None:
             s.close()
             time.sleep(0.25)
     # Still held after the timeout: fall through and let uvicorn surface it.
-
-    threading.Thread(target=_watch, daemon=True).start()
 
 
 def _is_shipped_build() -> bool:
