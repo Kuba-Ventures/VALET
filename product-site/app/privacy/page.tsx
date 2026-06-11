@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "VALET — Privacy",
+  title: "VALET: Privacy",
   description: "What VALET can access, what leaves your Mac, and what we never collect.",
 };
 
@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       <ul>
         <li>Your files, screen contents, and the bodies of your messages and notes.</li>
         <li>Your preferences, memory, and settings (local SQLite + a local <code>.env</code>).</li>
-        <li>Mail is read-only by design — VALET never sends, deletes, or edits mail.</li>
+        <li>Mail is read-only by design. VALET never sends, deletes, or edits mail.</li>
       </ul>
 
       <h2>What leaves your Mac</h2>
