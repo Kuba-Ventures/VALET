@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/auth/client";
+import PasswordInput from "@/components/account/PasswordInput";
 
 /**
  * Sets a new password. Reached from the reset email link, which has already
@@ -13,7 +14,6 @@ export default function UpdatePasswordForm() {
   const router = useRouter();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -53,40 +53,24 @@ export default function UpdatePasswordForm() {
       ) : (
         <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
           <label className="flex flex-col gap-1.5">
-            <div className="flex items-center justify-between">
-              <span className="label-mono">New password</span>
-              <button
-                type="button"
-                onClick={() => setShow((s) => !s)}
-                className="text-xs text-ink-faint transition-colors hover:text-accent"
-                aria-pressed={show}
-              >
-                {show ? "Hide" : "Show"}
-              </button>
-            </div>
-            <input
-              type={show ? "text" : "password"}
-              required
-              minLength={8}
-              autoComplete="new-password"
+            <span className="label-mono">New password</span>
+            <PasswordInput
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="input-field"
+              onChange={setPassword}
+              autoComplete="new-password"
               placeholder="At least 8 characters"
+              ariaLabel="New password"
             />
           </label>
 
           <label className="flex flex-col gap-1.5">
             <span className="label-mono">Confirm new password</span>
-            <input
-              type={show ? "text" : "password"}
-              required
-              minLength={8}
-              autoComplete="new-password"
+            <PasswordInput
               value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              className="input-field"
+              onChange={setConfirm}
+              autoComplete="new-password"
               placeholder="Re-enter your new password"
+              ariaLabel="Confirm new password"
             />
           </label>
 
