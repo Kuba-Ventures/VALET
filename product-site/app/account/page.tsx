@@ -6,6 +6,7 @@ import {
   linkLicensesByEmail,
   type AccountLicense,
 } from "@/lib/account";
+import { isAdmin } from "@/lib/admin";
 import CopyButton from "@/components/CopyButton";
 import SignOutButton from "@/components/account/SignOutButton";
 import ManageBillingButton from "@/components/account/ManageBillingButton";
@@ -170,7 +171,17 @@ export default async function AccountPage() {
             </h1>
             <p className="mt-1 text-sm text-ink-dim">{user.email}</p>
           </div>
-          <SignOutButton />
+          <div className="flex items-center gap-3">
+            {isAdmin(user.email) && (
+              <Link
+                href="/account/admin"
+                className="btn-ghost !px-4 !py-2 text-sm"
+              >
+                Admin
+              </Link>
+            )}
+            <SignOutButton />
+          </div>
         </div>
 
         <div className="mt-10 flex flex-col gap-6">

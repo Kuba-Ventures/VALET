@@ -18,7 +18,7 @@ export interface AccountLicense {
 }
 
 /** Map a stored Stripe price id onto a human plan label. */
-function planLabel(priceId: string | null): string {
+export function planLabel(priceId: string | null): string {
   if (priceId && priceId === process.env.STRIPE_PRICE_ID_ULTRA) return "Ultra";
   if (priceId && priceId === process.env.STRIPE_PRICE_ID_PRO) return "Pro";
   return "Trial";
