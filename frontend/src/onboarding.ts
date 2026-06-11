@@ -3,8 +3,8 @@
  *
  * Shown once (tracked in localStorage). Reads /api/permissions/status and walks
  * the user through the macOS permissions VALET needs, with a deep-link that
- * opens the right System Settings pane and a Re-check button. Non-blocking — the
- * user can continue even if something is still ungranted.
+ * opens the right System Settings pane and a Re-check button. Non-blocking, so
+ * the user can continue even if something is still ungranted.
  */
 
 import "./onboarding.css";
@@ -64,8 +64,8 @@ function render(root: HTMLElement, status: PermStatus): void {
     <div class="ob-backdrop"></div>
     <div class="ob-card" role="dialog" aria-label="Welcome to VALET">
       <div class="ob-brand">VALET</div>
-      <h2 class="ob-title">A few permissions, sir.</h2>
-      <p class="ob-sub">Vee acts across your Mac. Grant what you're comfortable with — you can change these anytime in System Settings.</p>
+      <h2 class="ob-title">A few permissions, please.</h2>
+      <p class="ob-sub">Vee acts across your Mac. Grant what you're comfortable with. You can change these anytime in System Settings.</p>
       <div class="ob-rows">${rows}</div>
       <div class="ob-actions">
         <button class="ob-btn ghost" id="ob-recheck">Re-check</button>
