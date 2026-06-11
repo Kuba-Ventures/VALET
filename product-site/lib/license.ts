@@ -1,6 +1,32 @@
 import { randomBytes } from "crypto";
 import Stripe from "stripe";
 import { getSupabaseAdmin, type LicenseStatus } from "./supabase";
+import { stripe } from "./stripe";
+
+/**
+ * Best-effort buyer email for a subscription's customer. Stored on the license
+ * so a new account can auto-claim it by matching the address. Never throws — a
+ * missing email just means the buyer claims their key manually.
+ */
+async function resolveCustomerEmail(
+  customer: string | Stripe.Customer | Stripe.DeletedCustomer,
+): Promise<string | null> {
+  try {
+    if (typeof customer !== "string") {
+      if ("deleted" in customer && customer.deleted) return null;
+      return (customer as Stripe.Customer).email ?? null;
+    }
+    const fetched = await stripe.customers.retrieve(customer);
+    if ((fetched as Stripe.DeletedCustomer).deleted) return null;
+    return (fetched as Stripe.Customer).email ?? null;
+  } catch (err) {
+    console.error(
+      "resolveCustomerEmail failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
 
 /**
  * Generate an opaque, URL-safe license key. Format: PRODUCT-XXXX-XXXX-XXXX-XXXX
@@ -87,7 +113,9 @@ export async function upsertLicenseFromSubscription(
     .eq("stripe_subscription_id", sub.id)
     .maybeSingle();
 
-  const base = {
+  const email = await resolveCustomerEmail(sub.customer);
+
+  const base: Record<string, unknown> = {
     stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
     status,
@@ -96,6 +124,9 @@ export async function upsertLicenseFromSubscription(
     current_period_end: toIso(periodEnd(sub)),
     updated_at: new Date().toISOString(),
   };
+  // Only set the email when we actually resolved one, so we never overwrite a
+  // good address with null on a later lifecycle update.
+  if (email) base.customer_email = email;
 
   if (existing) {
     await supabase.from("licenses").update(base).eq("id", existing.id);

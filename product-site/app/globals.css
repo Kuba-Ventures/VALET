@@ -91,6 +91,27 @@
     border-color: var(--color-accent-soft);
     background: rgba(56, 225, 255, 0.05);
   }
+
+  /* Form input on the dark glass surface, used across the account screens. */
+  .input-field {
+    background: var(--color-bg);
+    border: 1px solid var(--color-panel-border);
+    border-radius: var(--radius-md);
+    padding: 0.7rem 0.9rem;
+    color: var(--color-ink);
+    font-size: var(--text-sm, 0.9rem);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .input-field::placeholder {
+    color: var(--color-ink-faint);
+  }
+
+  .input-field:focus {
+    outline: none;
+    border-color: var(--color-accent-soft);
+    box-shadow: 0 0 0 3px rgba(56, 225, 255, 0.12);
+  }
 }
 
 /* ===========================================================================
