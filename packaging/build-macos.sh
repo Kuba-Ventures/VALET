@@ -21,8 +21,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
-: "${SIGNING_IDENTITY:?Set SIGNING_IDENTITY to your Developer ID Application identity}"
-: "${NOTARY_PROFILE:=valet-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-valet-notary}"
+if [ -z "${SIGNING_IDENTITY:-}" ]; then
+  echo "NOTE: SIGNING_IDENTITY not set -> UNSIGNED build (local testing only; it"
+  echo "      won't pass Gatekeeper for distribution). Set it for a release build."
+  UNSIGNED=1
+else
+  UNSIGNED=0
+fi
 
 ARCH="$(uname -m)"   # arm64 | x86_64
 case "$ARCH" in
@@ -30,6 +36,12 @@ case "$ARCH" in
   x86_64) TRIPLE="x86_64-apple-darwin" ;;
   *) echo "unsupported arch: $ARCH"; exit 1 ;;
 esac
+
+echo "==> 0/5 app icon"
+if [ ! -f src-tauri/icons/icon.icns ]; then
+  # Seed from the orb PWA icon so a build works before a final logo exists.
+  npm exec -- tauri icon frontend/public/icon-512.png
+fi
 
 echo "==> 1/5 frontend build"
 ( cd frontend && npm ci && npm run build )
@@ -45,14 +57,25 @@ mkdir -p src-tauri/binaries
 cp dist/valet-backend "src-tauri/binaries/valet-backend-${TRIPLE}"
 chmod +x "src-tauri/binaries/valet-backend-${TRIPLE}"
 
-echo "==> 4/5 tauri build (bundle + sign)"
-# Tauri signs the .app (and the sidecar) with the configured identity.
-APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY" \
-  npm --prefix . exec -- tauri build
+echo "==> 4/5 tauri build"
+if [ "$UNSIGNED" = "1" ]; then
+  npm exec -- tauri build
+else
+  # Tauri signs the .app (and the sidecar) with the configured identity.
+  APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY" npm exec -- tauri build
+fi
 
 APP="src-tauri/target/release/bundle/macos/VALET.app"
 DMG="$(ls src-tauri/target/release/bundle/dmg/VALET_*.dmg 2>/dev/null | head -1 || true)"
 echo "    built: $APP"
+
+if [ "$UNSIGNED" = "1" ]; then
+  echo
+  echo "UNSIGNED build complete (skipping notarization)."
+  echo "  Run it locally:  open \"$APP\"   (first launch: right-click -> Open)"
+  echo "  For a release: set SIGNING_IDENTITY + rerun to sign + notarize."
+  exit 0
+fi
 
 echo "==> 5/5 notarize + staple"
 ZIP="$(mktemp -d)/VALET.zip"

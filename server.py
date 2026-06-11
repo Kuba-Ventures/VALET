@@ -5588,7 +5588,7 @@ if __name__ == "__main__":
     ws_proto = "wss" if use_ssl else "ws"
 
     print()
-    print("  J.A.R.V.I.S. Server v0.1.0")
+    print("  VALET Server v0.1.0")
     print(f"  WebSocket: {ws_proto}://{args.host}:{args.port}/ws/voice")
     print(f"  REST API:  {proto}://{args.host}:{args.port}/api/")
     print(f"  Tasks:     {proto}://{args.host}:{args.port}/api/tasks")
@@ -5599,11 +5599,16 @@ if __name__ == "__main__":
         ssl_kwargs["ssl_keyfile"] = str(key_file)
         ssl_kwargs["ssl_certfile"] = str(cert_file)
 
-    uvicorn.run(
-        "server:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level="info",
-        **ssl_kwargs,
-    )
+    if getattr(sys, "frozen", False):
+        # In a PyInstaller bundle there is no importable "server" module — pass
+        # the app object directly (reload/workers don't apply to a frozen app).
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info", **ssl_kwargs)
+    else:
+        uvicorn.run(
+            "server:app",
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            log_level="info",
+            **ssl_kwargs,
+        )
