@@ -32,7 +32,11 @@ fn spawn_backend(app: AppHandle, attempt: u32) {
         .shell()
         .sidecar("valet-backend")
         .expect("valet-backend sidecar missing")
-        .env("VALET_SHIPPED", "1");
+        .env("VALET_SHIPPED", "1")
+        // The backend watchdog exits when this shell dies, so an orphaned backend
+        // never holds :8340 across a force-quit (e.g. macOS restarting the app
+        // after a permission change). std::process::id() is the shell's PID.
+        .env("VALET_PARENT_PID", std::process::id().to_string());
     let (mut rx, child) = sidecar.spawn().expect("failed to start backend");
     // Replace the tracked child; kill any previous one so sidecars never pile up.
     if let Some(old) = app.state::<Backend>().child.lock().unwrap().replace(child) {

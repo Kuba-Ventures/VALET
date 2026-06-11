@@ -191,18 +191,40 @@ def _voice_speed() -> float:
 
 
 def _start_parent_watchdog() -> None:
-    """In a packaged build the backend runs as the PyInstaller bootloader's child.
-    When the Tauri shell kills the bootloader on app close, this child would
-    orphan and keep holding :8340, blocking the next launch (and causing the
-    respawn churn). Exit cleanly once orphaned (reparented to launchd, pid 1)."""
+    """In a packaged build the backend runs as a PyInstaller bootloader + child.
+    The Tauri shell passes its own PID as VALET_PARENT_PID. When that shell is
+    gone (app closed, or force-quit by macOS for a permission change), exit so the
+    backend stops holding :8340 and the next launch can bind immediately.
+
+    Checking getppid()==1 alone is NOT enough here: the child's parent is the
+    bootloader, which stays alive, so the child never reads as orphaned even after
+    the shell dies. Watching the shell PID directly is what makes reopen reliable."""
     if not os.environ.get("VALET_SHIPPED"):
         return
     import threading
 
+    try:
+        parent_pid = int(os.environ.get("VALET_PARENT_PID", "0"))
+    except ValueError:
+        parent_pid = 0
+
+    def _shell_alive() -> bool:
+        if parent_pid <= 0:
+            return True  # unknown -> don't act on it
+        try:
+            os.kill(parent_pid, 0)
+            return True
+        except ProcessLookupError:
+            return False  # shell is gone
+        except PermissionError:
+            return True   # exists, just not ours
+        except Exception:
+            return True
+
     def _watch() -> None:
         while True:
             try:
-                if os.getppid() == 1:
+                if os.getppid() == 1 or not _shell_alive():
                     os._exit(0)
             except Exception:
                 pass
