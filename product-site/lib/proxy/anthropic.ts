@@ -115,7 +115,7 @@ export async function handleAnthropicProxy(
   if (!auth.ok) return auth.response;
 
   // Fair-use ceiling (warn/throttle/block per FAIR_USE_MODE).
-  const overLimit = await enforceAllowance(auth.licenseKey, actionType);
+  const overLimit = await enforceAllowance(auth.licenseKey, actionType, auth.plan);
   if (overLimit) return overLimit;
 
   const apiKey = process.env.ANTHROPIC_API_KEY;

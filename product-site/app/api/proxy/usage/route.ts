@@ -17,6 +17,6 @@ export async function GET(req: NextRequest) {
   const auth = await authorizeLicense(req);
   if (!auth.ok) return auth.response;
 
-  const status = await getUsageStatus(auth.licenseKey);
+  const status = await getUsageStatus(auth.licenseKey, auth.plan);
   return NextResponse.json({ status: auth.status, usage: status });
 }
