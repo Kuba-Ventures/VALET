@@ -24,6 +24,9 @@ datas = [
     (os.path.join(ROOT, "frontend/dist"), "frontend/dist"),
     (os.path.join(ROOT, "templates"), "templates"),
 ]
+# Build stamp (written by build-macos.sh), bundled only if present.
+if os.path.exists(os.path.join(ROOT, "build_id.txt")):
+    datas.append((os.path.join(ROOT, "build_id.txt"), "."))
 
 # Modules imported lazily / inside functions that PyInstaller's static analysis
 # can miss. self_mod is DELIBERATELY EXCLUDED (Stage E: no self-editing in a

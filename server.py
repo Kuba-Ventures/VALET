@@ -5470,7 +5470,20 @@ async def api_get_config():
         "voice": "female" if voice == "female" else "male",
         "voice_female_available": bool(env_dict.get("VALET_VOICE_FEMALE_ID", "").strip()),
         "telemetry": telemetry,
+        "build_id": _build_id(),
     }
+
+
+def _build_id() -> str:
+    """A stamp unique to each packaged build (written by build-macos.sh, bundled
+    by PyInstaller). The onboarding re-runs whenever this changes, so every new
+    download walks the user through setup again. Falls back to 'dev' unpackaged."""
+    base = Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    f = base / "build_id.txt"
+    try:
+        return f.read_text().strip() or "dev"
+    except Exception:
+        return "dev"
 
 # ---------------------------------------------------------------------------
 # Safety: global kill switch (Stage D)
