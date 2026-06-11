@@ -1,33 +1,42 @@
+import Link from "next/link";
+
+const LINKS = [
+  { href: "/how-it-works", label: "How it works" },
+  { href: "/pricing", label: "Pricing" },
+  { href: "/faq", label: "FAQ" },
+  { href: "/contact", label: "Contact" },
+];
+
 export default function Footer() {
   return (
     <footer className="border-t border-panel-border">
-      <div className="mx-auto flex max-w-shell flex-col items-start justify-between gap-6 px-6 py-12 md:flex-row md:items-center">
+      <div className="shell grid gap-10 py-16 md:grid-cols-2">
         <div>
-          <div className="font-mono text-lg font-medium tracking-tight">
-            VALET
+          <div className="brand-mark text-2xl">
+            VA<span className="let">LET</span>
           </div>
-          <p className="mt-1 text-sm text-ink-faint">
+          <p className="mt-3 font-mono text-sm text-ink-faint">
+            <span className="let">V</span>oice-<span className="let">A</span>ctivated{" "}
+            <span className="let">L</span>ocal <span className="let">E</span>ngineering{" "}
+            <span className="let">T</span>erminal
+          </p>
+          <p className="mt-4 max-w-xs text-ink-dim">
             Voice-first computer control for macOS.
           </p>
         </div>
 
-        <nav className="flex flex-wrap gap-x-8 gap-y-2 text-sm text-ink-dim">
-          <a href="#how" className="hover:text-ink">
-            How it works
-          </a>
-          <a href="#pricing" className="hover:text-ink">
-            Pricing
-          </a>
-          <a href="mailto:hello@example.com" className="hover:text-ink">
-            Contact
-          </a>
+        <nav className="flex flex-col gap-3 md:items-end">
+          {LINKS.map((l) => (
+            <Link key={l.href} href={l.href} className="nav-link">
+              {l.label}
+            </Link>
+          ))}
         </nav>
       </div>
-
-      <div className="border-t border-panel-border">
-        <div className="mx-auto max-w-shell px-6 py-5 text-xs text-ink-faint">
-          &copy; {new Date().getFullYear()} VALET. All rights reserved.
-        </div>
+      <div className="shell border-t border-panel-border py-6">
+        <p className="font-mono text-xs text-ink-faint">
+          © 2026 VALET. All rights reserved.
+        </p>
       </div>
     </footer>
   );

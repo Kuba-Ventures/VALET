@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Script from "next/script";
 import "./globals.css";
+import Nav from "@/components/Nav";
+import Footer from "@/components/Footer";
 
 // Google Tag Manager container. The GTM ID is public (it appears in the page
 // source of every site that uses GTM), so it is safe to commit. Override or
@@ -9,9 +11,9 @@ import "./globals.css";
 const GTM_ID = process.env.NEXT_PUBLIC_GTM_ID || "GTM-PV2FK8J3";
 
 export const metadata: Metadata = {
-  title: "VALET — talk to your computer",
+  title: "VALET: talk to your Mac, it does the work",
   description:
-    "A voice-first assistant you talk to. It acts across your apps, stays fast for simple things and goes deep for hard ones. Everything included, no API key needed.",
+    "Say what you want in plain words. VALET reaches into the apps you already use and gets it done. Voice-first control for macOS.",
 };
 
 export default function RootLayout({
@@ -25,7 +27,7 @@ export default function RootLayout({
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
           rel="stylesheet"
         />
         {GTM_ID && (
@@ -45,7 +47,9 @@ export default function RootLayout({
             />
           </noscript>
         )}
+        <Nav />
         {children}
+        <Footer />
       </body>
     </html>
   );

@@ -1,164 +1,76 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import * as THREE from "three";
+import { useEffect, useRef } from "react";
 
 /**
- * Audio-reactive-style particle orb. A luminous spherical particle field that
- * breathes and rotates slowly, echoing the local app's Three.js orb.
- *
- * Performance + accessibility:
- * - Pauses the render loop when scrolled off-screen (IntersectionObserver).
- * - Respects prefers-reduced-motion: skips WebGL entirely and renders a static
- *   CSS/SVG fallback instead.
+ * Ambient voice orb (VALET signature): a golden-angle particle sphere on a
+ * full-bleed <canvas>, cyan dots with depth-based size/opacity and a soft
+ * radial core glow. Sits right-of-center on desktop, lower-center on mobile.
+ * Freezes under prefers-reduced-motion.
  */
 export default function Orb() {
-  const mountRef = useRef<HTMLDivElement>(null);
-  const [reducedMotion, setReducedMotion] = useState(false);
-  const [webglFailed, setWebglFailed] = useState(false);
+  const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReducedMotion(mq.matches);
-    const onChange = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
+    const c = ref.current;
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
 
-  useEffect(() => {
-    if (reducedMotion) return;
-    const mount = mountRef.current;
-    if (!mount) return;
+    let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 0;
+    const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
 
-    let renderer: THREE.WebGLRenderer;
-    try {
-      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-    } catch {
-      setWebglFailed(true);
-      return;
+    function size() {
+      if (!c || !ctx) return;
+      DPR = Math.min(devicePixelRatio || 1, 2);
+      W = c.clientWidth; H = c.clientHeight;
+      c.width = W * DPR; c.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      cx = W > 820 ? W * 0.72 : W * 0.5;
+      cy = W > 820 ? H * 0.5 : H * 0.62;
+      R = Math.min(W, H) * (W > 820 ? 0.3 : 0.34);
+    }
+    size();
+    addEventListener("resize", size);
+
+    const N = 520;
+    const pts: { x: number; y: number; z: number; s: number }[] = [];
+    for (let i = 0; i < N; i++) {
+      const y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(1 - y * y), phi = i * 2.399963229728653;
+      pts.push({ x: Math.cos(phi) * r, y, z: Math.sin(phi) * r, s: Math.random() });
     }
 
-    const size = Math.min(mount.clientWidth, 560) || 480;
-    renderer.setSize(size, size);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    mount.appendChild(renderer.domElement);
-
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-    camera.position.z = 6;
-
-    // Particle sphere.
-    const COUNT = 2600;
-    const positions = new Float32Array(COUNT * 3);
-    const radius = 2.2;
-    for (let i = 0; i < COUNT; i++) {
-      // Even-ish distribution on a sphere shell with slight jitter.
-      const theta = Math.acos(2 * ((i + 0.5) / COUNT) - 1);
-      const phi = Math.PI * (1 + Math.sqrt(5)) * i;
-      const r = radius + (((i * 53) % 17) / 17 - 0.5) * 0.25;
-      positions[i * 3] = r * Math.sin(theta) * Math.cos(phi);
-      positions[i * 3 + 1] = r * Math.sin(theta) * Math.sin(phi);
-      positions[i * 3 + 2] = r * Math.cos(theta);
+    let t = 0, raf = 0;
+    function frame() {
+      if (!ctx) return;
+      ctx.clearRect(0, 0, W, H);
+      t += reduce ? 0 : 0.0032;
+      const cosA = Math.cos(t), sinA = Math.sin(t), cosB = Math.cos(t * 0.6), sinB = Math.sin(t * 0.6);
+      for (const p of pts) {
+        const x = p.x * cosA - p.z * sinA;
+        let z = p.x * sinA + p.z * cosA;
+        const y = p.y * cosB - z * sinB;
+        z = p.y * sinB + z * cosB;
+        const pulse = 1 + Math.sin(t * 1.6 + p.s * 6.28) * 0.04;
+        const px = cx + x * R * pulse, py = cy + y * R * pulse, depth = (z + 1) / 2;
+        ctx.beginPath();
+        ctx.arc(px, py, depth * 1.7 + 0.3, 0, 6.283);
+        ctx.fillStyle = "rgba(77,227,242," + (0.1 + depth * 0.55).toFixed(3) + ")";
+        ctx.fill();
+      }
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.1);
+      g.addColorStop(0, "rgba(31,168,188,0.12)");
+      g.addColorStop(1, "rgba(31,168,188,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, R * 1.1, 0, 6.283); ctx.fill();
+      if (!reduce) raf = requestAnimationFrame(frame);
     }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-
-    const material = new THREE.PointsMaterial({
-      color: new THREE.Color("#38e1ff"),
-      size: 0.035,
-      transparent: true,
-      opacity: 0.9,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-
-    const points = new THREE.Points(geometry, material);
-    scene.add(points);
-
-    // Inner glow core.
-    const coreGeo = new THREE.SphereGeometry(1.1, 32, 32);
-    const coreMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color("#1488c8"),
-      transparent: true,
-      opacity: 0.12,
-    });
-    scene.add(new THREE.Mesh(coreGeo, coreMat));
-
-    // Render loop, gated by visibility.
-    let running = true;
-    let frame = 0;
-    let raf = 0;
-    const animate = () => {
-      if (!running) return;
-      frame += 1;
-      const t = frame * 0.005;
-      points.rotation.y = t;
-      points.rotation.x = Math.sin(t * 0.5) * 0.2;
-      // Gentle "breathing" scale, the pseudo-reactive pulse.
-      const pulse = 1 + Math.sin(t * 1.6) * 0.03;
-      points.scale.setScalar(pulse);
-      renderer.render(scene, camera);
-      raf = requestAnimationFrame(animate);
-    };
-
-    const io = new IntersectionObserver(
-      (entries) => {
-        const visible = entries[0]?.isIntersecting ?? false;
-        if (visible && !running) {
-          running = true;
-          animate();
-        } else if (!visible) {
-          running = false;
-          cancelAnimationFrame(raf);
-        }
-      },
-      { threshold: 0.05 },
-    );
-    io.observe(mount);
-    animate();
-
-    const onResize = () => {
-      const s = Math.min(mount.clientWidth, 560) || 480;
-      renderer.setSize(s, s);
-    };
-    window.addEventListener("resize", onResize);
+    frame();
 
     return () => {
-      running = false;
+      removeEventListener("resize", size);
       cancelAnimationFrame(raf);
-      io.disconnect();
-      window.removeEventListener("resize", onResize);
-      geometry.dispose();
-      material.dispose();
-      coreGeo.dispose();
-      coreMat.dispose();
-      renderer.dispose();
-      if (renderer.domElement.parentNode === mount) {
-        mount.removeChild(renderer.domElement);
-      }
     };
-  }, [reducedMotion]);
+  }, []);
 
-  // Static fallback for reduced motion or WebGL failure.
-  if (reducedMotion || webglFailed) {
-    return (
-      <div
-        aria-hidden
-        className="relative mx-auto aspect-square w-full max-w-[480px]"
-      >
-        <div className="absolute inset-[18%] rounded-full bg-[radial-gradient(circle_at_50%_45%,rgba(56,225,255,0.55),rgba(20,136,200,0.18)_45%,transparent_70%)] blur-[2px]" />
-        <div className="absolute inset-[30%] rounded-full border border-accent/30" />
-        <div className="absolute inset-[42%] rounded-full border border-accent/20" />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      ref={mountRef}
-      aria-hidden
-      className="mx-auto flex aspect-square w-full max-w-[560px] items-center justify-center"
-    />
-  );
+  return <canvas ref={ref} aria-hidden className="absolute inset-0 h-full w-full" />;
 }
