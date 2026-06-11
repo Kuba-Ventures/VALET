@@ -190,6 +190,27 @@ def _voice_speed() -> float:
     return max(0.5, min(2.0, v))
 
 
+def _start_parent_watchdog() -> None:
+    """In a packaged build the backend runs as the PyInstaller bootloader's child.
+    When the Tauri shell kills the bootloader on app close, this child would
+    orphan and keep holding :8340, blocking the next launch (and causing the
+    respawn churn). Exit cleanly once orphaned (reparented to launchd, pid 1)."""
+    if not os.environ.get("VALET_SHIPPED"):
+        return
+    import threading
+
+    def _watch() -> None:
+        while True:
+            try:
+                if os.getppid() == 1:
+                    os._exit(0)
+            except Exception:
+                pass
+            time.sleep(2)
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
 def _is_shipped_build() -> bool:
     """True in a packaged/distributed build. Self-modification is disabled and
     self_mod.py is excluded from such builds (Stage E / F). Detected by the
@@ -3067,6 +3088,7 @@ async def lifespan(application: FastAPI):
     # (VALET_TELEMETRY) and a SENTRY_DSN is set. Payloads are scrubbed.
     import sentry_setup
     sentry_setup.setup_telemetry()
+    _start_parent_watchdog()
     # max_retries=1 (default is 2): on 429 we want to surface the error quickly
     # instead of waiting through two exponential-backoff retries (which caused
     # those 10-15s response stalls during heavy use).
