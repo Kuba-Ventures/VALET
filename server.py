@@ -180,6 +180,16 @@ def _active_voice_id() -> str:
     return male
 
 
+def _voice_speed() -> float:
+    """Spoken playback speed (Fish prosody). 1.0 = normal. Set VALET_VOICE_SPEED
+    (e.g. 1.15) for a snappier voice. Read live; clamped to a sane range."""
+    try:
+        v = float(os.getenv("VALET_VOICE_SPEED", "1.0"))
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.5, min(2.0, v))
+
+
 def _is_shipped_build() -> bool:
     """True in a packaged/distributed build. Self-modification is disabled and
     self_mod.py is excluded from such builds (Stage E / F). Detected by the
@@ -2554,14 +2564,15 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio. Routes through the proxy's TTS endpoint when
     licensed (Fish Audio upstream); falls back to direct Fish in dev only."""
     voice_id = _active_voice_id()
+    speed = _voice_speed()
     if LICENSE_KEY:
         url = f"{PROXY_BASE_URL}/api/proxy/tts"
         headers = {"X-License-Key": LICENSE_KEY, "Content-Type": "application/json"}
-        payload = {"text": text, "reference_id": voice_id, "format": "mp3"}
+        payload = {"text": text, "reference_id": voice_id, "format": "mp3", "speed": speed}
     elif FISH_API_KEY:
         url = FISH_API_URL
         headers = {"Authorization": f"Bearer {FISH_API_KEY}", "Content-Type": "application/json"}
-        payload = {"text": text, "reference_id": voice_id, "format": "mp3"}
+        payload = {"text": text, "reference_id": voice_id, "format": "mp3", "prosody": {"speed": speed}}
     else:
         log.warning("No LICENSE_KEY (or dev FISH_API_KEY) set, skipping TTS")
         return None

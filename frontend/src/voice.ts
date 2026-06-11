@@ -17,7 +17,7 @@ export interface VoiceInput {
 declare const webkitSpeechRecognition: any;
 
 export function createVoiceInput(
-  onTranscript: (text: string) => void,
+  onTranscript: (text: string, isFinal: boolean) => void,
   onError: (msg: string) => void
 ): VoiceInput {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -72,7 +72,10 @@ export function createVoiceInput(
       if (transcriptEl) {
         transcriptEl.textContent = text;
       }
-      if (isFinal && text) onTranscript(text);
+      // Emit BOTH interim and final. The wake controller checks the wake phrase
+      // on interim (so the orb wakes the instant you say it) and only treats
+      // FINAL transcripts as commands (so nothing gets clipped mid-sentence).
+      if (text) onTranscript(text, isFinal);
     }
   };
 
