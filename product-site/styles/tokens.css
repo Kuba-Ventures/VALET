@@ -1,31 +1,39 @@
 /*
  * Centralized design tokens for VALET.
- * This is the single source of truth for the visual system. A future style
- * guide swap replaces values here only. Do not hardcode colors, radii, or the
- * type scale anywhere else in the app.
+ * Single source of truth for the visual system. A style-guide swap replaces
+ * values here only. Do not hardcode colors, radii, or the type scale elsewhere.
  *
- * Direction: deep near-black command surface, glassy translucent panels,
- * restrained cyan / electric-blue accent glow. Mono for labels, sans for body.
+ * Direction: cinematic dark-premium. Near-black void, hairline-bordered
+ * sections, restrained signal-cyan accent, purple reserved for the
+ * constellation anchors. Space Grotesk display, Inter body, JetBrains mono.
  */
 
 :root {
   /* Surfaces */
-  --color-bg: #05070b;
-  --color-bg-elevated: #0a0e15;
-  --color-panel: rgba(18, 24, 34, 0.55);
-  --color-panel-border: rgba(120, 170, 220, 0.14);
+  --color-bg: #05080c;            /* void */
+  --color-bg-elevated: #0a0f16;   /* ink */
+  --color-panel: #0e1521;         /* raised */
+  --color-panel-border: rgba(120, 150, 180, 0.1);   /* line */
+  --color-line-strong: rgba(120, 150, 180, 0.18);
 
   /* Text */
-  --color-ink: #e8eef6;
-  --color-ink-dim: #9fb0c4;
-  --color-ink-faint: #5d6b7e;
+  --color-ink: #eaf1f7;       /* frost (headlines) */
+  --color-ink-dim: #7e8a9c;   /* mist (body) */
+  --color-ink-faint: #5a6473; /* mist-dim (faint) */
 
-  /* Accent (cyan / electric blue) */
-  --color-accent: #38e1ff;
-  --color-accent-soft: rgba(56, 225, 255, 0.35);
-  --color-accent-deep: #1488c8;
+  /* Accent (signal cyan) */
+  --color-accent: #4de3f2;      /* signal */
+  --color-accent-deep: #1fa8bc; /* signal-deep */
+  --color-accent-soft: rgba(77, 227, 242, 0.14); /* glow */
+
+  /* Purple (constellation anchors only) */
+  --color-purple: #6c4fe0;       /* fill */
+  --color-purple-rim: #9b86ff;   /* rim */
+  --color-purple-halo: #7c5cff;  /* halo */
+  --color-purple-label: #b9a8ff; /* labels */
 
   /* Typography */
+  --font-display: "Space Grotesk", system-ui, sans-serif;
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Menlo", monospace;
 
@@ -45,7 +53,7 @@
   --radius-xl: 28px;
 
   /* Spacing */
-  --space-gutter: 1.5rem;
+  --space-gutter: 2rem;   /* 32px side padding */
   --space-section: 7rem;
 
   /* Layout */
