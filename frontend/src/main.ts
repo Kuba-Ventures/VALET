@@ -94,11 +94,17 @@ const confirmCard = createConfirmCard();
 
 // Global kill switch — always available; halts in-progress actions + the loop.
 const killBtn = document.createElement("button");
-killBtn.className = "kill-switch";
+killBtn.className = "kill-switch hidden"; // hidden until VALET is actively working
 killBtn.type = "button";
 killBtn.textContent = "■ STOP";
 document.body.appendChild(killBtn);
 let killEngaged = false;
+function updateKillVisibility() {
+  // STOP only appears while VALET is actively working (thinking/speaking) or
+  // already engaged — no clutter while idle or just listening.
+  const active = currentState === "thinking" || currentState === "speaking";
+  killBtn.classList.toggle("hidden", !(active || killEngaged));
+}
 function setKillEngaged(on: boolean) {
   killEngaged = on;
   killBtn.classList.toggle("engaged", on);
@@ -107,6 +113,7 @@ function setKillEngaged(on: boolean) {
     audioPlayer.stop();
     confirmCard.hide();
   }
+  updateKillVisibility();
 }
 killBtn.addEventListener("click", async () => {
   const url = killEngaged ? "/api/safety/kill/reset" : "/api/safety/kill";
@@ -149,6 +156,7 @@ function transition(newState: State) {
   currentState = newState;
   orb.setState(newState as OrbState);
   updateStatus(newState);
+  updateKillVisibility();
 
   switch (newState) {
     case "idle":

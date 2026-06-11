@@ -227,13 +227,8 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-field">
-            <label>Address / Where You Live</label>
-            <textarea id="input-address" rows="2" placeholder="City, region, or full address"></textarea>
-          </div>
-
-          <div class="settings-field">
-            <label>Hometown (city for weather)</label>
-            <input type="text" id="input-hometown-city" placeholder="St. Petersburg, FL" />
+            <label>Location</label>
+            <input type="text" id="input-location" placeholder="City, State (used for weather and local context)" />
           </div>
 
           <div class="settings-field">
@@ -339,11 +334,9 @@ async function loadPreferences() {
     if (calEl) calEl.value = prefs.calendar_accounts || "auto";
 
     const dobEl = document.getElementById("input-date-of-birth") as HTMLInputElement | null;
-    const addrEl = document.getElementById("input-address") as HTMLTextAreaElement | null;
-    const homeEl = document.getElementById("input-hometown-city") as HTMLInputElement | null;
+    const locEl = document.getElementById("input-location") as HTMLInputElement | null;
     if (dobEl) dobEl.value = prefs.date_of_birth || "";
-    if (homeEl) homeEl.value = prefs.hometown_city || "";
-    if (addrEl) addrEl.value = prefs.address || "";
+    if (locEl) locEl.value = prefs.hometown_city || prefs.address || "";
     applyBioSummary(prefs.bio_summary, prefs.bio_summary_updated, prefs.bio_source_count);
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
@@ -497,8 +490,11 @@ function wireEvents() {
     const honorific = (document.getElementById("input-honorific") as HTMLSelectElement).value;
     const calendar_accounts = (document.getElementById("input-calendar-accounts") as HTMLTextAreaElement).value.trim();
     const date_of_birth = (document.getElementById("input-date-of-birth") as HTMLInputElement)?.value.trim() || "";
-    const address = (document.getElementById("input-address") as HTMLTextAreaElement)?.value.trim() || "";
-    const hometown_city = (document.getElementById("input-hometown-city") as HTMLInputElement)?.value.trim() || "";
+    // One Location field feeds both: address (personal context) + hometown_city
+    // (weather lookup), so the backend's existing logic is unchanged.
+    const location = (document.getElementById("input-location") as HTMLInputElement)?.value.trim() || "";
+    const address = location;
+    const hometown_city = location;
     await apiPost("/api/settings/preferences", {
       user_name, honorific, calendar_accounts, date_of_birth, address, hometown_city,
     });
