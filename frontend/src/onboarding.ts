@@ -88,6 +88,15 @@ function permsBody(status: PermStatus | null): string {
     .map((k) => {
       const p = status[k]; const s = pill(p);
       const canOpen = p.granted === false || k === "automation" || k === "microphone";
+      // Microphone gets an active "Enable" button: it fires the native macOS
+      // permission prompt right here (the reliable grant path), with Open
+      // Settings as the fallback if it was previously denied.
+      const sideBtn =
+        k === "microphone" && p.granted !== true
+          ? `<button class="ob-open" data-mic-enable="1">Enable microphone</button>`
+          : canOpen
+            ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
+            : "";
       return `
         <div class="ob-row" data-key="${k}">
           <div class="ob-row-main">
@@ -96,7 +105,7 @@ function permsBody(status: PermStatus | null): string {
           </div>
           <div class="ob-row-side">
             <span class="ob-pill ${s.cls}">${s.text}</span>
-            ${canOpen ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>` : ""}
+            ${sideBtn}
           </div>
         </div>`;
     }).join("");
@@ -187,6 +196,26 @@ function wireStep(state: State, root: HTMLElement): void {
   if (step === 2) {
     root.querySelectorAll<HTMLButtonElement>(".ob-open").forEach((btn) => {
       btn.addEventListener("click", async () => {
+        // Microphone: fire the native macOS permission prompt directly. This is
+        // the reliable grant path (one "Allow" click, no Settings hunting).
+        if (btn.dataset.micEnable) {
+          btn.disabled = true;
+          btn.textContent = "Requesting...";
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream.getTracks().forEach((t) => t.stop()); // release immediately
+            state.perms = await getJSON<PermStatus>("/api/permissions/status");
+            renderBody(state, root); // mic should now read Granted
+          } catch {
+            // Previously denied or blocked: native prompt won't show, so guide
+            // the user to System Settings instead.
+            delete btn.dataset.micEnable;
+            btn.dataset.target = "microphone";
+            btn.textContent = "Open Settings";
+            btn.disabled = false;
+          }
+          return;
+        }
         btn.disabled = true;
         await postJSON("/api/permissions/open", { target: btn.dataset.target });
         setTimeout(() => (btn.disabled = false), 1200);
