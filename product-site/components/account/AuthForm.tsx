@@ -20,6 +20,8 @@ export default function AuthForm({
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
@@ -28,6 +30,10 @@ export default function AuthForm({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (isSignup && password !== confirm) {
+      setError("Those passwords don't match.");
+      return;
+    }
     setLoading(true);
     setError(null);
     const supabase = createSupabaseBrowserClient();
@@ -109,9 +115,19 @@ export default function AuthForm({
           />
         </label>
         <label className="flex flex-col gap-1.5">
-          <span className="label-mono">Password</span>
+          <div className="flex items-center justify-between">
+            <span className="label-mono">Password</span>
+            <button
+              type="button"
+              onClick={() => setShow((s) => !s)}
+              className="text-xs text-ink-faint transition-colors hover:text-accent"
+              aria-pressed={show}
+            >
+              {show ? "Hide" : "Show"}
+            </button>
+          </div>
           <input
-            type="password"
+            type={show ? "text" : "password"}
             required
             minLength={8}
             autoComplete={isSignup ? "new-password" : "current-password"}
@@ -121,6 +137,22 @@ export default function AuthForm({
             placeholder={isSignup ? "At least 8 characters" : "Your password"}
           />
         </label>
+
+        {isSignup && (
+          <label className="flex flex-col gap-1.5">
+            <span className="label-mono">Confirm password</span>
+            <input
+              type={show ? "text" : "password"}
+              required
+              minLength={8}
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              className="input-field"
+              placeholder="Re-enter your password"
+            />
+          </label>
+        )}
 
         {error && (
           <span className="text-sm text-[#ff8a8a]" role="alert">
