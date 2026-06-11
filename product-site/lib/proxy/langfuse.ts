@@ -24,6 +24,9 @@ export interface TraceArgs {
   status: "ok" | "error";
   input?: unknown; // captured only when PROXY_CAPTURE_PAYLOADS=true
   output?: unknown; // captured only when PROXY_CAPTURE_PAYLOADS=true
+  // Action types the assistant emitted (e.g. ["open_app:Spotify", "build"]).
+  // Metadata + trace tags only, no raw conversation. Privacy-respecting.
+  actionsRequested?: string[];
 }
 
 export function traceProxyCall(args: TraceArgs): void {
@@ -41,11 +44,13 @@ export function traceProxyCall(args: TraceArgs): void {
   const traceId = crypto.randomUUID();
   const genId = crypto.randomUUID();
 
+  const actions = args.actionsRequested ?? [];
   const metadata = {
     action: args.action,
     estimated_cost_usd: Number(args.costUsd.toFixed(6)),
     latency_ms: Date.now() - args.startTime,
     status: args.status,
+    actions_requested: actions,
   };
 
   const body = {
@@ -59,6 +64,8 @@ export function traceProxyCall(args: TraceArgs): void {
           name: args.name,
           userId: args.licenseKey,
           metadata,
+          // Tags let you filter/group by action in the Langfuse dashboard.
+          ...(actions.length ? { tags: actions } : {}),
           ...(capture && args.input !== undefined ? { input: args.input } : {}),
         },
       },
