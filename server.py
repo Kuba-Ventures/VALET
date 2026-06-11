@@ -206,7 +206,28 @@ def _start_parent_watchdog() -> None:
                     os._exit(0)
             except Exception:
                 pass
-            time.sleep(2)
+            time.sleep(0.5)  # quick, so an orphaned backend frees :8340 fast
+
+
+def _await_port_free(host: str, port: int, timeout: float = 8.0) -> None:
+    """A relaunch can race the previous backend still holding the port. macOS
+    force-quits the app when you toggle one of its permissions (microphone, etc.),
+    orphaning the old backend, which then exits via the parent watchdog within
+    ~0.5s. Wait for the port to actually free so the next launch can always bind,
+    instead of crashing and tripping the shell's crash-loop guard."""
+    import socket
+    bind_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind((bind_host, port))
+            s.close()
+            return  # free
+        except OSError:
+            s.close()
+            time.sleep(0.25)
+    # Still held after the timeout: fall through and let uvicorn surface it.
 
     threading.Thread(target=_watch, daemon=True).start()
 
@@ -5681,6 +5702,9 @@ if __name__ == "__main__":
     if getattr(sys, "frozen", False):
         # In a PyInstaller bundle there is no importable "server" module — pass
         # the app object directly (reload/workers don't apply to a frozen app).
+        # Wait out any previous backend still releasing the port (permission-toggle
+        # restarts), so binding never fails on a fast relaunch.
+        _await_port_free(args.host, args.port)
         uvicorn.run(app, host=args.host, port=args.port, log_level="info", **ssl_kwargs)
     else:
         uvicorn.run(
