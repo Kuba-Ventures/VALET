@@ -289,7 +289,8 @@ SPEECH-TO-TEXT CORRECTIONS (the user speaks, speech recognition may mishear):
 - "clock code" = "Claude Code"
 
 RESPONSE LENGTH — THIS IS CRITICAL:
-ONE sentence is ideal. TWO is the maximum for the spoken part. Never three.
+ONE short sentence is ideal. Fewer words speak faster, so a voice reply feels
+instant. TWO is the maximum for the spoken part. Never three.
 No markdown, no bullet points, no code blocks in voice responses.
 Action tags at the end do NOT count toward your sentence limit.
 
@@ -704,24 +705,47 @@ async def _execute_new_project(target: str, ws):
                 pass
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+async def _speak_chunks(ws, tts_text: str, caption: str) -> bool:
+    """Sentence-chunked TTS. Synthesizes and sends each sentence as its own audio
+    message so the FIRST sentence starts playing while later ones are still being
+    synthesized (the frontend audio queue plays them in order). For a one-sentence
+    reply this is a single chunk, identical to before. The caption is shown once,
+    on the first chunk. Returns True if any audio was sent."""
+    sentences = [s for s in _SENTENCE_SPLIT.split((tts_text or "").strip()) if s.strip()]
+    if not sentences or not ws:
+        return False
+    sent_any = False
+    for i, sentence in enumerate(sentences):
+        audio = await synthesize_speech(sentence)
+        if not audio:
+            continue
+        try:
+            await ws.send_json({
+                "type": "audio",
+                "data": base64.b64encode(audio).decode(),
+                "text": caption if i == 0 else "",
+            })
+            sent_any = True
+        except Exception:
+            return sent_any
+    return sent_any
+
+
 async def _speak(ws, msg: str) -> None:
-    """Inline the synthesize+send_json speak pattern. Used by handlers that need
-    to speak independently of the main voice loop's return path. Best-effort,
-    swallows send failures. Strips em-dashes from the spoken text + caption
-    so VALET's voice doesn't read like an LLM transcript."""
+    """Speak a message independently of the main voice loop. Best-effort, swallows
+    send failures. Em-dashes are stripped so VALET's voice doesn't read like an
+    LLM transcript. Sentence-chunked so multi-sentence lines start sooner."""
     clean = strip_em_dashes(msg)
-    audio = await synthesize_speech(clean)
-    if not audio or not ws:
+    if not ws or not clean.strip():
         return
     try:
         await ws.send_json({"type": "status", "state": "speaking"})
-        await ws.send_json({
-            "type": "audio",
-            "data": base64.b64encode(audio).decode(),
-            "text": clean,
-        })
     except Exception:
-        pass
+        return
+    await _speak_chunks(ws, clean, clean)
 
 
 async def _execute_open_project(target: str, ws):
@@ -5111,10 +5135,9 @@ async def voice_handler(ws: WebSocket):
                     response_text = strip_em_dashes(response_text)
                     tts = strip_markdown_for_tts(response_text)
                     await ws.send_json({"type": "status", "state": "speaking"})
-                    audio = await synthesize_speech(tts)
-                    if audio:
-                        await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
-                    else:
+                    # Sentence-chunked so a multi-sentence reply starts speaking
+                    # before the whole thing is synthesized.
+                    if not await _speak_chunks(ws, tts, response_text):
                         await ws.send_json({"type": "text", "text": response_text})
                         await ws.send_json({"type": "status", "state": "idle"})
                     log.info(f"VALET: {response_text}")
