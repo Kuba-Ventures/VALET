@@ -110,6 +110,9 @@ export function createWakeWord(
   let wakeRegex = buildWakeRegex(assistantName);
   let softRegex = buildSoftRegex(assistantName);
   let active = false;
+  // Set when we wake on an INTERIM transcript; the matching FINAL then carries
+  // the actual command (the tail after the wake phrase).
+  let wokeThisUtterance = false;
 
   function goPassive() {
     active = false;
@@ -122,31 +125,51 @@ export function createWakeWord(
   }
 
   const voiceInput: VoiceInput = createVoiceInput(
-    (text: string) => {
+    (text: string, isFinal: boolean) => {
       const trimmed = text.trim();
       if (!trimmed) return;
 
-      if (active) {
-        // Continuous conversation: every transcript is forwarded as a command.
-        // Stay active until pause()/stop() is called (i.e. Sleeping toggle).
-        handlers.onCommand(trimmed);
-        return;
-      }
+      const extractTail = (t: string): string => {
+        const m = wakeRegex.exec(t);
+        return m ? t.slice(m.index + m[0].length).replace(/^[^\w]+/, "").trim() : t;
+      };
 
-      const match = wakeRegex.exec(trimmed);
-      if (match) {
-        const tail = trimmed.slice(match.index + match[0].length).replace(/^[^\w]+/, "").trim();
-        goActive();
-        if (tail) {
-          // Wake phrase plus command in one utterance — fire the tail too.
-          handlers.onCommand(tail);
+      if (active) {
+        // In conversation: only FINAL transcripts are commands — interim ones
+        // are mid-sentence and would be incomplete.
+        if (!isFinal) return;
+        if (wokeThisUtterance) {
+          // We woke mid-utterance on an interim; the command is the tail of
+          // this final after the wake phrase.
+          wokeThisUtterance = false;
+          const cmd = extractTail(trimmed);
+          if (cmd) handlers.onCommand(cmd);
+        } else {
+          handlers.onCommand(trimmed);
         }
         return;
       }
 
-      // Soft re-engage: a bare "vee" / "vee?" as the whole utterance.
-      if (softRegex.test(trimmed)) {
+      // Asleep: check the wake phrase on EVERY transcript (interim included) so
+      // the orb wakes the instant you say "hey vee", not after the pause.
+      if (wakeRegex.test(trimmed)) {
         goActive();
+        if (isFinal) {
+          // Final already has the full utterance — fire the command now.
+          wokeThisUtterance = false;
+          const tail = extractTail(trimmed);
+          if (tail) handlers.onCommand(tail);
+        } else {
+          // Woke early on interim; the FINAL will carry the command.
+          wokeThisUtterance = true;
+        }
+        return;
+      }
+
+      // Soft re-engage: a bare "vee" / "vee?" as the whole utterance (final only).
+      if (isFinal && softRegex.test(trimmed)) {
+        goActive();
+        wokeThisUtterance = false;
       }
     },
     (msg: string) => handlers.onError(msg)

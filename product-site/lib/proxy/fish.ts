@@ -30,7 +30,7 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
     );
   }
 
-  let body: { text?: unknown; format?: unknown; reference_id?: unknown };
+  let body: { text?: unknown; format?: unknown; reference_id?: unknown; speed?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -46,6 +46,11 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
     typeof body.reference_id === "string"
       ? body.reference_id
       : process.env.FISH_VOICE_ID ?? DEFAULT_VOICE_ID;
+  // Playback speed (Fish prosody). Clamped to a sane range; 1.0 = normal.
+  const speed =
+    typeof body.speed === "number" && body.speed >= 0.5 && body.speed <= 2.0
+      ? body.speed
+      : 1.0;
 
   const startTime = Date.now();
 
@@ -57,7 +62,7 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
         authorization: `Bearer ${apiKey}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ text, reference_id: referenceId, format }),
+      body: JSON.stringify({ text, reference_id: referenceId, format, prosody: { speed } }),
     });
   } catch (err) {
     void captureProxyError("tts", err);
