@@ -47,7 +47,7 @@ export async function enforceAllowance(
     {
       error: "fair_use_exceeded",
       message:
-        "You've reached this month's fair-use limit, sir. It resets at the start of your next period.",
+        "You've reached this month's fair-use limit. It resets at the start of your next period.",
       usage: status,
     },
     { status: 429, headers: { "retry-after": "3600" } },
