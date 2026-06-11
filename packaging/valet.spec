@@ -13,14 +13,16 @@
 import os
 from PyInstaller.utils.hooks import collect_submodules
 
-ROOT = os.path.abspath(os.getcwd())
+# Repo root. PyInstaller resolves the script + data source paths relative to the
+# SPEC file's directory (packaging/), so anchor everything on the repo root that
+# contains it — independent of the current working directory.
+ROOT = os.path.dirname(SPECPATH)
 
 # The frontend (built by `npm run build`) and prompt/template assets the backend
 # reads at runtime. Bundled as data so the one-file binary is self-contained.
 datas = [
-    ("frontend/dist", "frontend/dist"),
-    ("templates", "templates"),
-    ("prompts", "prompts"),
+    (os.path.join(ROOT, "frontend/dist"), "frontend/dist"),
+    (os.path.join(ROOT, "templates"), "templates"),
 ]
 
 # Modules imported lazily / inside functions that PyInstaller's static analysis
@@ -37,7 +39,7 @@ hiddenimports = [
 hiddenimports += collect_submodules("anthropic")
 
 a = Analysis(
-    ["server.py"],
+    [os.path.join(ROOT, "server.py")],
     pathex=[ROOT],
     binaries=[],
     datas=datas,
