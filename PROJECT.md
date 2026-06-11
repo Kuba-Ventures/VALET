@@ -194,6 +194,33 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 
 ---
 
+## Roadmap / Deferred  [append-only — intentionally deferred for future builds]
+
+*As of 2026-06-11. This captures what is deliberately put off so it survives across sessions.*
+
+**Rides the NEXT signed app build (needs rebuild + re-sign + notarize):**
+- **#44 (merged): re-run onboarding on EVERY install, not just every new build.** On `main`, NOT in the build currently being deployed.
+- The "sir" persona pass (below) batches here too.
+
+**Merged, awaiting config to take effect:**
+- **License-key email on purchase (#46, merged).** The Stripe webhook emails the buyer their key. Graceful no-op until activated. Activation: create a Resend account, verify a sending DOMAIN you own (cannot verify `*.vercel.app`, so a real domain is needed, e.g. `valetvoice.app`), then set `RESEND_API_KEY` and `EMAIL_FROM` in Vercel and redeploy.
+
+**Config still owned by the operator:**
+- Stripe is still in SANDBOX/test mode. Flip to live keys + webhook + re-test before real sales.
+- Resend (`RESEND_API_KEY` + `EMAIL_FROM`) for the license email above.
+
+**Deferred features (not started):**
+- **Google Calendar / Gmail:** per-user OAuth + Google app verification. Onboarding shows "Coming soon" placeholders. Real project.
+- **User accounts / self-serve billing portal:** log in, see your key anytime, manage or cancel the subscription. The fuller version of license recovery. Real project.
+- **"Sir" persona pass:** roughly 20 instances in the app system prompt instruct Vee to address the user as "sir" (the old assistant persona). A deliberate tone decision plus an app rebuild.
+- **TTS fallback:** Fish Audio is the single vendor with no backup. Add a secondary provider path.
+- **Universal app control via the macOS Accessibility API (AXUIElement):** drive any app's UI by reading its accessibility tree and sending synthetic input. Big bet, do it selectively (native apps first where the tree is rich, screenshot + vision fallback for Electron / weak trees, every click / type gated behind the existing confirmation + kill switch).
+- **Langfuse usage dashboard:** the Langfuse MCP is connected; build the apps-opened / actions-done / friction widgets (needs live action-tag data flowing first).
+
+**Top liability status (context, already handled):** shared-key spend is now BOUNDED via `FAIR_USE_MODE=throttle` + `FAIR_USE_MONTHLY_USD=10` in Vercel (per-license cap live).
+
+---
+
 ## Links  [rewrite]
 
 - **Live URL (proxy + marketing):** https://jarvis-y.vercel.app
@@ -209,6 +236,7 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 
 ## Changelog  [append-only — never rewrite or delete]
 
+- **2026-06-11:** Added a "Roadmap / Deferred" section capturing intentionally-deferred work so it survives across sessions — next-build riders (onboarding-on-every-install #44), license-key email awaiting Resend config (#46), operator-owned config (Stripe live, Resend), not-started features (Google/Gmail, accounts/billing portal, "sir" persona pass, TTS fallback, Accessibility-API universal control, Langfuse dashboard). Noted shared-key spend is now BOUNDED (`FAIR_USE_MODE=throttle` + `FAIR_USE_MONTHLY_USD=10`).
 - **2026-06-11:** kuba-vault refresh — Stage F is DONE: signed + notarized macOS DMG live as a `Kuba-Ventures/valet-downloads` `v0.1.0` release (Developer ID, Team QZX7VBLDZT, `valet-notary`), Vercel `DOWNLOAD_URL` wired; full buy → key → download → clean-install → run loop verified. Logged the onboarding wizard (PR #41) re-running per build and per fresh install (PR #44), PyInstaller `--clean` build fix (PR #42), reliable relaunch after a permission toggle (PR #43), privacy-respecting Langfuse action analytics (PRs #39/#40), and the 5-page landing + /privacy + /terms (PR #38). Phase → launch prep. Cleared the now-false "no signed build" risk; sharpened the open liabilities to: shared-key soft cap (top), Stripe still sandbox, no license-key recovery, deferred Google/Gmail, single-vendor TTS.
 - **2026-06-11:** Onboarding now re-runs on every fresh install via the `.app` creation-time stamp (PR #44).
 - **2026-06-11:** Reliable restart after a macOS permission toggle — watchdog polls every 0.5s, frozen backend waits for `:8340` to free before binding (PR #43).
