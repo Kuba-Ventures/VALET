@@ -33,10 +33,18 @@ export default function Footer() {
           ))}
         </nav>
       </div>
-      <div className="shell border-t border-panel-border py-6">
+      <div className="shell flex flex-col gap-3 border-t border-panel-border py-6 sm:flex-row sm:items-center sm:justify-between">
         <p className="font-mono text-xs text-ink-faint">
           © 2026 VALET. All rights reserved.
         </p>
+        <div className="flex gap-5 text-sm">
+          <Link href="/privacy" className="nav-link">
+            Privacy
+          </Link>
+          <Link href="/terms" className="nav-link">
+            Terms
+          </Link>
+        </div>
       </div>
     </footer>
   );
