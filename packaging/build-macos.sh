@@ -46,6 +46,9 @@ fi
 echo "==> 1/5 frontend build"
 ( cd frontend && npm ci && npm run build )
 
+echo "==> stamp this build (re-triggers onboarding on every new download)"
+date +%Y%m%d%H%M%S > build_id.txt
+
 echo "==> 2/5 PyInstaller backend"
 # Invoke via `python -m` so a stale venv shebang (e.g. after a repo rename)
 # can't break the build — the python symlink resolves even when console-script
