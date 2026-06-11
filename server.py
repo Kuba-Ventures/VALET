@@ -2710,7 +2710,16 @@ dispatch_registry = DispatchRegistry()
 
 # Stage D: the safety-gated control executor. Destructive (Tier 1) actions route
 # through this — it asks the user to confirm and honors the global kill switch.
-executor = SafeExecutor(AppleScriptExecutor())
+_base_executor = AppleScriptExecutor()
+if os.getenv("VALET_UI_FALLBACK"):
+    # Phase K (opt-in): extend control to non-scriptable apps via the
+    # Accessibility/synthetic-input backend. Off by default until validated
+    # on-device (needs pyobjc + Accessibility permission).
+    from composite_executor import CompositeExecutor
+    from accessibility_executor import AccessibilityExecutor
+    _base_executor = CompositeExecutor(_base_executor, AccessibilityExecutor())
+    log.info("UI fallback enabled: %s", _base_executor.name)
+executor = SafeExecutor(_base_executor)
 
 
 async def _run_gated_action(ws: "WebSocket", result_coro) -> None:
