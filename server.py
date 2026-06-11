@@ -230,6 +230,26 @@ def _start_parent_watchdog() -> None:
                 pass
             time.sleep(0.5)  # quick, so an orphaned backend frees :8340 fast
 
+    def _watch_stdin() -> None:
+        # Immediate detection: the shell holds our stdin pipe, so when it dies
+        # (even a force-quit), the pipe closes and this read returns EOF at once,
+        # with no waiting for the OS to reap the shell. A lingering backend keeps
+        # macOS thinking the app is still "running" and blocks reopen, so dying
+        # promptly is what makes the next launch work. Only a clean EOF exits; if
+        # stdin isn't a watchable pipe we just bail and let the PID poll handle it.
+        try:
+            stream = getattr(sys.stdin, "buffer", None) or sys.stdin
+            if stream is None:
+                return
+            while True:
+                if not stream.read(4096):  # clean EOF -> shell closed the pipe
+                    os._exit(0)
+        except Exception:
+            return  # not a watchable pipe; rely on the PID poll
+
+    threading.Thread(target=_watch, daemon=True).start()
+    threading.Thread(target=_watch_stdin, daemon=True).start()
+
 
 def _await_port_free(host: str, port: int, timeout: float = 8.0) -> None:
     """A relaunch can race the previous backend still holding the port. macOS
@@ -250,8 +270,6 @@ def _await_port_free(host: str, port: int, timeout: float = 8.0) -> None:
             s.close()
             time.sleep(0.25)
     # Still held after the timeout: fall through and let uvicorn surface it.
-
-    threading.Thread(target=_watch, daemon=True).start()
 
 
 def _is_shipped_build() -> bool:

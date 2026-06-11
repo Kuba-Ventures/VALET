@@ -91,22 +91,30 @@ fn spawn_backend(app: AppHandle, attempt: u32) {
     });
 }
 
+/// A force-quit (e.g. macOS restarting the app after a permission change) can
+/// leave the previous backend holding :8340, which blocks the next launch. Kill
+/// any process listening there so this launch always binds. Deterministic, so it
+/// doesn't depend on the backend watchdog noticing the old shell died.
+fn free_stale_backend() {
+    let _ = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("P=$(lsof -ti tcp:8340 -sTCP:LISTEN 2>/dev/null); [ -n \"$P\" ] && kill -9 $P 2>/dev/null; exit 0")
+        .status();
+}
+
 fn main() {
+    // Note: no single-instance plugin. It was added to stop "duplicate dock
+    // icons" that turned out to be stale Launch Services entries, not real second
+    // instances, and its lock went stale on a force-quit, blocking reopen. Clean
+    // launches are guaranteed instead by free_stale_backend() below.
     tauri::Builder::default()
-        // MUST be the first plugin. A second launch focuses the existing window
-        // instead of opening another instance (no duplicate dock icons).
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
-            }
-        }))
         .plugin(tauri_plugin_shell::init())
         .manage(Backend {
             child: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
         })
         .setup(|app| {
+            free_stale_backend();
             spawn_backend(app.handle().clone(), 1);
             Ok(())
         })
