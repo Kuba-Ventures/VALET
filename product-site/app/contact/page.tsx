@@ -6,10 +6,9 @@ export const metadata = {
 type Row = { label: string; email: string };
 
 const ROWS: Row[] = [
-  // PLACEHOLDER emails, confirm before shipping
-  { label: "General", email: "hello@valetvoice.app" },
-  { label: "Support", email: "support@valetvoice.app" },
-  { label: "Press", email: "press@valetvoice.app" },
+  { label: "General", email: "hello@valet-voice.com" },
+  { label: "Support", email: "support@valet-voice.com" },
+  { label: "Press", email: "press@valet-voice.com" },
 ];
 
 export default function ContactPage() {
