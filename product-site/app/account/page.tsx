@@ -3,8 +3,10 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/auth/server";
 import {
   getAccountLicenses,
+  getLatestAccountSync,
   linkLicensesByEmail,
   type AccountLicense,
+  type AccountSync,
 } from "@/lib/account";
 import { isAdmin } from "@/lib/admin";
 import CopyButton from "@/components/CopyButton";
@@ -97,6 +99,131 @@ function UsagePanel({ usage }: { usage: AccountLicense["usage"] }) {
   );
 }
 
+function timeAgo(iso: string): string {
+  try {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  } catch {
+    return "—";
+  }
+}
+
+const PROFILE_FIELDS: { key: keyof NonNullable<AccountSync["profile"]>; label: string }[] = [
+  { key: "name", label: "Name" },
+  { key: "honorific", label: "Honorific" },
+  { key: "date_of_birth", label: "Date of birth" },
+  { key: "location", label: "Location" },
+  { key: "work_email", label: "Work email" },
+  { key: "personal_email", label: "Personal email" },
+];
+
+function ProfileSection({ profile }: { profile: NonNullable<AccountSync["profile"]> }) {
+  const rows = PROFILE_FIELDS.filter((f) => profile[f.key]);
+  if (!rows.length) return null;
+  return (
+    <div className="panel p-6 sm:p-8">
+      <div className="label-mono mb-4">Your profile</div>
+      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {rows.map((f) => (
+          <div key={f.key}>
+            <dt className="label-mono mb-1">{f.label}</dt>
+            <dd className="text-sm text-ink">{profile[f.key]}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function StatsSection({ stats }: { stats: NonNullable<AccountSync["stats"]> }) {
+  const hasNumbers =
+    stats.total_tasks != null ||
+    stats.success_rate != null ||
+    stats.avg_duration_seconds != null;
+  const top = stats.top_actions ?? [];
+  if (!hasNumbers && !top.length) return null;
+  return (
+    <div className="panel p-6 sm:p-8">
+      <div className="label-mono mb-4">Speech &amp; activity</div>
+      {hasNumbers && (
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <div className="text-2xl font-bold tracking-tight">
+              {(stats.total_tasks ?? 0).toLocaleString()}
+            </div>
+            <div className="label-mono mt-1">Tasks</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold tracking-tight">
+              {Math.round(stats.success_rate ?? 0)}%
+            </div>
+            <div className="label-mono mt-1">Success</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold tracking-tight">
+              {(stats.avg_duration_seconds ?? 0).toFixed(1)}s
+            </div>
+            <div className="label-mono mt-1">Avg. time</div>
+          </div>
+        </div>
+      )}
+      {top.length > 0 && (
+        <div className="mt-6 border-t border-panel-border pt-5">
+          <div className="label-mono mb-3">Top requests</div>
+          <ul className="flex flex-col gap-2">
+            {top.map((a, i) => (
+              <li key={i} className="flex items-center justify-between text-sm">
+                <span className="text-ink">{a.action}</span>
+                <span className="font-mono text-ink-dim">{a.count}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const CONNECTION_LABELS: { key: keyof NonNullable<AccountSync["connections"]>; label: string }[] = [
+  { key: "calendar", label: "Calendar" },
+  { key: "mail", label: "Mail" },
+  { key: "notes", label: "Notes" },
+];
+
+function ConnectionsSection({
+  connections,
+}: {
+  connections: NonNullable<AccountSync["connections"]>;
+}) {
+  return (
+    <div className="panel p-6 sm:p-8">
+      <div className="label-mono mb-4">Connected apps</div>
+      <div className="flex flex-wrap gap-3">
+        {CONNECTION_LABELS.map((c) => {
+          const on = connections[c.key] === true;
+          return (
+            <span
+              key={c.key}
+              className={`label-mono rounded-full border px-3 py-1.5 ${
+                on
+                  ? "border-accent/40 text-accent"
+                  : "border-panel-border text-ink-faint"
+              }`}
+            >
+              {c.label} {on ? "· on" : "· off"}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function LicenseCard({ license }: { license: AccountLicense }) {
   return (
     <div className="panel p-6 sm:p-8">
@@ -159,6 +286,7 @@ export default async function AccountPage() {
   // Lazy auto-claim: attach any license bought with this email.
   await linkLicensesByEmail(user.id, user.email);
   const licenses = await getAccountLicenses(user.id);
+  const sync = licenses.length ? await getLatestAccountSync(user.id) : null;
 
   return (
     <main className="mx-auto min-h-screen max-w-shell px-6 py-24">
@@ -209,13 +337,26 @@ export default async function AccountPage() {
                 <LicenseCard key={l.licenseKey} license={l} />
               ))}
 
-              {/* Phase 2: speech stats, profile and connections sync up from the
-                  desktop app and surface here. */}
-              <div className="panel p-6 text-sm text-ink-faint">
-                <div className="label-mono mb-2">Coming soon</div>
-                Speech stats, your profile and connected apps (Calendar, Mail,
-                Notes) will appear here once your VALET app syncs them up.
-              </div>
+              {/* Synced from the desktop app via /api/proxy/sync. */}
+              {sync ? (
+                <>
+                  {sync.profile && <ProfileSection profile={sync.profile} />}
+                  {sync.stats && <StatsSection stats={sync.stats} />}
+                  {sync.connections && (
+                    <ConnectionsSection connections={sync.connections} />
+                  )}
+                  <p className="text-xs text-ink-faint">
+                    Synced from your app {timeAgo(sync.updatedAt)}
+                    {sync.appVersion ? ` · v${sync.appVersion}` : ""}.
+                  </p>
+                </>
+              ) : (
+                <div className="panel p-6 text-sm text-ink-faint">
+                  <div className="label-mono mb-2">Waiting for your app</div>
+                  Your profile, speech stats and connected apps (Calendar, Mail,
+                  Notes) will appear here the first time your VALET app syncs.
+                </div>
+              )}
 
               <details className="panel p-6">
                 <summary className="cursor-pointer text-sm text-ink-dim hover:text-accent">
