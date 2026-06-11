@@ -1,13 +1,13 @@
 # VALET
 *Voice-Activated Local Engineering Terminal — a downloadable, license-gated macOS voice assistant.*
 
-*Last updated: 2026-06-11 by kuba-vault*
+*Last updated: 2026-06-11 18:28 ET by kuba-vault*
 
 ---
 
 ## TL;DR  [rewrite]
 
-VALET (formal name; answers to "Vee") is a local, voice-first macOS assistant with a British-butler persona, an audio-reactive Three.js orb, and a live process panel. The full commercial loop is now real: a buyer can purchase, get a license key, download a signed and notarized macOS app, install it with no Gatekeeper warning, and run it. Stage F (packaging) is done. This session shipped the signed/notarized DMG (Developer ID, Team QZX7VBLDZT, notarytool profile "valet-notary"), hosted as a public GitHub release on Kuba-Ventures/valet-downloads (tag v0.1.0, asset VALET_0.1.0_aarch64.dmg) with Vercel `DOWNLOAD_URL` pointed at it. It also added a comprehensive first-run onboarding wizard (license, permissions, voice, profile, connections) that re-runs on every new build and every fresh install, privacy-respecting action analytics into Langfuse (action tags only, no raw prompts/responses), a cinematic 5-page landing plus /privacy and /terms, and a `--clean` PyInstaller build fix so releases never bundle stale code. Stripe checkout is validated end to end, but in SANDBOX/test mode only. Top open risk is unchanged: every shipped user bills the owner's personal Anthropic + Fish keys, gated only by a soft, unvalidated fair-use cap that warns but never blocks. Close that before real distribution.
+VALET (formal name; answers to "Vee") is a local, voice-first macOS assistant with a British-butler persona, an audio-reactive Three.js orb, and a live process panel. The full commercial loop is real: buy, get a license key, download a signed and notarized macOS app, install with no Gatekeeper warning, run. This session moved Stripe from sandbox to **LIVE payments** (real `cs_live_` checkout sessions verified for Pro and Ultra; a live trial purchase issued a real key) and built a **full account system on valet-voice.com**: email + password auth via Supabase, a self-service customer dashboard (license key, plan, per-period usage, download, Stripe billing portal), an owner-only read-only admin view of all subscribers, and a desktop→web sync so the dashboard shows live profile, speech/activity stats and connected apps from the running app. Accounts and sync migrations have been run in production Supabase. The web side of all of this is merged; the desktop side of the sync (PR #57, `server.py` wiring `SuccessTracker` + a telemetry-gated push loop) is open and not yet merged. Caveat: Stripe **payouts are PAUSED** until a bank account is added — live charges land in the balance but can't pay out yet. Top open risk is unchanged: every shipped user bills the owner's personal Anthropic + Fish keys, gated only by a soft, unvalidated fair-use cap. Close that before real distribution.
 
 ---
 
@@ -22,18 +22,18 @@ VALET (formal name; answers to "Vee") is a local, voice-first macOS assistant wi
 
 ## Status  [rewrite]
 
-- **Phase:** launch prep — full buy/download/install/run loop is real on a signed, notarized build; remaining work is hardening billing and going live on payments.
+- **Phase:** launch prep — full buy/download/install/run loop is real on a signed, notarized build; Stripe is LIVE; remaining work is closing the shared-key billing risk and finishing payout setup.
 - **Engagement manager:** self-directed
 - **Lead:** Finley
 - **Cadence:** continuous (per-PR through the supervised factory)
-- **Next milestone:** turn the shared-key soft cap into per-license hard limits (or per-customer cost accounting), then flip Stripe to live mode. No hard date.
+- **Next milestone:** turn the shared-key soft cap into per-license hard limits (or per-customer cost accounting), and add a Stripe bank account to resume payouts. No hard date.
 - **Flags:** shipping
 
 ---
 
 ## Where we are right now  [rewrite]
 
-The product now ships. There is a signed and notarized macOS DMG (Developer ID, Team QZX7VBLDZT, notarized via the `valet-notary` notarytool profile) published as a public GitHub release on `Kuba-Ventures/valet-downloads` (tag `v0.1.0`, asset `VALET_0.1.0_aarch64.dmg`), and Vercel `DOWNLOAD_URL` points the proxy's `/api/download` redirect at it. The buy to license-key to download to clean-install (no Gatekeeper warning) to run loop has been exercised end to end. This session also landed a comprehensive first-run onboarding wizard (welcome, license activation, mic/computer-control/accessibility/full-disk permissions, voice, profile, connections) that re-runs on every new build and, via the `.app` creation-time stamp, on every fresh install (even re-downloading the same build). Two build/restart reliability fixes shipped: `build-macos.sh` now passes PyInstaller `--clean` so a release can never bundle stale `server.py` or frontend (an earlier incremental build had shipped the wizard-less app), and the parent watchdog now polls every 0.5s while the frozen backend waits for `:8340` to free before binding, fixing an "Application Not Responding" hang on relaunch after a macOS permission toggle. Proxy-side, privacy-respecting action analytics now extract the assistant's `[ACTION:TYPE]` tags into Langfuse as trace tags + metadata (e.g. `open_app`, `app:Spotify`, `check_weather`) without storing any raw prompts or responses; sensitive targets (file paths on deletes/builds) are dropped, only app/project names are kept. The marketing site got a cinematic 5-page overhaul plus new `/privacy` and `/terms` pages, and Langfuse MCP is connected for analytics (usage dashboard planned, not built). What needs the human's attention before real distribution: the bundled model bills the owner's personal Anthropic + Fish keys for every shipped user behind only a soft fair-use cap, and Stripe is still in sandbox/test mode. See Risks.
+This session did two big things: went **live on payments**, and built a **full account layer on valet-voice.com**. Stripe flipped from sandbox to LIVE under a new account "Twin Peaks Labs" — live keys, a live webhook at `https://www.valet-voice.com/api/stripe/webhook`, recreated Pro/Ultra products with new live price IDs, and the Customer Portal config saved in live mode. Verified live end to end via curl: both tiers create `cs_live_` checkout sessions, and a real trial purchase issued license `PRODUCT-HGE2-H65Z-78W6-Z7DC-RERS`. Caveat: **payouts are PAUSED** until a bank account is added — live charges land in the Stripe balance but can't pay out yet. On the product site, the identity model went from "just a license key in a header" to a real account system: email + password auth via Supabase (`@supabase/ssr`), a new `/account` section (login, signup, password reset, email verification enforced), a customer dashboard showing the license key, plan/tier/status, renew/trial date, per-period usage (reusing the existing `license_usage` metering), download link and a Stripe Billing Portal button. Accounts auto-claim their license by matching the buyer email, with a manual "link key" form for mismatches. An owner-only, read-only `/account/admin` view (gated on an `ADMIN_EMAILS` allow-list) shows summary cards (active, on-trial, est. MRR, period spend) and a subscriber table. A Stage-2 desktop→web sync landed on the web side (PR #56): an `account_sync` table, an authed `POST /api/proxy/sync` ingest endpoint with a strict allow-list sanitizer (no message content), and dashboard sections for Profile, Speech & activity, and Connected apps that degrade to a "waiting for your app" state before first sync. The desktop half of the sync (PR #57 — `server.py` wiring `SuccessTracker` into the live loop plus a telemetry-gated 15-min push of a profile/stats/connections snapshot) is **open, not yet merged**. The accounts and sync migrations have both been run in production Supabase. What needs the human's attention before real distribution is unchanged: the bundled model bills the owner's personal Anthropic + Fish keys for every shipped user behind only a soft fair-use cap. Plus near-term operator items: add a Stripe bank account, wire transactional email (Resend + custom SMTP in Supabase Auth), and add the www `/auth/callback` redirect in Supabase. See Risks.
 
 ---
 
@@ -74,9 +74,18 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 - **First-run onboarding wizard** (`frontend/src/onboarding.{ts,css}`): welcome → license activation → permissions (mic, computer control, accessibility, full-disk) → voice → profile (name / DOB / location) → connections. Non-blocking (steps are skippable). Re-runs on every new build, and on every fresh install via the `.app` creation-time stamp (so re-downloading the same build re-triggers it).
 - **Build reliability:** `--clean` (PR #42) prevents shipping a stale cached `server.py`/frontend; the watchdog + `:8340` free-before-bind fix (PR #43) makes relaunch after a permission toggle reliable instead of hanging.
 
-### Proxy analytics + checkout (THIS SESSION)
+### Self-service accounts + LIVE billing (THIS SESSION)
+- **Stripe is LIVE.** Flipped from sandbox to live under a new account "Twin Peaks Labs": live secret/publishable keys, a live webhook at `https://www.valet-voice.com/api/stripe/webhook` (checkout.session.completed, customer.subscription.created/updated/deleted), recreated Pro/Ultra products with new live price IDs in Vercel (`STRIPE_PRICE_ID_PRO`/`STRIPE_PRICE_ID_ULTRA`), Customer Portal config saved in live mode. Verified live via curl — both tiers create `cs_live_` sessions; a real trial purchase issued `PRODUCT-HGE2-H65Z-78W6-Z7DC-RERS`. **Payouts PAUSED** until a bank account is added (activation incomplete).
+- **Email + password auth** via Supabase Auth + `@supabase/ssr` (PRs #52, #53, #55). New `/account` section: login, signup, password reset, update-password, `/auth/callback` (code exchange). Email verification enforced (no session until confirmed; the license works in the app regardless). `middleware.ts` refreshes the session cookie and gates `/account/*`. Auth UI in `components/account/*` (`AuthForm`, `ResetForm`, `UpdatePasswordForm`, `PasswordInput` with eye-icon show/hide + confirm field, `SignOutButton`, `ManageBillingButton`, `ClaimLicenseForm`); Supabase clients in `lib/auth/{server,client}.ts`.
+- **Account ↔ license linking:** `licenses` gained `customer_email` (from Stripe in `lib/license.ts`) and `user_id`. New accounts auto-claim a license by matching the buyer email on dashboard load; a manual "link key" form (`/api/account/claim`) covers a mismatched address. Data layer in `lib/account.ts` (`linkLicensesByEmail`, `claimLicenseByKey`, `getAccountLicenses`), all scoped to the verified session user via the service-role key.
+- **Customer dashboard** (`app/account/page.tsx`): license key (copy), plan/tier, status, renew/trial date, per-period usage (voice requests, tokens, est. cost vs fair-use allowance — reuses `license_usage`), download link, **Manage billing** → Stripe Billing Portal (`/api/stripe/portal`). Success page now points buyers at `/account`; Nav gained an Account link.
+- **Owner admin view** (`app/account/admin`, PR #54): owner-only, read-only. Summary cards (active, on-trial, est. MRR, period spend) + a subscriber table (email, tier, status, renew/trial, joined, requests, est. cost, claimed/unclaimed). `lib/admin.ts`: `isAdmin(email)` checks the verified session email against `ADMIN_EMAILS`; `getAllAccounts()` reads all licenses + usage behind that gate. The "Admin" link shows only to allow-listed emails. No per-customer admin actions yet.
+- **Desktop → web sync, web side** (PR #56, merged): `account_sync` table (`migration_sync.sql` — `profile`/`stats`/`connections` JSONB + `app_version`, one row per license, on-delete cascade, RLS-on no public policy). Authed ingest `POST /api/proxy/sync` (X-License-Key via `authorizeLicense`) with a strict allow-list sanitizer (known fields only, types coerced, extras dropped, no message content). Dashboard renders Profile, "Speech & activity" (tasks, success rate, avg time, top requests) and Connected apps; degrades to a "waiting for your app" state before first sync. `lib/account.ts getLatestAccountSync`.
+- **Desktop → web sync, app side** (PR #57, OPEN — not merged): `server.py` wires the previously-test-only `SuccessTracker` (`tracking.py`) into the live loop at two choke points — `_track_usage(action)` at chat dispatch (top requests) and `_track_task(type, success, duration)` + connection detection in the shared `_lookup_and_report` wrapper (success rate, avg duration, calendar/mail/notes "seen working" flags). No-op-safe; the voice hot path is untouched on tracker failure. Tracker DB opens in the writable data dir via a new `valet_data_dir()` helper. A telemetry-gated background loop (`_account_sync_loop`, 20s after start then every 15 min, gated on LICENSE_KEY present AND VALET_TELEMETRY not opted out) pushes `_gather_sync_snapshot()` (onboarding profile env + tracker aggregates + connection flags + app version; skips the "sir" USER_NAME placeholder; no message content) to `/api/proxy/sync`. Verified: server.py compiles, 26 SuccessTracker tests pass, snapshot shape matches the sanitizer.
+- **Migrations run in prod:** `supabase/migration_accounts.sql` (adds `customer_email`, `user_id`, indexes) and `supabase/migration_sync.sql` have both been applied to production Supabase.
+
+### Proxy analytics + checkout
 - **Privacy-respecting action analytics** (`product-site/lib/proxy/anthropic.ts`, `langfuse.ts`; PRs #39, #40). A streaming transform extracts `[ACTION:TYPE] target` tags from the assistant's reply and logs them to Langfuse as trace tags + metadata (bare type, e.g. `open_app`, plus `app:Spotify`-style target tags). No raw prompts or responses are stored (`PROXY_CAPTURE_PAYLOADS` off by default); sensitive targets (file paths on deletes/builds) are dropped, only app/project names kept.
-- **Stripe checkout validated end to end in SANDBOX/test mode:** purchase → license issued → proxy entitles the call. Not yet on live payments.
 - **Marketing site** (PR #38): cinematic 5-page landing — home (particle orb + 01-03 sequence visuals + live-demo terminal + capabilities), `/how-it-works`, `/pricing`, `/faq`, `/contact` — plus new `/privacy` and `/terms`. Langfuse MCP connected for analytics; usage dashboard planned, not built.
 
 ### Carried over (pre-Phase-2, still live)
@@ -98,9 +107,9 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 | AI (deep) | Claude Opus 4.8 (via proxy) | research; $5 / $25 per MTok |
 | TTS | Fish Audio (via proxy) | VALET voice — two British models (Male / Female) |
 | STT | Chrome Web Speech API | client-side, free |
-| Licensing DB | Supabase Postgres (Pro) | `licenses` + `license_usage` tables |
+| Accounts + Licensing DB | Supabase Postgres (Pro) + Supabase Auth | `licenses` (+ `customer_email`, `user_id`), `license_usage`, `account_sync` tables; email/password auth via `@supabase/ssr` |
 | Observability | Langfuse | license as user id, payloads scrubbed |
-| Billing | Stripe | Free / Pro $20/mo / Ultra $50/mo — sandbox/test mode |
+| Billing | Stripe (LIVE) | Free / Pro $20/mo / Ultra $50/mo — live mode; payouts paused pending bank account |
 | Control | `action_executor.py` ABC + AppleScript backend | portable; Windows/Linux = swap |
 | Memory | SQLite + FTS5 | `data/` |
 | macOS integrations | AppleScript | Calendar, Mail (RO), Notes |
@@ -116,10 +125,11 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 |---|---|---|---|
 | Anthropic Claude API | Haiku 4.5 conversation, Opus 4.8 research — via the proxy | Haiku $1/$5, Opus $5/$25 per MTok | live (server-side keys) |
 | Fish Audio TTS | VALET-voiced replies (two British voices) — via the proxy | ~$15 / 1M chars | live (server-side keys) |
-| Supabase | license + usage store (`licenses`, `license_usage`) | Pro plan | live |
+| Supabase | accounts (Auth) + license/usage/sync store (`licenses`, `license_usage`, `account_sync`) | Pro plan | live |
 | Langfuse | proxy tracing + privacy-respecting action analytics (tags/metadata, no raw payloads) | unknown | live |
 | Langfuse MCP | analytics access for a planned usage dashboard | unknown | connected (dashboard planned) |
-| Stripe | checkout + subscriptions (Free / Pro $20/mo / Ultra $50/mo) | per-transaction | testing (sandbox/test mode) |
+| Stripe | checkout + subscriptions + Billing Portal (Free / Pro $20/mo / Ultra $50/mo) | per-transaction | live (Twin Peaks Labs; payouts paused) |
+| Resend | transactional email (license key on purchase) | unknown | planned (no-op until `RESEND_API_KEY`/`EMAIL_FROM` set) |
 | Vercel | hosts `product-site/` (marketing + proxy); `DOWNLOAD_URL` → release DMG | unknown | live |
 | GitHub Releases | hosts the signed/notarized DMG (`Kuba-Ventures/valet-downloads` `v0.1.0`) | free | live |
 | Open-Meteo | geocoding + weather | free | live |
@@ -134,6 +144,11 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 
 ## Decisions log  [append-only — never rewrite or delete]
 
+- **2026-06-11 — Stripe flipped to LIVE under a new "Twin Peaks Labs" account** — Moved off sandbox to live keys, a live webhook on the www host, recreated Pro/Ultra products with new live price IDs, and a saved Customer Portal config. Verified `cs_live_` checkout for both tiers end to end. Payouts deliberately left paused until a bank account is added (activation incomplete); live charges accrue in the balance meanwhile.
+- **2026-06-11 — Identity = Supabase Auth accounts, license auto-claimed by buyer email** — Added real email/password login rather than keeping license-key-in-a-header as the only identity. New accounts auto-link their license by matching the Stripe buyer email; a manual link-key form covers mismatches. Email verification is enforced for the web session, but the license keeps working in the app regardless so confirmation friction never blocks usage.
+- **2026-06-11 — Desktop→web sync is app-pushes-snapshot, sanitized, telemetry-gated, never message content** — The app pushes a profile/stats/connections snapshot to an authed ingest endpoint every 15 min; the server applies a strict allow-list sanitizer (known fields only, types coerced, extras dropped). Gated on a license key present AND telemetry not opted out. No message content ever leaves the machine. Web-side profile is read-only (synced down); editing-on-web that writes back to the app is deferred.
+- **2026-06-11 — Owner admin view is read-only, env allow-list gated** — `/account/admin` is gated on `ADMIN_EMAILS` checked against the verified session email; it only reads (summary cards + subscriber table) with no per-customer actions yet. Keeps the blast radius minimal while giving the owner visibility.
+- **2026-06-11 — `NEXT_PUBLIC_SUPABASE_URL` must be the bare project URL** — A `/rest/v1/` suffix produced a PostgREST "Invalid path specified in request URL" error at signup. Fixed to the bare `https://ufqvgujnphaejewqmugg.supabase.co`. Noted so it isn't reintroduced.
 - **2026-06-11 — Distribute the signed DMG as a public GitHub release, gated by the proxy** — The notarized `VALET_0.1.0_aarch64.dmg` lives as a release on `Kuba-Ventures/valet-downloads`; `product-site` `/api/download` validates the license then redirects to it via the Vercel `DOWNLOAD_URL` env var. Swapping a future build is one env change. Rejected: serving the binary through Vercel directly (size, bandwidth).
 - **2026-06-11 — Onboarding re-runs on every fresh install, not just every build** — Keyed off the `.app` creation-time stamp (PR #44) so a re-download of the same build still re-triggers setup, ensuring permissions/license are re-walked on a clean machine.
 - **2026-06-11 — Action analytics log tags only, never raw conversation** — The proxy extracts `[ACTION:TYPE]` tags into Langfuse as trace tags + metadata and drops sensitive targets (file paths on deletes/builds), keeping only app/project names. Gives a "most-used actions" view without storing prompts/responses (`PROXY_CAPTURE_PAYLOADS` off by default).
@@ -166,8 +181,10 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 ## Open loops  [rewrite]
 
 - [ ] **Close the shared-key / soft-cap risk** before real distribution — per-license hard limits or per-customer cost accounting (currently $8/mo soft-warn, unvalidated, never blocks) — owner: Finley (see Risks)
-- [ ] **Flip Stripe to live mode** (currently sandbox/test) — owner: Finley
-- [ ] **Add a license-key recovery path** — the key is only shown on the post-purchase success page (copy button), not emailed; a lost key is unrecoverable today — owner: Finley
+- [ ] **Add a bank account in Stripe to resume payouts** — live charges accrue but cannot pay out until account activation is complete — owner: Finley
+- [ ] **Wire transactional email** — license-key email (Resend, `lib/email.ts`) is a no-op until `RESEND_API_KEY`/`EMAIL_FROM` are set; Supabase's built-in confirmation email is rate-limited/unreliable, so wire custom SMTP (e.g. Resend) in Supabase Auth before real distribution. Until then, self-confirm users in the Supabase dashboard — owner: Finley
+- [ ] **Add the www `/auth/callback` redirect URL in Supabase** — Site URL is `https://www.valet-voice.com/`, so confirmation links from www need it (apex variant already added) — owner: Finley
+- [ ] **Merge the desktop sync (PR #57)** — web side is live; the `server.py` tracker wiring + push loop is still open — owner: Finley
 - [ ] **Wire the onboarding "connections" step** (Google Calendar / Gmail / MCP / other apps) — currently "Coming soon" placeholders — owner: Finley
 - [ ] **Google Calendar / Gmail integration** (per-user OAuth + Google app verification) — deferred — owner: Finley
 - [ ] Add a TTS fallback so a Fish Audio outage doesn't kill voice — owner: Finley
@@ -182,8 +199,9 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 ## Risks & known issues  [rewrite]
 
 - **TOP RISK — shipped users bill the owner's personal keys with only a soft cap.** Every shipped user's AI + TTS runs through the proxy's single owner-held Anthropic + Fish keys. The fair-use cap ($8/mo default) only soft-warns: it never blocks, and is unvalidated. With a signed build now live, anyone with a license can drive unbounded spend on the owner's keys. Must become per-license hard limits or per-customer cost accounting before any real distribution.
-- **Stripe is still in sandbox/test mode.** Checkout is validated end to end in test mode but no live payment has been taken. Going live needs the live keys/prices wired and re-verified.
-- **No license-key recovery path.** The key is shown only on the post-purchase success page (with a copy button); it is not emailed. A user who loses it there has no way to recover it. The success-page copy already flags this as an open question.
+- **Stripe payouts are PAUSED.** Live mode is on and verified (`cs_live_` sessions for both tiers, a real trial purchase), but account activation is incomplete — live charges accrue in the Stripe balance and cannot pay out until a bank account is added.
+- **Transactional email is not fully wired.** The license-key email (Resend, `lib/email.ts`) is a silent no-op until `RESEND_API_KEY`/`EMAIL_FROM` are set. Separately, Supabase's built-in confirmation email is rate-limited and unreliable; custom SMTP (e.g. Resend) should be wired in Supabase Auth before real distribution. Until then, users can be self-confirmed in the Supabase dashboard. The www `/auth/callback` redirect URL should also be added in Supabase (apex is done) so www confirmation links resolve.
+- **License recovery now works via accounts, but depends on the email above.** Customers can sign in at `/account` and see their key any time (auto-claimed by buyer email, or via the manual link-key form). This closes the old "key only shown once on the success page" gap — but only once confirmation email is reliable, since signup requires a verified address.
 - **Google Calendar / Gmail integration is deferred.** Onboarding shows both as "Coming soon" placeholders; per-user OAuth and Google app verification are not built. The onboarding "connections" step (Google/Gmail/MCP/other apps) is placeholder UI, not wired.
 - **Single-vendor TTS** — Fish Audio has no fallback; an outage takes voice down.
 - **Soft fair-use + 7-day offline grace are intentionally lenient.** A canceled/abused license keeps working for up to 7 days offline; over-allowance never stops a request. Fine for a controlled launch, not for scale.
@@ -206,12 +224,12 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 - **License-key email on purchase (#46, merged).** The Stripe webhook emails the buyer their key. Graceful no-op until activated. Activation: create a Resend account, verify a sending DOMAIN you own (cannot verify `*.vercel.app`, so a real domain is needed, e.g. `valetvoice.app`), then set `RESEND_API_KEY` and `EMAIL_FROM` in Vercel and redeploy.
 
 **Config still owned by the operator:**
-- Stripe is still in SANDBOX/test mode. Flip to live keys + webhook + re-test before real sales.
-- Resend (`RESEND_API_KEY` + `EMAIL_FROM`) for the license email above.
+- *(2026-06-11) DONE: Stripe is now LIVE.* Remaining: add a bank account to resume payouts.
+- Resend (`RESEND_API_KEY` + `EMAIL_FROM`) for the license email; and custom SMTP in Supabase Auth so confirmation email is reliable. Add the www `/auth/callback` redirect URL in Supabase.
 
 **Deferred features (not started):**
 - **Google Calendar / Gmail:** per-user OAuth + Google app verification. Onboarding shows "Coming soon" placeholders. Real project.
-- **User accounts / self-serve billing portal:** log in, see your key anytime, manage or cancel the subscription. The fuller version of license recovery. Real project.
+- ~~**User accounts / self-serve billing portal**~~ — *(2026-06-11) BUILT this session: Supabase-Auth accounts, `/account` dashboard (key, plan, usage, download, Stripe Billing Portal), owner `/account/admin`, and a desktop→web sync. Web side merged; desktop sync (PR #57) open.* Remaining: edit-profile-on-web that writes back to the app (possible Phase 3).
 - **"Sir" persona pass:** roughly 20 instances in the app system prompt instruct Vee to address the user as "sir" (the old assistant persona). A deliberate tone decision plus an app rebuild.
 - **TTS fallback:** Fish Audio is the single vendor with no backup. Add a secondary provider path.
 - **Universal app control via the macOS Accessibility API (AXUIElement):** drive any app's UI by reading its accessibility tree and sending synthetic input. Big bet, do it selectively (native apps first where the tree is rich, screenshot + vision fallback for Electron / weak trees, every click / type gated behind the existing confirmation + kill switch).
@@ -223,7 +241,8 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 
 ## Links  [rewrite]
 
-- **Live URL (proxy + marketing):** https://jarvis-y.vercel.app
+- **Live URL (proxy + marketing + accounts):** https://www.valet-voice.com (Vercel; `jarvis-y.vercel.app` is the underlying deploy)
+- **Customer account portal:** https://valet-voice.com/account (owner admin at `/account/admin`)
 - **App:** local-only (`http://localhost:5173`)
 - **GitHub:** https://github.com/Kuba-Ventures/jarvis-y (remote/URL names deliberately NOT renamed; org is Kuba-Ventures; local dir is `~/Code/VALET`)
 - **Staging:** n/a
@@ -236,6 +255,7 @@ The product now ships. There is a signed and notarized macOS DMG (Developer ID, 
 
 ## Changelog  [append-only — never rewrite or delete]
 
+- **2026-06-11:** kuba-vault refresh — Stripe went LIVE (new "Twin Peaks Labs" account, live keys/webhook/prices, `cs_live_` verified for Pro + Ultra, a real trial purchase issued a key; payouts paused pending bank account), and a full self-service account layer shipped on valet-voice.com: Supabase-Auth email/password login + `/account` section (PR #52), show-password toggle + confirm field then eye-icon-in-field (PRs #53, #55), owner-only read-only `/account/admin` subscriber view (PR #54), and the web side of a desktop→web sync — `account_sync` table, authed sanitized `/api/proxy/sync` ingest, dashboard Profile/Speech-activity/Connected-apps sections (PR #56). Accounts + sync migrations run in prod Supabase. Desktop sync app side (PR #57: `server.py` wires `SuccessTracker` + a telemetry-gated 15-min snapshot push) is OPEN, not merged. Updated tech stack/integrations (Supabase Auth + `account_sync`, Stripe live, Resend planned), logged five decisions, refreshed open loops (bank account, transactional email, www redirect, merge #57) and risks (payouts paused, email not wired, recovery now via accounts). Closed the old "no license-key recovery" gap.
 - **2026-06-11:** Added a "Roadmap / Deferred" section capturing intentionally-deferred work so it survives across sessions — next-build riders (onboarding-on-every-install #44), license-key email awaiting Resend config (#46), operator-owned config (Stripe live, Resend), not-started features (Google/Gmail, accounts/billing portal, "sir" persona pass, TTS fallback, Accessibility-API universal control, Langfuse dashboard). Noted shared-key spend is now BOUNDED (`FAIR_USE_MODE=throttle` + `FAIR_USE_MONTHLY_USD=10`).
 - **2026-06-11:** kuba-vault refresh — Stage F is DONE: signed + notarized macOS DMG live as a `Kuba-Ventures/valet-downloads` `v0.1.0` release (Developer ID, Team QZX7VBLDZT, `valet-notary`), Vercel `DOWNLOAD_URL` wired; full buy → key → download → clean-install → run loop verified. Logged the onboarding wizard (PR #41) re-running per build and per fresh install (PR #44), PyInstaller `--clean` build fix (PR #42), reliable relaunch after a permission toggle (PR #43), privacy-respecting Langfuse action analytics (PRs #39/#40), and the 5-page landing + /privacy + /terms (PR #38). Phase → launch prep. Cleared the now-false "no signed build" risk; sharpened the open liabilities to: shared-key soft cap (top), Stripe still sandbox, no license-key recovery, deferred Google/Gmail, single-vendor TTS.
 - **2026-06-11:** Onboarding now re-runs on every fresh install via the `.app` creation-time stamp (PR #44).
