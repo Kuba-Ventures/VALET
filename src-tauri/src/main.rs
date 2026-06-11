@@ -91,7 +91,10 @@ fn main() {
             if let WindowEvent::CloseRequested { .. } = event {
                 let state = window.state::<Backend>();
                 state.shutting_down.store(true, Ordering::SeqCst);
-                if let Some(child) = state.child.lock().unwrap().take() {
+                // Bind the take() so the MutexGuard temporary drops at this ';'
+                // (before `state`), satisfying the borrow checker.
+                let child = state.child.lock().unwrap().take();
+                if let Some(child) = child {
                     let _ = child.kill();
                 }
             }
