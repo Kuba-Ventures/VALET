@@ -35,6 +35,21 @@ def valet_env_path() -> Path:
     return here / ".env"
 
 
+def valet_data_dir() -> Path:
+    """Writable directory for local data (success-tracker DB). Mirrors
+    valet_env_path: Application Support in a packaged build, the repo dir in dev."""
+    here = Path(__file__).resolve().parent
+    shipped = bool(os.environ.get("VALET_SHIPPED")) or not (here / ".git").exists()
+    if shipped:
+        d = Path.home() / "Library" / "Application Support" / "VALET"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except Exception:
+            pass
+    return here
+
+
 # Load .env file if present
 _env_path = valet_env_path()
 if _env_path.exists():
@@ -2888,6 +2903,145 @@ async def _confirm_action(ws: "WebSocket", ea: dict) -> bool:
     return allowed
 
 
+# ── Account sync: wire SuccessTracker into the live loop + push a snapshot up ──
+# The desktop app records task outcomes and action usage locally (SuccessTracker,
+# tracking.py); a background loop periodically pushes a privacy-preserving
+# aggregate snapshot to the proxy so the user's account page can show their
+# profile, speech stats and connected apps. Telemetry-gated; no raw prompts or
+# message content ever leave the machine — only counts, rates and the profile the
+# user entered in onboarding.
+
+success_tracker = None  # SuccessTracker | None — initialised in lifespan
+
+# Integrations seen working this run. A side-effect-free signal for "connected":
+# set true when a lookup of that type succeeds (no extra permission probes).
+_connections_seen = {"calendar": False, "mail": False, "notes": False}
+
+
+def _init_success_tracker():
+    """Open the local SuccessTracker DB in the writable data dir. Never fatal."""
+    global success_tracker
+    try:
+        from tracking import SuccessTracker
+        success_tracker = SuccessTracker(
+            db_path=str(valet_data_dir() / "valet_data.db")
+        )
+        log.info("success tracker ready")
+    except Exception as e:
+        success_tracker = None
+        log.warning(f"success tracker unavailable: {e}")
+
+
+def _track_usage(action_type: str):
+    """Record one dispatched action for the top-requests breakdown. No-op safe."""
+    if not success_tracker or not action_type:
+        return
+    try:
+        success_tracker.log_usage(action_type)
+    except Exception:
+        pass
+
+
+def _track_task(task_type: str, success: bool, duration: float = 0.0):
+    """Record a completed task's outcome + duration. No-op safe."""
+    if not success_tracker:
+        return
+    try:
+        success_tracker.log_task(task_type, "", success, duration=duration)
+    except Exception:
+        pass
+
+
+def _telemetry_on() -> bool:
+    return os.getenv("VALET_TELEMETRY", "on").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+def _app_version() -> str:
+    try:
+        p = Path(__file__).resolve().parent / "build_id.txt"
+        if p.exists():
+            return p.read_text().strip()[:40]
+    except Exception:
+        pass
+    return "0.1.0"
+
+
+def _gather_sync_snapshot() -> dict:
+    """Build the snapshot for /api/proxy/sync: the onboarding profile + local
+    aggregate stats + connection flags. No message content."""
+    profile = {}
+    for key, env in (
+        ("name", "USER_NAME"),
+        ("honorific", "HONORIFIC"),
+        ("date_of_birth", "DATE_OF_BIRTH"),
+        ("location", "HOMETOWN_CITY"),
+        ("work_email", "WORK_EMAIL"),
+        ("personal_email", "PERSONAL_EMAIL"),
+    ):
+        v = (os.getenv(env, "") or "").strip()
+        # USER_NAME defaults to the placeholder "sir"; don't sync that as a name.
+        if v and not (env == "USER_NAME" and v.lower() == "sir"):
+            profile[key] = v
+    if not profile.get("location"):
+        addr = (os.getenv("ADDRESS", "") or "").strip()
+        if addr:
+            profile["location"] = addr
+
+    stats = {}
+    if success_tracker:
+        try:
+            rate = success_tracker.get_success_rate()
+            stats["total_tasks"] = rate.get("total", 0)
+            stats["success_rate"] = round(rate.get("rate", 0.0), 1)
+            stats["avg_duration_seconds"] = round(
+                success_tracker.get_avg_duration(), 2
+            )
+            stats["top_actions"] = [
+                {"action": t["action_type"], "count": t["count"]}
+                for t in success_tracker.get_top_actions(limit=8)
+            ]
+        except Exception as e:
+            log.warning(f"sync stats gather failed: {e}")
+
+    return {
+        "profile": profile or None,
+        "stats": stats or None,
+        "connections": dict(_connections_seen),
+        "app_version": _app_version(),
+    }
+
+
+async def _push_account_sync():
+    """POST one snapshot to the proxy. Best-effort; failures logged, not fatal."""
+    if not LICENSE_KEY or not _telemetry_on():
+        return
+    try:
+        payload = _gather_sync_snapshot()
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            r = await http.post(
+                f"{PROXY_BASE_URL}/api/proxy/sync",
+                headers={"X-License-Key": LICENSE_KEY},
+                json=payload,
+            )
+        if r.status_code >= 300:
+            log.warning(f"account sync failed: {r.status_code}")
+    except Exception as e:
+        log.warning(f"account sync error: {e}")
+
+
+async def _account_sync_loop():
+    """Push a snapshot shortly after start, then every 15 minutes."""
+    try:
+        await asyncio.sleep(20)  # let startup settle first
+        while True:
+            await _push_account_sync()
+            await asyncio.sleep(900)
+    except asyncio.CancelledError:
+        pass
+
+
 # Usage tracking — logs every call with timestamp, persists to disk
 _USAGE_FILE = Path(__file__).parent / "data" / "usage_log.jsonl"
 _session_start = time.time()
@@ -3182,6 +3336,13 @@ async def lifespan(application: FastAPI):
         else:
             log.warning(f"license NOT entitled: status={state.get('status')} — assistant loop disabled")
 
+    # Wire the local success tracker, and start the account-sync loop when the
+    # user is licensed and hasn't opted out of telemetry.
+    _init_success_tracker()
+    _sync_task = None
+    if LICENSE_KEY and _telemetry_on():
+        _sync_task = asyncio.create_task(_account_sync_loop())
+
     cached_projects = []
 
     # Start context refresh in a separate thread (never touches event loop)
@@ -3205,6 +3366,8 @@ async def lifespan(application: FastAPI):
 
     yield
 
+    if _sync_task:
+        _sync_task.cancel()
     # Flush any buffered traces so nothing is lost on shutdown.
     observability.shutdown_observability()
 
@@ -4056,6 +4219,9 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
         )
 
         _active_lookups[lookup_id]["status"] = "done"
+        _track_task(lookup_type, True, time.time() - dispatch_time)
+        if lookup_type in _connections_seen:
+            _connections_seen[lookup_type] = True
 
         # Speak the result — skip audio only if the user spoke *again* after we
         # dispatched this lookup (a fresh utterance we'd talk over). The triggering
@@ -4085,6 +4251,7 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
 
     except asyncio.TimeoutError:
         _active_lookups[lookup_id]["status"] = "timeout"
+        _track_task(lookup_type, False, time.time() - dispatch_time)
         try:
             fallback = f"That {lookup_type} check is taking too long, sir. The data may still be syncing."
             audio = await synthesize_speech(fallback)
@@ -4096,6 +4263,7 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
             pass
     except Exception as e:
         _active_lookups[lookup_id]["status"] = "error"
+        _track_task(lookup_type, False, time.time() - dispatch_time)
         log.warning(f"Lookup {lookup_type} failed: {e}")
     finally:
         # Clean up after 60s
@@ -4835,6 +5003,7 @@ async def voice_handler(ws: WebSocket):
                         continue
 
                     if action:
+                        _track_usage(action.get("action") or "")
                         if action["action"] == "open_terminal":
                             response_text = await handle_open_terminal()
                         elif action["action"] == "show_recent":
