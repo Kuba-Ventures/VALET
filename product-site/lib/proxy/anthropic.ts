@@ -28,16 +28,45 @@ function emptyUsage(): TokenUsage {
 }
 
 /**
+ * Privacy-respecting action analytics. The assistant ends replies with a
+ * structured tag like "[ACTION:OPEN_APP] Spotify". We extract just the action
+ * TYPE (and, for opens, the app/project name, which is low-sensitivity) so the
+ * dashboard can answer "what are people using it for" WITHOUT storing the raw
+ * conversation. Targets for sensitive actions (deletes, builds, etc.) are not
+ * captured, only their type.
+ */
+const ACTION_RE = /\[ACTION:([A-Z_]+)\]\s*([^\n\]]*)/g;
+const KEEP_TARGET = new Set(["OPEN_APP", "OPEN_PROJECT"]);
+
+function extractActions(text: string): string[] {
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  ACTION_RE.lastIndex = 0;
+  while ((m = ACTION_RE.exec(text)) !== null) {
+    const type = m[1].toLowerCase();
+    if (KEEP_TARGET.has(m[1])) {
+      const target = (m[2] || "").trim().slice(0, 48);
+      out.push(target ? `${type}:${target}` : type);
+    } else {
+      out.push(type);
+    }
+  }
+  return out;
+}
+
+/**
  * TransformStream that passes SSE bytes through untouched while scanning for the
- * usage carried on `message_start` (input + cache tokens) and `message_delta`
- * (cumulative output tokens). Calls `onDone` with the final tally at stream end.
+ * usage carried on `message_start` / `message_delta`, and accumulating the reply
+ * text so the final action tag(s) can be extracted. Calls `onDone` with the
+ * tally and the actions at stream end.
  */
 function meteringTransform(
-  onDone: (usage: TokenUsage) => void,
+  onDone: (usage: TokenUsage, actions: string[]) => void,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const usage = emptyUsage();
   let buf = "";
+  let text = "";
 
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
@@ -65,6 +94,8 @@ function meteringTransform(
             if (typeof evt.usage.input_tokens === "number") {
               usage.input_tokens = evt.usage.input_tokens;
             }
+          } else if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+            text += evt.delta.text ?? "";
           }
         } catch {
           // partial or non-JSON data line — ignore
@@ -72,7 +103,7 @@ function meteringTransform(
       }
     },
     flush() {
-      onDone(usage);
+      onDone(usage, extractActions(text));
     },
   });
 }
@@ -107,7 +138,7 @@ export async function handleAnthropicProxy(
   const isStream = body.stream === true;
   const startTime = Date.now();
 
-  const meter = (usage: TokenUsage, status: "ok" | "error") => {
+  const meter = (usage: TokenUsage, status: "ok" | "error", actions: string[] = []) => {
     const costUsd = estimateModelCost(model, usage);
     void recordUsage({
       licenseKey: auth.licenseKey,
@@ -127,6 +158,7 @@ export async function handleAnthropicProxy(
       costUsd,
       startTime,
       status,
+      actionsRequested: actions,
     });
   };
 
@@ -151,6 +183,9 @@ export async function handleAnthropicProxy(
   if (!isStream) {
     const json = await upstream.json().catch(() => null);
     if (json && upstream.ok && json.usage) {
+      const replyText = Array.isArray(json.content)
+        ? json.content.filter((b: { type?: string }) => b.type === "text").map((b: { text?: string }) => b.text ?? "").join("")
+        : "";
       meter(
         {
           input_tokens: json.usage.input_tokens ?? 0,
@@ -159,6 +194,7 @@ export async function handleAnthropicProxy(
           cache_read_input_tokens: json.usage.cache_read_input_tokens ?? 0,
         },
         "ok",
+        extractActions(replyText),
       );
     }
     return NextResponse.json(json ?? { error: "Empty upstream response." }, {
@@ -177,7 +213,7 @@ export async function handleAnthropicProxy(
 
   // Streaming: tee through the metering transform; meter fires on stream end.
   const stream = upstream.body.pipeThrough(
-    meteringTransform((usage) => meter(usage, "ok")),
+    meteringTransform((usage, actions) => meter(usage, "ok", actions)),
   );
   return new Response(stream, {
     status: upstream.status,
