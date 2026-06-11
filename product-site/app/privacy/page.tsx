@@ -31,9 +31,9 @@ export default function PrivacyPage() {
           stored by default; tracing payloads are scrubbed.
         </li>
         <li>
-          <strong>Error reports</strong> are <strong>off by default</strong>. Only if you turn on
-          “Share crash + error reports” in Settings do we send error <em>metadata</em>
-          (error type, the module, the action that failed) — never file contents, message
+          <strong>Error reports</strong> are <strong>on by default</strong> so we can fix what
+          breaks, and you can turn them off anytime in Settings. We send error <em>metadata</em>
+          only (error type, the module, the action that failed), never file contents, message
           bodies, prompts, or screen data.
         </li>
         <li>
@@ -50,7 +50,7 @@ export default function PrivacyPage() {
 
       <h2>Your controls</h2>
       <ul>
-        <li>Telemetry is opt-in and can be turned off at any time in Settings.</li>
+        <li>Telemetry (scrubbed crash reports) is on by default and can be turned off at any time in Settings.</li>
         <li>Destructive actions always ask first; deletes go to the Trash.</li>
         <li>A global STOP halts any in-progress action.</li>
       </ul>

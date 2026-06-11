@@ -83,7 +83,7 @@ function buildPanelHTML(): string {
       </div>
 
       <div class="settings-welcome" id="settings-welcome" style="display:none">
-        <p>Welcome to VALET. Let's get you set up.</p>
+        <p>Welcome to VALET. Enter your license key on the right to start talking to Vee and controlling your Mac. You'll find it in your purchase confirmation, or in your account at valetvoice.vercel.app.</p>
       </div>
 
       <!-- Tab nav — User Settings sits first as the primary tab. Hidden
@@ -111,23 +111,22 @@ function buildPanelHTML(): string {
             </div>
           </div>
 
-          <div class="settings-field">
+          <div class="settings-field setup-hide">
             <label>Proxy URL</label>
             <div class="settings-input-row">
               <input type="text" id="input-proxy-url" placeholder="https://valetvoice.vercel.app" />
             </div>
           </div>
 
-          <div class="settings-field">
+          <div class="settings-field setup-hide">
             <label>Voice</label>
             <div class="settings-input-row settings-voice-toggle">
               <button class="settings-btn voice-opt active" id="voice-male" data-voice="male" type="button">British Male</button>
               <button class="settings-btn voice-opt" id="voice-female" data-voice="female" type="button">British Female</button>
             </div>
-            <div class="settings-hint" id="voice-female-hint" hidden>Add a British female Fish voice ID below to enable.</div>
           </div>
 
-          <div class="settings-field">
+          <div class="settings-field setup-hide">
             <label>Voice ID (advanced)</label>
             <div class="settings-input-row">
               <input type="text" id="input-fish-voice-id" placeholder="Fish reference_id override" />
@@ -135,9 +134,9 @@ function buildPanelHTML(): string {
             </div>
           </div>
 
-          <div class="settings-field">
+          <div class="settings-field setup-hide">
             <label class="settings-check"><input type="checkbox" id="input-telemetry" /> Share crash + error reports</label>
-            <div class="settings-hint">Off by default. Sends error metadata only — never file contents, messages, or prompts. <a href="https://valetvoice.vercel.app/privacy" target="_blank" rel="noreferrer">Privacy</a></div>
+            <div class="settings-hint">On by default; turn it off anytime. Sends error metadata only, never file contents, messages, or prompts. <a href="https://valetvoice.vercel.app/privacy" target="_blank" rel="noreferrer">Privacy</a></div>
           </div>
 
           <div class="settings-actions">
@@ -566,6 +565,12 @@ function enterSetupMode() {
   isFirstTimeSetup = true;
   setupStep = 0;
 
+  // Strip the License section to the bare minimum (license key only) during
+  // first run; .setup-hide fields (proxy, voice, voice id, telemetry) reappear
+  // in normal settings.
+  const panel = document.getElementById("settings-panel-inner");
+  if (panel) panel.classList.add("first-run");
+
   const welcome = document.getElementById("settings-welcome");
   if (welcome) welcome.style.display = "block";
 
@@ -611,6 +616,8 @@ async function advanceSetup() {
   if (setupStep >= 3) {
     // Done — save everything and close
     isFirstTimeSetup = false;
+    const panel = document.getElementById("settings-panel-inner");
+    if (panel) panel.classList.remove("first-run");
     const welcome = document.getElementById("settings-welcome");
     if (welcome) welcome.style.display = "none";
     const nav = document.getElementById("setup-nav");
