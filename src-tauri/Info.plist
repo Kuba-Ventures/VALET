@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- macOS requires a usage description for each gated capability, or it blocks
+       the app from using it (and won't even show the permission toggle). Tauri
+       merges this file into the generated Info.plist. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>VALET listens for your voice so you can talk to Vee.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>VALET transcribes your speech to understand your commands.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>VALET controls your apps to carry out what you ask.</string>
+</dict>
+</plist>

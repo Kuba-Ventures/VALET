@@ -57,7 +57,7 @@ function escapeRegExp(s: string): string {
  * joining, so a prefix containing regex metacharacters won't break the
  * pattern.
  */
-const WAKE_PREFIXES = ["ok", "okay", "hey"] as const;
+const WAKE_PREFIXES = ["ok", "okay", "hey", "yo", "hi", "hello", "hey there", "morning"] as const;
 
 function buildWakeRegex(name: string): RegExp {
   // Match any prefix from WAKE_PREFIXES followed by the name, tolerating
