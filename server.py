@@ -162,7 +162,7 @@ FISH_API_URL = "https://api.fish.audio/v1/tts"  # dev fallback only
 # unchanged — only the Fish TTS model swaps. The active voice's reference_id is
 # sent on every TTS call (the proxy forwards it). VALET_VOICE = "male" | "female".
 VALET_VOICE_MALE_ID = os.getenv("VALET_VOICE_MALE_ID", "") or FISH_VOICE_ID
-VALET_VOICE_FEMALE_ID = os.getenv("VALET_VOICE_FEMALE_ID", "")  # set to a British female Fish reference_id
+VALET_VOICE_FEMALE_ID = os.getenv("VALET_VOICE_FEMALE_ID", "b347db033a6549378b48d00acb0d06cd")  # British female (bundled default)
 
 
 def _active_voice_id() -> str:
