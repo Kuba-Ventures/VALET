@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
 import { upsertLicenseFromSubscription } from "@/lib/license";
+import { sendLicenseEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 // Never cache or statically optimize a webhook.
@@ -50,7 +51,11 @@ export async function POST(req: NextRequest) {
               ? session.subscription
               : session.subscription.id;
           const sub = await stripe.subscriptions.retrieve(subId);
-          await upsertLicenseFromSubscription(sub);
+          const licenseKey = await upsertLicenseFromSubscription(sub);
+          // Email the key so a closed success tab never loses it. Fires once per
+          // checkout; graceful no-op until RESEND_API_KEY + EMAIL_FROM are set.
+          const email = session.customer_details?.email ?? session.customer_email;
+          await sendLicenseEmail(email, licenseKey);
         }
         break;
       }
