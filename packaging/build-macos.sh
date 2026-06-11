@@ -40,7 +40,7 @@ esac
 echo "==> 0/5 app icon"
 if [ ! -f src-tauri/icons/icon.icns ]; then
   # Seed from the orb PWA icon so a build works before a final logo exists.
-  npm exec -- tauri icon frontend/public/icon-512.png
+  npm exec -- tauri icon assets/valet-icon.png
 fi
 
 echo "==> 1/5 frontend build"
