@@ -120,6 +120,7 @@
 .confirm-btn.allow:hover { filter: brightness(1.08); }
 
 /* ── Global kill switch ─────────────────────────────────────────────── */
+.kill-switch.hidden { display: none; }
 .kill-switch {
   position: fixed;
   bottom: 18px;
