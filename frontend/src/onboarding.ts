@@ -21,7 +21,10 @@ interface Permission {
 type PermStatus = Record<string, Permission>;
 
 const TARGET_FOR = (key: string): string =>
-  key === "full_disk_access" ? "full_disk" : key === "automation" ? "automation" : "accessibility";
+  key === "full_disk_access" ? "full_disk"
+  : key === "microphone" ? "microphone"
+  : key === "automation" ? "automation"
+  : "accessibility";
 
 function pill(p: Permission): { text: string; cls: string } {
   if (p.granted === true) return { text: "Granted", cls: "ok" };
@@ -41,7 +44,7 @@ async function fetchStatus(): Promise<PermStatus | null> {
 
 function rowHTML(key: string, p: Permission): string {
   const s = pill(p);
-  const canOpen = p.granted === false || key === "automation";
+  const canOpen = p.granted === false || key === "automation" || key === "microphone";
   return `
     <div class="ob-row" data-key="${key}">
       <div class="ob-row-main">
@@ -56,7 +59,7 @@ function rowHTML(key: string, p: Permission): string {
 }
 
 function render(root: HTMLElement, status: PermStatus): void {
-  const rows = ["full_disk_access", "automation", "accessibility"]
+  const rows = ["microphone", "full_disk_access", "automation", "accessibility"]
     .filter((k) => status[k])
     .map((k) => rowHTML(k, status[k]))
     .join("");
