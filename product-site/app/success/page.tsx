@@ -107,10 +107,15 @@ export default async function SuccessPage({
           </Link>
         </div>
 
-        {/* Open question, on screen only per the brief: emailing the key. */}
-        <p className="mt-8 border-t border-panel-border pt-5 text-xs text-ink-faint">
-          Open question for the team: should the license key also be emailed on
-          purchase? Right now it is shown here only.
+        {/* We also email the key (see lib/email.ts), so a closed tab never
+            loses it. Point the buyer at their account to manage everything. */}
+        <p className="mt-8 border-t border-panel-border pt-5 text-sm text-ink-dim">
+          We also emailed this key to you.{" "}
+          <Link href="/account/signup" className="text-accent hover:underline">
+            Create an account
+          </Link>{" "}
+          with the same email to manage your license, usage and billing in one
+          place.
         </p>
       </div>
     </main>
