@@ -5468,6 +5468,12 @@ async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
     Automation prompts per-app on first use; Accessibility is post-v1."""
     return {
+        "microphone": {
+            "granted": None,  # prompts on first voice use; no clean pre-check without pyobjc
+            "label": "Microphone",
+            "why": "Hear you so you can talk to Vee.",
+            "note": "Allow when prompted on your first voice command.",
+        },
         "full_disk_access": {
             "granted": _check_full_disk_access(),
             "label": "Full Disk Access",
@@ -5490,6 +5496,7 @@ async def api_permissions_status():
 
 
 _SETTINGS_PANES = {
+    "microphone": "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
     "full_disk": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
     "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
