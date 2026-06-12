@@ -4206,6 +4206,17 @@ def _weather_when(text: str) -> str:
     return "today"
 
 
+# UC3 universal-control voice patterns. "click on Submit" / "press the New Tab
+# button" / "type my email into the address field". Targets resolve against a
+# live observation, so a non-match just fails honestly — never a wild click.
+_UI_CLICK_RE = re.compile(
+    r'^(?:click|tap|press)\s+(?:on\s+|the\s+)?(?P<target>.+?)(?:\s+button)?\s*[.?!]*$',
+    re.IGNORECASE)
+_UI_TYPE_RE = re.compile(
+    r'^type\s+(?P<text>.+?)\s+(?:in|into)\s+(?:the\s+)?(?P<field>.+?)(?:\s+(?:field|box|bar))?\s*[.?!]*$',
+    re.IGNORECASE)
+
+
 def detect_action_fast(text: str, ws=None) -> dict | None:
     """Keyword/regex-based action detection — ONLY for short, obvious commands.
 
@@ -4267,6 +4278,21 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         task = am.group("task").strip()
         if agent_raw and task:
             return {"action": "dispatch_to_agent", "agent": agent_raw, "task": task}
+
+    # ── (2c) UC3 universal control: "click on X" / "type X into the Y field".
+    # Exempt from the word-count gate (a typed phrase can be long) — the verb
+    # anchor keeps it command-shaped, and an unresolved target fails honestly.
+    _tm = _UI_TYPE_RE.match(text.strip())
+    if _tm:
+        field = _tm.group("field").strip(" .?!")
+        typed = _tm.group("text").strip()
+        if field and typed:
+            return {"action": "ui_act", "ui_action": "type", "target": field, "text": typed}
+    _cm = _UI_CLICK_RE.match(text.strip())
+    if _cm:
+        tgt = _cm.group("target").strip(" .?!")
+        if tgt and len(tgt.split()) <= 6:
+            return {"action": "ui_act", "ui_action": "click", "target": tgt}
 
     # ── (3) Word-count gate for everything else.
     if len(words) > 12:
@@ -5470,6 +5496,12 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "describe_screen":
                             response_text = "Taking a look now, sir."
                             asyncio.create_task(_lookup_and_report("screen", _do_screen_lookup, ws, history=history, voice_state=voice_state))
+                        elif action["action"] == "ui_act":
+                            # UC3 — "click on X" / "type X into the Y field". Resolve +
+                            # gated execute on a background task (keeps the WS loop free
+                            # for the confirm reply).
+                            response_text = "On it, sir."
+                            asyncio.create_task(_handle_ui_act(action, ws))
                         elif action["action"] == "check_calendar":
                             response_text = "Checking your calendar now, sir."
                             asyncio.create_task(_lookup_and_report("calendar", _do_calendar_lookup, ws, history=history, voice_state=voice_state))
@@ -6517,6 +6549,85 @@ async def api_perception_observe(request: Request):
             "height": img["height"], "bytes": len(img["b64"]) * 3 // 4,
         },
     }
+
+
+async def _resolve_and_act(action: str, target: str, text: str = "",
+                           app: Optional[str] = None, *, task_id: Optional[str] = None) -> dict:
+    """UC3: resolve a natural-language target against a fresh observation, then
+    execute the click/type through the safety-gated executor (confirm card +
+    kill switch). Ambiguous → ask; miss → honest fail; never a wild click.
+
+    For 'type', the field is focused via benign AX (no synthetic input) so only
+    the keystroke itself raises a confirm — a vision-point target has no ref, so
+    it falls back to a (gated) point-click to focus."""
+    import perception
+    import target_resolver
+    if not target:
+        return {"ok": False, "status": "miss", "message": "Tell me what to act on, sir."}
+
+    obs = await perception.build_observation(executor, app=app)
+    intent = "type into" if action == "type" else "click"
+    res = await target_resolver.resolve(obs, target, anthropic_client, intent=intent)
+
+    if res.status == "ambiguous":
+        return {"ok": False, "status": "ambiguous", "message": res.message,
+                "alternatives": res.alternatives}
+    if res.status == "miss":
+        return {"ok": False, "status": "miss",
+                "message": res.message or f"I don't see a '{target}', sir."}
+
+    # Surface the chosen target on the process panel BEFORE acting (supervision).
+    if task_id:
+        await emit_step(task_id, f"Target: {res.label or target}",
+                        detail=f"resolved via {res.via}", status="active")
+
+    if action == "type":
+        if res.status == "ref":
+            await _ax_executor.focus_element(res.ref)          # benign focus, no confirm
+        else:
+            await executor.click_element(point=res.point, app=app)  # gated focus-click
+        r = await executor.send_keystroke(app or "", text, task_id=task_id)
+    else:
+        if res.status == "ref":
+            r = await executor.click_element(ref=res.ref, app=app, task_id=task_id)
+        else:
+            r = await executor.click_element(point=res.point, app=app, task_id=task_id)
+
+    return {"ok": r.ok, "status": res.status, "via": res.via,
+            "label": res.label, "message": r.message, "target": res.to_dict()}
+
+
+async def _handle_ui_act(action: dict, ws) -> None:
+    """Voice path for UC3. Runs on a background task (NOT the WS receive loop) so
+    the confirm reply for the gated click/type can be read — same deadlock-safe
+    pattern as `_confirm_and_dispatch`. Streams the chosen target to the process
+    panel and speaks the outcome (asks on ambiguous, honest on miss)."""
+    ui_action = action.get("ui_action", "click")
+    target = action.get("target", "")
+    text = action.get("text", "")
+    label = f"{'Type into' if ui_action == 'type' else 'Click'} {target}"
+    try:
+        async with process_bus.task_context(label) as task_id:
+            result = await _resolve_and_act(ui_action, target, text, None, task_id=task_id)
+    except Exception as e:
+        log.error(f"ui_act error: {e}")
+        await _speak(ws, "I couldn't do that, sir.")
+        return
+    msg = result.get("message") or ("Done, sir." if result.get("ok") else "I couldn't do that, sir.")
+    await _speak(ws, msg)
+
+
+@app.post("/api/ui/act")
+async def api_ui_act(request: Request):
+    """UC3 — act on a natural-language target. Body: {action: click|type, target,
+    text?, app?}. Routes through resolve → confirm card → gated execute."""
+    body = (await request.json() if await request.body() else {}) or {}
+    return await _resolve_and_act(
+        (body.get("action") or "click").lower(),
+        body.get("target") or "",
+        body.get("text") or "",
+        body.get("app") or None,
+    )
 
 
 @app.post("/api/ax/click")

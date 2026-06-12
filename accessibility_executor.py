@@ -473,6 +473,26 @@ class AccessibilityExecutor(ActionExecutor):
         return ActionResult.failure(Capability.KEY_COMBO, error="post_failed",
                                     message=f"I couldn't send {combo}, sir.")
 
+    # --- focus (UC3 helper) ----------------------------------------------
+    async def focus_element(self, ref: str) -> bool:
+        """Give keyboard focus to an element by ref (AX set-focused) so a typed
+        action lands in it. Benign — moves focus, synthesizes no input. Returns
+        False if untrusted / unknown ref / unsupported."""
+        if not _PYOBJC or not is_trusted():
+            return False
+        el = self._ref_map.get(ref)
+        if el is None:
+            return False
+
+        def _do() -> bool:
+            try:
+                err = _AX.AXUIElementSetAttributeValue(el, "AXFocused", True)
+                return err == 0
+            except Exception:
+                return False
+
+        return await asyncio.to_thread(_do)
+
     # --- input carried from K1 -------------------------------------------
     async def open_app(self, app: str, *, task_id: Optional[str] = None) -> ActionResult:
         if not _PYOBJC:
