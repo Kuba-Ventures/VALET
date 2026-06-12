@@ -132,7 +132,7 @@ from memory import (
     format_tasks_for_voice, extract_memories, get_important_memories,
     get_bio_summary, set_bio_summary, get_bio_sources, add_bio_note,
 )
-from notes_access import get_recent_notes, read_note, search_notes_apple, create_apple_note
+from notes_access import get_recent_notes, read_note, open_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 from page_preview import fetch_page_preview
@@ -2088,6 +2088,27 @@ async def _execute_open_url(url: str, browser: str = "chrome", label: str = ""):
             await emit_error(task_id, "Open URL failed", detail=str(e)[:200])
 
 
+async def _execute_open_note(query: str, ws):
+    """Show a note in Notes.app (don't read it aloud). Runs inside a task_context
+    so the process panel shows "Opening … note" and clears when done."""
+    async with process_bus.task_context(f"Opening note: {query}"[:60]) as task_id:
+        try:
+            await emit_step(task_id, "Finding note…", status="active")
+            note = await open_note(query)
+            if note:
+                title = note.get("title", query)
+                await emit_app_launch(task_id, "Notes", status="done", detail=title)
+                msg = f"Opened '{title}' in Notes, sir."
+            else:
+                await emit_error(task_id, "No matching note", detail=query[:120])
+                msg = f"I couldn't find a note matching '{query}', sir."
+        except Exception as e:
+            log.error(f"open_note failed: {e}")
+            await emit_error(task_id, "Open note failed", detail=str(e)[:200])
+            msg = "Something went wrong opening that note, sir."
+    await _speak(ws, msg)
+
+
 async def _execute_type(target: str, press_enter: bool):
     """Wrap an [ACTION:TYPE] / [ACTION:SEND] call in a task_context so the
     typed text shows up in the process panel."""
@@ -3819,6 +3840,21 @@ def _resolve_web_url(name: str) -> str | None:
         return n if n.startswith("http") else f"https://{n}"
     return None
 
+
+# "go to / open / pull up my <title> note" → SHOW that note in Notes.app (vs.
+# read_note, which reads it aloud). Requires a title before "note", so "open my
+# notes" (plural) still hits the Notes.app launcher above.
+_OPEN_NOTE_RE = _action_re.compile(
+    r'^\s*'
+    r'(?:(?:hey|ok|okay|yo)\s+)?(?:vee|v|valet)?[\s,]*'
+    r"(?:(?:can|could|would|will) you |please |i(?:'d like| want| wanna)(?: to)? |let'?s |go ahead and )*"
+    r'(?:open(?:\s+up)?|go to|pull up|bring up|take me to|show me|jump to|find)\s+'
+    r'(?:the |my )?'
+    r'(?P<title>.+?)'
+    r'\s+note\s*\??\.?\s*$',
+    _action_re.IGNORECASE,
+)
+
 # Register-project intent — for one-off projects outside any configured root.
 # All patterns capture an absolute or tilde-prefixed path; alias is optional
 # (defaults to the dir's basename in register_project).
@@ -4233,6 +4269,14 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     _oa = _OPEN_APP_LAUNCH_RE.match(t)
     if _oa:
         return {"action": "open_app", "target": _OPEN_APP_LAUNCH_MAP[_oa.group(1).lower()]}
+
+    # "open / go to my <title> note" → show it in Notes.app (before the web route
+    # so a "… note" request is never mistaken for a website).
+    _on = _OPEN_NOTE_RE.match(t)
+    if _on:
+        _nt = (_on.group("title") or "").strip()
+        if _nt and _nt.lower() not in ("a", "the", "this", "that", "another", "new", "my", "your", "me", "it"):
+            return {"action": "open_note", "target": _nt}
 
     # Web destinations: "open my gmail", "open google analytics in chrome",
     # "go to github". Only fires when a URL resolves OR a browser was named, so
@@ -5396,6 +5440,11 @@ async def voice_handler(ws: WebSocket):
                             response_text = f"Opening {label}, sir."
                             if url:
                                 asyncio.create_task(_execute_open_url(url, browser, label))
+                        elif action["action"] == "open_note":
+                            note_q = action.get("target", "").strip()
+                            response_text = f"Opening your {note_q} note, sir." if note_q else "Which note, sir?"
+                            if note_q:
+                                asyncio.create_task(_execute_open_note(note_q, ws))
                         elif action["action"] == "open_project":
                             target = action.get("target", "").strip()
                             response_text = f"Opening {target}, sir." if target else "Which project, sir?"

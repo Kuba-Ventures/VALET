@@ -120,32 +120,23 @@ end tell
     return {"title": title_.strip(), "body": body.strip()}
 
 
-async def read_note(title_match: str) -> dict | None:
-    """Read a note by title. Tries a literal substring match first, then falls
-    back to a normalized match so speech-to-text seams (e.g. "on boarding" vs
-    "Onboarding") still resolve. Returns title + body, or None if nothing fits."""
+async def _resolve_note_title(title_match: str) -> str | None:
+    """Best-matching note NAME for a query: a literal substring match first, then
+    a normalized match so speech-to-text seams (e.g. "on boarding" vs
+    "Onboarding") still resolve. Returns the note's exact name, or None.
+    Shared by read_note (reads its body) and open_note (shows it in Notes)."""
     escaped = title_match.replace('"', '\\"')
     script = f'''
 tell application "Notes"
-    set allNotes to every note
-    repeat with n in allNotes
-        if name of n contains "{escaped}" then
-            set nName to name of n
-            set nBody to plaintext of n
-            -- Truncate very long notes
-            if length of nBody > 3000 then
-                set nBody to text 1 thru 3000 of nBody
-            end if
-            return nName & "|||" & nBody
-        end if
+    repeat with n in every note
+        if name of n contains "{escaped}" then return name of n
     end repeat
     return ""
 end tell
 '''
     raw = await _run_notes_script(script, timeout=10)
-    if raw and "|||" in raw:
-        title, _, body = raw.partition("|||")
-        return {"title": title.strip(), "body": body.strip()}
+    if raw.strip():
+        return raw.strip()
 
     # Fallback: normalize both sides and match on the collapsed forms. Picks the
     # closest title (a containment match with the smallest length gap) so a short
@@ -153,18 +144,46 @@ end tell
     q = _norm(title_match)
     if not q:
         return None
-    titles = await _recent_titles(200)
     best, best_gap = None, None
-    for t in titles:
+    for t in await _recent_titles(200):
         nt = _norm(t)
         if nt and (q in nt or nt in q):
             gap = abs(len(nt) - len(q))
             if best_gap is None or gap < best_gap:
                 best, best_gap = t, gap
     if best:
-        log.info(f"read_note fuzzy-matched {title_match!r} -> {best!r}")
-        return await _read_note_by_exact_title(best)
-    return None
+        log.info(f"note title fuzzy-matched {title_match!r} -> {best!r}")
+    return best
+
+
+async def read_note(title_match: str) -> dict | None:
+    """Read a note's title + body, or None if nothing matches."""
+    title = await _resolve_note_title(title_match)
+    if not title:
+        return None
+    return await _read_note_by_exact_title(title)
+
+
+async def open_note(title_match: str) -> dict | None:
+    """Open Notes.app and SHOW the best-matching note (don't read it aloud).
+    Returns {"title": <exact name>} on success, or None if nothing matches."""
+    title = await _resolve_note_title(title_match)
+    if not title:
+        return None
+    escaped = title.replace('"', '\\"')
+    script = f'''
+tell application "Notes"
+    activate
+    set matches to (every note whose name is "{escaped}")
+    if (count of matches) > 0 then
+        show item 1 of matches
+        return name of item 1 of matches
+    end if
+    return ""
+end tell
+'''
+    raw = await _run_notes_script(script, timeout=10)
+    return {"title": title} if raw.strip() else None
 
 
 async def search_notes_apple(query: str, count: int = 5) -> list[dict]:
