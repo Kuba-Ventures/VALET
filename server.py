@@ -1982,12 +1982,12 @@ async def _execute_check_date(target: str, ws):
     date_str = target.strip()
     if not date_str:
         msg = "Which date, sir?"
-    elif apple_calendar.auth_status() != 3:
+    elif apple_calendar.auth_status() != 3 and not google_auth.is_connected():
         msg = ("I don't have Calendar access yet, sir — grant it under Settings, "
-               "Permissions, Calendar.")
+               "Permissions, Calendar, or connect Google in Settings.")
     else:
         try:
-            events = apple_calendar.read_events(date_str)
+            events = await _read_calendar_merged(date_str)
             if not events:
                 msg = f"You have nothing on the calendar for {date_str}, sir."
             else:
@@ -4458,13 +4458,57 @@ def _format_apple_cal(events: list[dict], label: str) -> str:
     return f"You have {n} {'event' if n == 1 else 'events'} {label}, sir: " + "; ".join(parts) + extra + "."
 
 
-async def _do_calendar_lookup() -> str:
-    """Read today's events from Apple Calendar via EventKit (fast + local)."""
+def _merge_calendar_events(apple: list[dict], google: list[dict]) -> list[dict]:
+    """Merge Apple (EventKit) + Google event lists, de-duplicating the overlap.
+    A Google account commonly syncs into macOS Calendar, so the same event shows
+    in both — dedup on a normalized (title, time) key. All-day events key on the
+    date; timed events on the UTC minute (both sources expose start_iso in UTC)."""
+    import re
+
+    def key(e: dict) -> tuple:
+        title = re.sub(r"[^a-z0-9]", "", (e.get("title") or "").lower())
+        digits = re.sub(r"\D", "", e.get("start_iso") or "")
+        when = digits[:8] if e.get("all_day") else digits[:12]
+        return (title, when)
+
+    seen, merged = set(), []
+    for e in list(apple or []) + list(google or []):
+        k = key(e)
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(e)
+    merged.sort(key=lambda x: x.get("start_iso") or "")
+    return merged
+
+
+async def _read_calendar_merged(date_str: str | None = None) -> list[dict]:
+    """Events from Apple + Google, merged + deduped. Apple is the always-local
+    source (full access); Google layers on when connected. Either source failing
+    degrades to the other instead of erroring."""
     import apple_calendar
-    if apple_calendar.auth_status() != 3:  # need full access to read
-        return ("I don't have Calendar access yet, sir — grant it under Settings, "
-                "Permissions, Calendar, then ask again.")
-    events = apple_calendar.read_events()  # today
+    apple_events = []
+    if apple_calendar.auth_status() == 3:
+        try:
+            apple_events = apple_calendar.read_events(date_str)
+        except Exception as e:
+            log.warning(f"apple read_events failed: {e}")
+    google_events = []
+    try:
+        import google_calendar
+        google_events = await google_calendar.read_events(date_str)
+    except Exception as e:
+        log.warning(f"google read_events failed: {e}")
+    return _merge_calendar_events(apple_events, google_events)
+
+
+async def _do_calendar_lookup() -> str:
+    """Read today's events from Apple Calendar (EventKit) + Google, merged."""
+    import apple_calendar
+    if apple_calendar.auth_status() != 3 and not google_auth.is_connected():
+        return ("I don't have Calendar access yet, sir — grant Calendar under "
+                "Settings, Permissions, or connect Google in Settings, then ask again.")
+    events = await _read_calendar_merged()  # today
     if events:
         _ctx_cache["calendar"] = "; ".join(
             f"{e['title']}{(' at ' + e['time_str']) if e.get('time_str') else ''}" for e in events
