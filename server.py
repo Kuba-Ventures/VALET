@@ -3074,6 +3074,45 @@ async def _account_sync_loop():
         pass
 
 
+async def _fetch_and_apply_device_settings():
+    """Pull the user's web-controlled settings (set on the account dashboard) and
+    apply them locally: voice, the advanced voice-id override, and telemetry.
+
+    The web is the source of truth AT LAUNCH; in-app toggles still override for
+    the running session. Best-effort — never fatal, never blocks startup.
+    """
+    if not LICENSE_KEY:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            r = await http.get(
+                f"{PROXY_BASE_URL}/api/proxy/device-settings",
+                headers={"X-License-Key": LICENSE_KEY},
+            )
+        if r.status_code >= 300:
+            return
+        settings = (r.json() or {}).get("settings") or {}
+    except Exception as e:
+        log.warning(f"device-settings fetch failed: {e}")
+        return
+    try:
+        voice = settings.get("voice")
+        if voice in ("male", "female"):
+            _write_env_key("VALET_VOICE", voice)
+        voice_id = (settings.get("voice_id") or "").strip()
+        if voice_id:
+            # The advanced override maps to the male reference id, which
+            # _active_voice_id() reads live via VALET_VOICE_MALE_ID.
+            _write_env_key("VALET_VOICE_MALE_ID", voice_id)
+            _write_env_key("FISH_VOICE_ID", voice_id)
+        tel = settings.get("telemetry")
+        if isinstance(tel, bool):
+            _write_env_key("VALET_TELEMETRY", "on" if tel else "off")
+        log.info("applied web device-settings")
+    except Exception as e:
+        log.warning(f"device-settings apply failed: {e}")
+
+
 # Usage tracking — logs every call with timestamp, persists to disk
 _USAGE_FILE = Path(__file__).parent / "data" / "usage_log.jsonl"
 _session_start = time.time()
@@ -3374,6 +3413,12 @@ async def lifespan(application: FastAPI):
     _sync_task = None
     if LICENSE_KEY and _telemetry_on():
         _sync_task = asyncio.create_task(_account_sync_loop())
+
+    # Apply web-controlled device settings (voice / voice id / telemetry) set on
+    # the account dashboard. Web wins at launch; in-app toggles override for the
+    # session. Fired as a task so it never blocks startup.
+    if LICENSE_KEY:
+        asyncio.create_task(_fetch_and_apply_device_settings())
 
     cached_projects = []
 
