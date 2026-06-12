@@ -4839,8 +4839,17 @@ async def _do_mail_lookup() -> str:
 
 
 async def _do_screen_lookup() -> str:
-    """Screen describe — runs in thread."""
+    """Screen describe — UC2 focused-window observation (window screenshot + the
+    AX element snapshot) sent to the model via the proxy. Falls back to the
+    whole-display describe, then to a window-list summary."""
     if anthropic_client:
+        try:
+            import perception
+            obs = await perception.build_observation(executor)
+            if obs.get("image") or obs.get("elements"):
+                return await perception.describe_observation(obs, anthropic_client)
+        except Exception as e:
+            log.warning(f"perception observation failed, falling back: {e}")
         return await describe_screen(anthropic_client)
     windows = await get_active_windows()
     if windows:
@@ -6322,6 +6331,16 @@ def _accessibility_access_granted():
         return None
 
 
+def _screen_recording_granted():
+    """Real TCC check via CGPreflightScreenCaptureAccess (no prompt). True/False
+    for the live grant; None if the perception backend can't be imported."""
+    try:
+        import perception
+        return bool(perception.screen_recording_trusted())
+    except Exception:
+        return None
+
+
 @app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
@@ -6363,6 +6382,12 @@ async def api_permissions_status():
             "why": "Let Vee read the screen and click or type in any app, not just scriptable ones.",
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
         },
+        "screen_recording": {
+            "granted": _screen_recording_granted(),  # real CGPreflightScreenCaptureAccess check
+            "label": "Screen Recording",
+            "why": "See what's on your screen — capture the focused window so Vee can read it.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        },
     }
 
 
@@ -6371,6 +6396,7 @@ _SETTINGS_PANES = {
     "full_disk": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
     "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    "screen_recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
     "calendars": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
     "contacts": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
 }
@@ -6425,6 +6451,16 @@ async def api_permissions_trigger(request: Request):
             return {"ok": True, "granted": bool(granted)}
         except Exception as e:
             return {"ok": False, "error": str(e)[:160]}
+    if target == "screen_recording":
+        # Fire the native Screen Recording prompt (CGRequestScreenCaptureAccess).
+        # Same as Accessibility: the grant lands in System Settings and needs a
+        # relaunch, so `granted` is the current state (usually still False here).
+        try:
+            import perception
+            granted = await asyncio.to_thread(perception.request_screen_recording)
+            return {"ok": True, "granted": bool(granted)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:160]}
     if target != "automation":
         return {"ok": False, "error": "no inline prompt for this target"}
     try:
@@ -6458,6 +6494,29 @@ async def api_ax_observe(request: Request):
     body = await request.json() if await request.body() else {}
     res = await executor.observe_ui(app=(body or {}).get("app") or None)
     return res.to_dict()
+
+
+@app.post("/api/perception/observe")
+async def api_perception_observe(request: Request):
+    """UC2 observation: focused-window screenshot + AX snapshot (Tier 0). Returns
+    image metadata only — the base64 bytes stay out of the response/logs (they're
+    an observation for the model, never an analytics payload)."""
+    body = await request.json() if await request.body() else {}
+    import perception
+    obs = await perception.build_observation(executor, app=(body or {}).get("app") or None)
+    img = obs.get("image")
+    return {
+        "app": obs["app"],
+        "ax_ok": obs["ax_ok"],
+        "screen_recording": obs["screen_recording"],
+        "element_count": len(obs["elements"]),
+        "elements": obs["elements"],
+        "window_frame": obs["window_frame"],
+        "image": None if not img else {
+            "media_type": img["media_type"], "width": img["width"],
+            "height": img["height"], "bytes": len(img["b64"]) * 3 // 4,
+        },
+    }
 
 
 @app.post("/api/ax/click")
