@@ -5934,7 +5934,6 @@ def _check_full_disk_access() -> bool:
             continue
     return False
 
-@app.get("/api/permissions/status")
 def _calendar_access_granted():
     """Silent EventKit calendar check (no prompt). True if full access (read+
     create), False if denied/restricted, None if not-yet-asked or write-only."""
@@ -5950,6 +5949,7 @@ def _calendar_access_granted():
         return None
 
 
+@app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
     Automation prompts per-app on first use; Accessibility is post-v1."""

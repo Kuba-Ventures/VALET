@@ -11,7 +11,7 @@
 # ~/Library/Application Support/VALET/.env (see server.py:_valet_env_path).
 
 import os
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_all
 
 # Repo root. PyInstaller resolves the script + data source paths relative to the
 # SPEC file's directory (packaging/), so anchor everything on the repo root that
@@ -42,10 +42,18 @@ hiddenimports = [
 ]
 hiddenimports += collect_submodules("anthropic")
 
+# pyobjc frameworks (EventKit) need FULL collection — the package data + the
+# dynamic Objective-C bindings — not just a bare hidden import, or classes like
+# EKEventStore fail to resolve in the frozen build (they show up as "missing
+# module" in PyInstaller's warn file and the calendar feature breaks when signed).
+_ek_datas, _ek_binaries, _ek_hidden = collect_all("EventKit")
+datas += _ek_datas
+hiddenimports += _ek_hidden
+
 a = Analysis(
     [os.path.join(ROOT, "server.py")],
     pathex=[ROOT],
-    binaries=[],
+    binaries=_ek_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
