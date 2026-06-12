@@ -11,5 +11,9 @@
   <string>VALET transcribes your speech to understand your commands.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>VALET controls your apps to carry out what you ask.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>VALET reads and creates events in your Calendar when you ask.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>VALET reads and creates events in your Calendar when you ask.</string>
 </dict>
 </plist>

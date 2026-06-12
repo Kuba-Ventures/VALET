@@ -430,7 +430,7 @@ async function loadSettingsPermissions() {
       const mic = await micGranted();
       if (mic !== null) status.microphone.granted = mic;
     }
-    const keys = ["microphone", "automation", "full_disk_access"].filter((k) => status[k]);
+    const keys = ["microphone", "calendars", "automation", "full_disk_access"].filter((k) => status[k]);
     list.innerHTML = keys
       .map((k) => {
         const p = status[k];
@@ -441,9 +441,9 @@ async function loadSettingsPermissions() {
           side = `<span style="margin-left:auto;opacity:0.6">Granted</span>`;
         } else if (k === "microphone") {
           side = `<button class="settings-btn" data-perm-mic="1" style="margin-left:auto">Enable</button>`;
-        } else if (k === "automation") {
+        } else if (k === "automation" || k === "calendars") {
           // Inline native prompt rather than a Settings deep-link.
-          side = `<button class="settings-btn" data-perm-trigger="automation" style="margin-left:auto">Enable</button>`;
+          side = `<button class="settings-btn" data-perm-trigger="${k}" style="margin-left:auto">Enable</button>`;
         } else {
           side = `<button class="settings-btn" data-perm-open="${PERM_TARGET[k]}" style="margin-left:auto">Open Settings</button>`;
         }
@@ -621,23 +621,25 @@ function wireEvents() {
       return;
     }
     if (btn.dataset.permTrigger) {
-      // Automation: fire the native "control System Events" prompt inline.
+      // Fire the native prompt inline (automation = control System Events;
+      // calendars = full Calendar access).
+      const target = btn.dataset.permTrigger;
       btn.disabled = true;
       btn.textContent = "Requesting...";
       const res = await apiPost<{ ok: boolean; granted?: boolean }>(
-        "/api/permissions/trigger", { target: btn.dataset.permTrigger },
+        "/api/permissions/trigger", { target },
       );
       if (res?.granted) {
-        // Mark granted in-place — the backend status endpoint can't detect
-        // automation without re-prompting, so don't reload (it'd revert to
-        // yellow). The grant persists in macOS regardless.
+        // Mark granted in-place — don't reload (automation can't be silently
+        // re-detected; calendars would re-read fine but this is simpler). The
+        // grant persists in macOS regardless.
         const dot = btn.closest(".account-row")?.querySelector(".status-dot");
         if (dot) dot.className = "status-dot status-green";
         btn.textContent = "Granted";
       } else {
         btn.disabled = false;
         btn.textContent = "Open Settings";
-        btn.dataset.permOpen = "automation";
+        btn.dataset.permOpen = target;  // automation | calendars
         delete btn.dataset.permTrigger;
       }
       return;

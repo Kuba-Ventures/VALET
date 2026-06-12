@@ -553,8 +553,8 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "is it going to rain tomorrow" → [ACTION:CHECK_WEATHER]
   "any UV warnings today" → [ACTION:CHECK_WEATHER]
   "forecast for the rest of the week" → [ACTION:CHECK_WEATHER]
-  CRITICAL: NEVER try to "click" on a date in the Google Calendar web UI — you cannot click web content. Always use this action to query the API instead. NEVER say "Done, sir" without actually emitting an action tag.
-- [ACTION:CREATE_EVENT] title ||| start_iso ||| duration_min_or_end ||| description? ||| location? — schedule a meeting on the user's primary Google Calendar. Always resolve relative times ("tomorrow at 3pm") to absolute ISO timestamps using the CURRENT TIME context above. Use 30 if no duration mentioned.
+  CRITICAL: NEVER try to "click" a date in any calendar UI — you cannot click app/web content. Always use this action. NEVER say "Done, sir" without actually emitting an action tag.
+- [ACTION:CREATE_EVENT] title ||| start_iso ||| duration_min_or_end ||| description? ||| location? — schedule an event on the user's Mac Calendar (Apple Calendar, via EventKit). Always resolve relative times ("tomorrow at 3pm") to absolute ISO timestamps using the CURRENT TIME context above. Use 30 if no duration mentioned.
   "schedule a meeting tomorrow at 3pm called design review" → [ACTION:CREATE_EVENT] design review ||| 2026-05-16 3:00 PM ||| 30
   "block 2-3pm Friday for deep work" → [ACTION:CREATE_EVENT] Deep work ||| 2026-05-16 2:00 PM ||| 2026-05-16 3:00 PM
 - [ACTION:CANCEL_EVENT] query ||| on_date? — cancel a meeting by fuzzy title match.
@@ -751,24 +751,26 @@ async def _execute_create_event(target: str, ws):
             duration_min = int(end_or_dur)
         except ValueError:
             end_str = end_or_dur
+    import apple_calendar
     async with process_bus.task_context(f"Scheduling: {title}", detail=start) as task_id:
         try:
             await emit_step(task_id, f"Creating event at {start}…", status="active")
-            event = await calendar_create_event(
-                title=title, start_str=start, end_str=end_str,
-                duration_minutes=duration_min, description=description, location=location,
-            )
-            if event:
-                msg = f"Scheduled '{title}' for {start}, sir."
-                await emit_step(task_id, "Event created on Google Calendar", detail=title, status="done")
-                # Reload any open Google Calendar tab so the new event appears immediately.
-                asyncio.create_task(refresh_calendar_tabs())
+            # EventKit create needs full or write-only access (status 3 or 4).
+            if apple_calendar.auth_status() not in (3, 4):
+                msg = ("I don't have Calendar access yet, sir — grant it under "
+                       "Settings, Permissions, Calendar, then try again.")
+                await emit_error(task_id, "No Calendar access", detail="Grant Calendar in Settings.")
             else:
-                msg = "I couldn't create that event, sir — calendar may need re-authentication for write access."
-                await emit_error(task_id, "Calendar create failed", detail="Google returned no result; reauth may be needed.")
-        except ValueError as e:
-            await emit_error(task_id, "Couldn't parse time", detail=str(e)[:200])
-            msg = f"I couldn't parse the time, sir: {e}"
+                result = apple_calendar.create_event(
+                    title=title, start_str=start, end_str=end_str,
+                    duration_minutes=duration_min, description=description, location=location,
+                )
+                if result.get("success"):
+                    msg = f"Scheduled '{title}' for {start}, sir."
+                    await emit_step(task_id, "Event created in Calendar", detail=title, status="done")
+                else:
+                    msg = f"I couldn't create that event, sir: {result.get('error', 'unknown error')}."
+                    await emit_error(task_id, "Calendar create failed", detail=result.get("error", "")[:200])
         except Exception as e:
             log.error(f"create_event failed: {e}")
             await emit_error(task_id, "Calendar create failed", detail=str(e)[:200])
@@ -1954,12 +1956,16 @@ async def _execute_draft_email(target: str, ws):
 
 async def _execute_check_date(target: str, ws):
     """Look up calendar events for a specific date and read them back."""
+    import apple_calendar
     date_str = target.strip()
     if not date_str:
         msg = "Which date, sir?"
+    elif apple_calendar.auth_status() != 3:
+        msg = ("I don't have Calendar access yet, sir — grant it under Settings, "
+               "Permissions, Calendar.")
     else:
         try:
-            events = await calendar_events_for_date(date_str)
+            events = apple_calendar.read_events(date_str)
             if not events:
                 msg = f"You have nothing on the calendar for {date_str}, sir."
             else:
@@ -1968,11 +1974,9 @@ async def _execute_check_date(target: str, ws):
                     if e.get("all_day"):
                         lines.append(f"{e['title']} all day")
                     else:
-                        lines.append(f"{e['title']} at {e['start']}")
+                        lines.append(f"{e['title']} at {e.get('time_str') or 'unknown time'}")
                 more = f" And {len(events) - 6} more." if len(events) > 6 else ""
                 msg = f"On {date_str}: " + "; ".join(lines) + "." + more
-        except ValueError as e:
-            msg = f"I couldn't parse that date, sir: {e}"
         except Exception as e:
             log.error(f"check_date failed: {e}")
             msg = "Something went wrong checking that date, sir."
@@ -4395,13 +4399,32 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
         _active_lookups.pop(lookup_id, None)
 
 
+def _format_apple_cal(events: list[dict], label: str) -> str:
+    """Voice summary for Apple Calendar (EventKit) events."""
+    if not events:
+        return f"Nothing on your calendar {label}, sir."
+    parts = []
+    for e in events[:6]:
+        when = "all day" if e.get("all_day") else (e.get("time_str") or "").strip()
+        parts.append(f"{e['title']} at {when}" if when and when != "all day"
+                     else f"{e['title']} (all day)" if when == "all day" else e["title"])
+    n = len(events)
+    extra = f" and {n - 6} more" if n > 6 else ""
+    return f"You have {n} {'event' if n == 1 else 'events'} {label}, sir: " + "; ".join(parts) + extra + "."
+
+
 async def _do_calendar_lookup() -> str:
-    """Slow calendar fetch — runs in thread."""
-    await refresh_calendar_cache()
-    events = await get_todays_events()
+    """Read today's events from Apple Calendar via EventKit (fast + local)."""
+    import apple_calendar
+    if apple_calendar.auth_status() != 3:  # need full access to read
+        return ("I don't have Calendar access yet, sir — grant it under Settings, "
+                "Permissions, Calendar, then ask again.")
+    events = apple_calendar.read_events()  # today
     if events:
-        _ctx_cache["calendar"] = format_events_for_context(events)
-    return format_schedule_summary(events)
+        _ctx_cache["calendar"] = "; ".join(
+            f"{e['title']}{(' at ' + e['time_str']) if e.get('time_str') else ''}" for e in events
+        )
+    return _format_apple_cal(events, "today")
 
 
 async def _do_weather_lookup(location: str, ws, when: str = "today") -> str:
@@ -5912,6 +5935,21 @@ def _check_full_disk_access() -> bool:
     return False
 
 @app.get("/api/permissions/status")
+def _calendar_access_granted():
+    """Silent EventKit calendar check (no prompt). True if full access (read+
+    create), False if denied/restricted, None if not-yet-asked or write-only."""
+    try:
+        import apple_calendar
+        s = apple_calendar.auth_status()
+        if s == 3:
+            return True
+        if s in (1, 2):
+            return False
+        return None  # 0 notDetermined or 4 write-only → still needs full access
+    except Exception:
+        return None
+
+
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
     Automation prompts per-app on first use; Accessibility is post-v1."""
@@ -5927,6 +5965,12 @@ async def api_permissions_status():
             "label": "Full Disk Access",
             "why": "Read and act on your files anywhere.",
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+        },
+        "calendars": {
+            "granted": _calendar_access_granted(),  # silent EventKit check, no prompt
+            "label": "Calendar",
+            "why": "Read and create events in your Calendar.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
         },
         "automation": {
             "granted": None,  # macOS prompts the first time each app is targeted
@@ -5948,6 +5992,7 @@ _SETTINGS_PANES = {
     "full_disk": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
     "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    "calendars": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
 }
 
 
@@ -5971,10 +6016,19 @@ async def api_permissions_trigger(request: Request):
     hunt. Automation: send a harmless Apple Event to System Events; the first one
     makes macOS show the "VALET wants to control System Events" prompt. The
     AppleScript succeeds once granted and errors (-1743) if denied, so the
-    return value doubles as the live grant status. Microphone uses getUserMedia
-    in the webview; Full Disk Access has no inline prompt on macOS."""
+    return value doubles as the live grant status. Calendars: request full
+    EventKit access (native prompt). Microphone uses getUserMedia in the webview;
+    Full Disk Access has no inline prompt on macOS."""
     body = await request.json()
-    if (body or {}).get("target") != "automation":
+    target = (body or {}).get("target", "")
+    if target == "calendars":
+        try:
+            import apple_calendar
+            granted = await asyncio.to_thread(apple_calendar.request_access)
+            return {"ok": True, "granted": bool(granted)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:160]}
+    if target != "automation":
         return {"ok": False, "error": "no inline prompt for this target"}
     try:
         proc = await asyncio.create_subprocess_exec(

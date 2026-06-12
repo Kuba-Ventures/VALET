@@ -34,7 +34,8 @@ if os.path.exists(os.path.join(ROOT, "build_id.txt")):
 hiddenimports = [
     "licensing", "action_executor", "applescript_executor", "safe_executor",
     "safety", "voice_text", "task_manager", "project_scanner", "design_partner",
-    "accessibility_executor", "composite_executor", "Quartz", "AppKit",
+    "accessibility_executor", "composite_executor", "apple_calendar",
+    "Quartz", "AppKit", "EventKit",
     "observability", "sentry_sdk", "anthropic", "httpx", "uvicorn", "uvicorn.lifespan.on",
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",

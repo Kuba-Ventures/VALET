@@ -110,22 +110,23 @@ function licenseBody(): string {
 
 function permsBody(status: PermStatus | null): string {
   if (!status) return `<h2 class="ob-title">Permissions.</h2><p class="ob-sub">Could not reach the backend yet. You can grant these later in Settings.</p>`;
-  const rows = ["microphone", "automation", "accessibility", "full_disk_access"]
+  const rows = ["microphone", "calendars", "automation", "accessibility", "full_disk_access"]
     .filter((k) => status[k])
     .map((k) => {
       const p = status[k]; const s = pill(p);
       const canOpen = p.granted === false || k === "automation" || k === "microphone";
-      // Microphone gets an active "Enable" button: it fires the native macOS
-      // permission prompt right here (the reliable grant path), with Open
-      // Settings as the fallback if it was previously denied.
+      // Microphone / Calendar / Automation get an active "Enable" that fires the
+      // native macOS prompt inline; others deep-link to Settings.
       const sideBtn =
         k === "microphone" && p.granted !== true
           ? `<button class="ob-open" data-mic-enable="1">Enable microphone</button>`
           : k === "automation" && p.granted !== true
             ? `<button class="ob-open" data-automation-enable="1">Enable</button>`
-            : canOpen
-              ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
-              : "";
+            : k === "calendars" && p.granted !== true
+              ? `<button class="ob-open" data-calendars-enable="1">Enable</button>`
+              : canOpen
+                ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
+                : "";
       return `
         <div class="ob-row" data-key="${k}">
           <div class="ob-row-main">
@@ -261,6 +262,25 @@ function wireStep(state: State, root: HTMLElement): void {
             // Denied/cancelled — macOS won't re-prompt; point to Settings.
             delete btn.dataset.automationEnable;
             btn.dataset.target = "automation";
+            btn.textContent = "Open Settings";
+            btn.disabled = false;
+          }
+          return;
+        }
+        // Calendar: request full EventKit access inline (native prompt).
+        if (btn.dataset.calendarsEnable) {
+          btn.disabled = true;
+          btn.textContent = "Requesting...";
+          const res = await postJSON<{ ok: boolean; granted?: boolean }>(
+            "/api/permissions/trigger", { target: "calendars" },
+          );
+          if (res?.granted) {
+            state.perms = await loadPerms();
+            if (state.perms?.calendars) state.perms.calendars.granted = true;
+            renderBody(state, root);
+          } else {
+            delete btn.dataset.calendarsEnable;
+            btn.dataset.target = "calendars";
             btn.textContent = "Open Settings";
             btn.disabled = false;
           }
