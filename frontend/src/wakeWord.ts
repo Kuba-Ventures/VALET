@@ -77,6 +77,13 @@ const VEE_WAKE_VARIANTS = [
 // this TIGHT: only clear two-letter mishearings, never single letters or words.
 const VEE_SOFT_VARIANTS = ["vee", "vi", "vie", "ve", "bee", "fee"];
 
+// Some recognizers collapse the WHOLE "hey vee" wake phrase into a single token —
+// e.g. "hey vee" comes back as "AV". These have no prefix to gate them, so they
+// only count at the very START of an utterance (see buildWakeRegex), which keeps
+// a mid-sentence "AV club"/"AV cable" from waking. Add full-phrase mishearings
+// here, not letter-sounds (those belong in VEE_WAKE_VARIANTS, prefix-gated).
+const VEE_FULL_VARIANTS = ["av"];
+
 function nameAlternation(name: string, soft: boolean): string {
   if (name === "vee") {
     return (soft ? VEE_SOFT_VARIANTS : VEE_WAKE_VARIANTS).map(escapeRegExp).join("|");
@@ -89,10 +96,15 @@ function buildWakeRegex(name: string): RegExp {
   // it), tolerating commas/periods/other punctuation speech recognizers insert.
   const prefixAlt = WAKE_PREFIXES.map(escapeRegExp).join("|");
   const nameAlt = nameAlternation(name.toLowerCase(), false);
-  return new RegExp(
-    `\\b(?:${prefixAlt})\\b[^\\w]*\\b(?:${nameAlt})\\b`,
-    "i",
-  );
+  const prefixed = `\\b(?:${prefixAlt})\\b[^\\w]*\\b(?:${nameAlt})\\b`;
+  // Plus the whole-phrase mishearings ("av" for "hey vee"), anchored to the
+  // START of the utterance so they wake the assistant and forward the tail as a
+  // command, without matching the same token mid-sentence.
+  const full =
+    name.toLowerCase() === "vee" && VEE_FULL_VARIANTS.length
+      ? `|^\\s*(?:${VEE_FULL_VARIANTS.map(escapeRegExp).join("|")})\\b`
+      : "";
+  return new RegExp(`(?:${prefixed})${full}`, "i");
 }
 
 /**
