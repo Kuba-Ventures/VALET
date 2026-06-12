@@ -5132,6 +5132,18 @@ async def voice_handler(ws: WebSocket):
                 await task_manager._notify({"type": "kill_state", "engaged": False})
                 continue
 
+            # ── Barge-in (UC5): cancel the in-flight reply + UC loop/action so the
+            # user can talk over Vee, WITHOUT latching the kill switch — the new
+            # utterance that follows is processed immediately. Stays on the receive
+            # loop (just flips a flag + cancels a task), so the loop never parks.
+            if msg.get("type") == "barge_in":
+                _cancel_response = True
+                _uc = getattr(ws, "_uc_task", None)
+                if _uc is not None and not _uc.done():
+                    _uc.cancel()
+                confirmations.cancel_all(allow=False)  # release any pending confirm
+                continue
+
             # ── Fix-self: activate work mode in VALET repo ──
             if msg.get("type") == "fix_self":
                 valet_dir = str(Path(__file__).parent)
@@ -5237,6 +5249,12 @@ async def voice_handler(ws: WebSocket):
             _current_response_id += 1
             my_response_id = _current_response_id
             _cancel_response = True
+            # UC5: a fresh command also interrupts a running UC loop/action (the
+            # frontend usually sends an explicit barge_in first; this covers the
+            # case it didn't), so the new instruction isn't queued behind the old.
+            _uc = getattr(ws, "_uc_task", None)
+            if _uc is not None and not _uc.done():
+                _uc.cancel()
             await asyncio.sleep(0.05)  # Let any pending sends notice the cancellation
             _cancel_response = False
 
@@ -5502,7 +5520,7 @@ async def voice_handler(ws: WebSocket):
                             # gated execute on a background task (keeps the WS loop free
                             # for the confirm reply).
                             response_text = "On it, sir."
-                            asyncio.create_task(_handle_ui_act(action, ws))
+                            _track_uc(ws, _handle_ui_act(action, ws))
                         elif action["action"] == "check_calendar":
                             response_text = "Checking your calendar now, sir."
                             asyncio.create_task(_lookup_and_report("calendar", _do_calendar_lookup, ws, history=history, voice_state=voice_state))
@@ -5799,7 +5817,7 @@ async def voice_handler(ws: WebSocket):
                                     goal = (embedded_action.get("target") or "").strip()
                                     if goal:
                                         response_text = "On it, sir — I'll work through it."
-                                        asyncio.create_task(_handle_ui_task(goal, ws))
+                                        _track_uc(ws, _handle_ui_task(goal, ws))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "save_contact":
@@ -6603,6 +6621,21 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
 
     return {"ok": r.ok, "status": res.status, "via": res.via,
             "label": res.label, "message": r.message, "target": res.to_dict()}
+
+
+def _track_uc(ws, coro):
+    """Spawn a UC3/UC4 background task and remember it on the WS as the current
+    interruptible turn, so a barge-in (UC5) — or a fresh command — can cancel it.
+    The reference self-clears when the task finishes."""
+    task = asyncio.create_task(coro)
+    setattr(ws, "_uc_task", task)
+
+    def _clear(t):
+        if getattr(ws, "_uc_task", None) is t:
+            setattr(ws, "_uc_task", None)
+
+    task.add_done_callback(_clear)
+    return task
 
 
 async def _handle_ui_act(action: dict, ws) -> None:

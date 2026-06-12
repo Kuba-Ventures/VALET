@@ -14,6 +14,7 @@ import { maybeShowOnboarding } from "./onboarding";
 import { createProcessPanel, type ProcessEvent } from "./processPanel";
 import { createDesignPanel, type DesignEvent } from "./designPanel";
 import { createConfirmCard, type ConfirmRequest } from "./confirmCard";
+import { shouldBargeIn } from "./bargeIn";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +23,10 @@ import "./style.css";
 
 type State = "idle" | "listening" | "thinking" | "speaking";
 let currentState: State = "idle";
+
+// UC5 barge-in: the text Vee is currently speaking, so the mic (kept live during
+// TTS) can tell a real interruption from hearing Vee's own voice (echo).
+let currentSpokenText = "";
 
 // Wake-word listening toggle. Persisted across reloads via localStorage so the
 // user's preference survives a refresh. Controls only the frontend's wake-word
@@ -166,10 +171,11 @@ function transition(newState: State) {
       if (!isSleeping) wake.resume();
       break;
     case "thinking":
-      wake.pause();
-      break;
     case "speaking":
-      wake.pause();
+      // UC5 barge-in: keep the mic LIVE while Vee thinks/speaks so the user can
+      // talk over the TTS, redirect, or stop mid-stream. Echo (Vee hearing its
+      // own voice) is filtered in wake.onCommand via shouldBargeIn().
+      if (!isSleeping) wake.resume();
       break;
   }
 }
@@ -185,7 +191,15 @@ const wake = createWakeWord(
       transition("listening");
     },
     onCommand: (text: string) => {
+      // UC5 barge-in: while Vee is mid-reply or mid-task the mic is live, so
+      // filter echoes — only a real interruption cuts in, and it tells the
+      // backend to cancel the in-flight reply/loop before the new command runs.
+      if (currentState === "speaking" || currentState === "thinking") {
+        if (!shouldBargeIn(text, currentSpokenText)) return; // echo / noise — ignore
+        socket.send({ type: "barge_in" });
+      }
       audioPlayer.stop();
+      currentSpokenText = "";
       const sent = socket.send({ type: "transcript", text, isFinal: true });
       if (sent) {
         transition("thinking");
@@ -227,6 +241,7 @@ fetch("/api/config")
 // ---------------------------------------------------------------------------
 
 audioPlayer.onFinished(() => {
+  currentSpokenText = ""; // Vee finished speaking — nothing to echo-filter now
   // In active conversation, stay visually in "listening" between turns so the
   // user can tell the assistant is still hot. Drops back to "idle" only when
   // the wake module has been put back to passive (e.g. via Sleeping toggle).
@@ -277,6 +292,9 @@ socket.onMessage((msg) => {
     const audioData = msg.data as string;
     console.log("[audio] received", audioData ? `${audioData.length} chars` : "EMPTY", "state:", currentState);
     if (audioData) {
+      // Remember what Vee is saying so the live mic can distinguish a real
+      // barge-in from hearing the TTS itself (UC5).
+      if (typeof msg.text === "string" && msg.text) currentSpokenText = msg.text;
       if (currentState !== "speaking") {
         transition("speaking");
       }
