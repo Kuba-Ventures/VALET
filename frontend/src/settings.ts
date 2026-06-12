@@ -90,7 +90,7 @@ function buildPanelHTML(): string {
            during first-time setup wizard so the linear flow isn't interrupted. -->
       <nav class="settings-tabs" id="settings-tabs">
         <button class="settings-tab active" data-tab="user" id="tab-btn-user">User Settings</button>
-        <button class="settings-tab" data-tab="computer" id="tab-btn-computer">Computer Settings</button>
+        <button class="settings-tab" data-tab="computer" id="tab-btn-computer">Console Settings</button>
       </nav>
 
       <div class="settings-body">
@@ -144,6 +144,32 @@ function buildPanelHTML(): string {
           </div>
         </section>
 
+        <!-- Permissions (Console) — grant the macOS access Vee needs -->
+        <section class="settings-section" id="section-permissions">
+          <h3>Permissions</h3>
+          <div class="perm-list" id="settings-perm-list">
+            <div class="account-hint">Checking permissions…</div>
+          </div>
+          <div class="settings-actions">
+            <button class="settings-btn" id="btn-recheck-perms">Re-check</button>
+          </div>
+        </section>
+
+        <!-- Connectors (Console) — external accounts Vee can reach -->
+        <section class="settings-section" id="section-accounts">
+          <h3>Connectors</h3>
+          <div class="settings-field">
+            <label>Google Account</label>
+            <div class="account-row">
+              <span class="status-dot" id="status-google"></span>
+              <span id="google-email-label">Not connected</span>
+              <button class="settings-btn" id="btn-google-connect" style="margin-left:auto">Connect</button>
+              <button class="settings-btn" id="btn-google-disconnect" style="display:none">Disconnect</button>
+            </div>
+            <div class="account-hint" id="google-hint">Connecting will open Google's consent screen in a new browser tab.</div>
+          </div>
+        </section>
+
         <!-- Connection Status (Computer) -->
         <section class="settings-section" id="section-status">
           <h3>Connection Status</h3>
@@ -173,21 +199,6 @@ function buildPanelHTML(): string {
 
         <!-- ─── USER SETTINGS TAB (primary / default-active) ────────── -->
         <div class="settings-tab-content active" data-tab="user" id="tab-content-user">
-
-        <!-- Connected Accounts -->
-        <section class="settings-section" id="section-accounts">
-          <h3>Connected Accounts</h3>
-          <div class="settings-field">
-            <label>Google Account</label>
-            <div class="account-row">
-              <span class="status-dot" id="status-google"></span>
-              <span id="google-email-label">Not connected</span>
-              <button class="settings-btn" id="btn-google-connect" style="margin-left:auto">Connect</button>
-              <button class="settings-btn" id="btn-google-disconnect" style="display:none">Disconnect</button>
-            </div>
-            <div class="account-hint" id="google-hint">Connecting will open Google's consent screen in a new browser tab.</div>
-          </div>
-        </section>
 
         <!-- User Preferences -->
         <section class="settings-section" id="section-preferences">
@@ -397,6 +408,47 @@ function applyBioSummary(summary: string, updated: string, sourceCount: number) 
   if (updatedEl) updatedEl.textContent = updated ? `updated ${formatRelativeTime(updated)}` : "never updated";
 }
 
+// macOS permissions shown in Console Settings. Reuses the same backend the
+// onboarding wizard uses (/api/permissions/{status,open}); microphone is granted
+// via the native prompt (getUserMedia), the rest deep-link to System Settings.
+interface SettingsPerm { granted: boolean | null; label?: string }
+const PERM_TARGET: Record<string, string> = {
+  full_disk_access: "full_disk",
+  microphone: "microphone",
+  automation: "automation",
+};
+
+async function loadSettingsPermissions() {
+  const list = document.getElementById("settings-perm-list");
+  if (!list) return;
+  try {
+    const status = await apiGet<Record<string, SettingsPerm>>("/api/permissions/status");
+    const keys = ["microphone", "automation", "full_disk_access"].filter((k) => status[k]);
+    list.innerHTML = keys
+      .map((k) => {
+        const p = status[k];
+        const dot = p.granted === true ? "green" : p.granted === false ? "red" : "yellow";
+        const label = p.label || k;
+        let side: string;
+        if (p.granted === true) {
+          side = `<span style="margin-left:auto;opacity:0.6">Granted</span>`;
+        } else if (k === "microphone") {
+          side = `<button class="settings-btn" data-perm-mic="1" style="margin-left:auto">Enable</button>`;
+        } else {
+          side = `<button class="settings-btn" data-perm-open="${PERM_TARGET[k]}" style="margin-left:auto">Open Settings</button>`;
+        }
+        return `<div class="account-row" data-perm-key="${k}">
+            <span class="status-dot status-${dot}"></span>
+            <span>${label}</span>
+            ${side}
+          </div>`;
+      })
+      .join("");
+  } catch {
+    list.innerHTML = `<div class="account-hint">Couldn't load permissions.</div>`;
+  }
+}
+
 function activateTab(name: "computer" | "user") {
   document.querySelectorAll<HTMLElement>(".settings-tab").forEach((el) => {
     el.classList.toggle("active", el.dataset.tab === name);
@@ -549,6 +601,35 @@ function wireEvents() {
     await loadStatus();
   });
 
+  // Permissions (Console) — delegated so it survives the dynamic re-render.
+  document.getElementById("settings-perm-list")?.addEventListener("click", async (e) => {
+    const btn = (e.target as HTMLElement).closest("button") as HTMLButtonElement | null;
+    if (!btn) return;
+    if (btn.dataset.permMic) {
+      // Native macOS mic prompt — the reliable one-click grant path.
+      btn.disabled = true;
+      btn.textContent = "Requesting...";
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        await loadSettingsPermissions();
+      } catch {
+        // Previously denied: the prompt won't show — fall back to Settings.
+        btn.disabled = false;
+        btn.textContent = "Open Settings";
+        delete btn.dataset.permMic;
+        btn.dataset.permOpen = "microphone";
+      }
+      return;
+    }
+    if (btn.dataset.permOpen) {
+      btn.disabled = true;
+      await apiPost("/api/permissions/open", { target: btn.dataset.permOpen });
+      setTimeout(() => (btn.disabled = false), 1200);
+    }
+  });
+  document.getElementById("btn-recheck-perms")?.addEventListener("click", loadSettingsPermissions);
+
   // Setup next button
   document.getElementById("btn-setup-next")?.addEventListener("click", advanceSetup);
 }
@@ -587,7 +668,7 @@ function enterSetupMode() {
 }
 
 function showSetupStep(step: number) {
-  const sections = ["section-api-keys", "section-status", "section-accounts", "section-preferences", "section-personalized", "section-sysinfo"];
+  const sections = ["section-api-keys", "section-status", "section-accounts", "section-preferences", "section-personalized", "section-sysinfo", "section-permissions"];
   sections.forEach((id, i) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -620,7 +701,7 @@ async function advanceSetup() {
     if (nav) nav.style.display = "none";
 
     // Show all sections
-    ["section-api-keys", "section-status", "section-accounts", "section-preferences", "section-personalized", "section-sysinfo"].forEach((id) => {
+    ["section-api-keys", "section-status", "section-accounts", "section-preferences", "section-personalized", "section-sysinfo", "section-permissions"].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.style.display = "";
     });
@@ -659,6 +740,7 @@ export async function openSettings() {
   // Load data
   const status = await loadStatus();
   await loadPreferences();
+  void loadSettingsPermissions();
 
   // Check for first-time setup
   if (status && !status.env_keys_set.license) {
