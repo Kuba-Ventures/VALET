@@ -462,6 +462,7 @@ INSTEAD SAY:
 ACTION SYSTEM:
 When you decide the user needs something DONE (not just discussed), include an action tag in your response:
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
+- [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
 - [ACTION:RESEARCH] brief — when the user asks an informational question. You search the web natively (web_search + web_fetch on Opus) and the answer renders as result cards in the Process Panel plus a short spoken summary. NEVER produces a file, folder, project, or report document. Do NOT slugify the user's words into a folder name. Pass the question through as the brief.
@@ -709,7 +710,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|UI_TASK)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -4206,6 +4207,32 @@ def _weather_when(text: str) -> str:
     return "today"
 
 
+# UC3 universal-control voice patterns. "click on Submit" / "press the New Tab
+# button" / "type my email into the address field". Targets resolve against a
+# live observation, so a non-match just fails honestly — never a wild click.
+_UI_CLICK_RE = re.compile(
+    r'^(?:click|tap|press)\s+(?:on\s+|the\s+)?(?P<target>.+?)(?:\s+button)?\s*[.?!]*$',
+    re.IGNORECASE)
+_UI_TYPE_RE = re.compile(
+    r'^type\s+(?P<text>.+?)\s+(?:in|into)\s+(?:the\s+)?(?P<field>.+?)(?:\s+(?:field|box|bar))?\s*[.?!]*$',
+    re.IGNORECASE)
+
+# UC6 skills. "run npm install" (only when the command starts with a known tool —
+# so "run the tests" stays conversation), "open <file> at line <n> in cursor",
+# "search symbol <x> in cursor".
+_RUN_CMD_RE = re.compile(
+    r'^(?:run|execute)\s+(?:the\s+command\s+)?'
+    r'(?P<cmd>(?:git|npm|node|python3?|pip3?|ls|pwd|cargo|go|yarn|pnpm|brew|make|'
+    r'docker|kubectl|cat|grep|find|mkdir|touch|cp|mv|rm|echo|curl|ssh|ps|df|du)\b.*?)'
+    r'(?:\s+in\s+(?:the\s+)?terminal)?\s*[.?]?$', re.IGNORECASE)
+_CURSOR_GOTO_RE = re.compile(
+    r'^open\s+(?P<file>.+?)\s+(?:at\s+|on\s+)?line\s+(?P<line>\d+)\s+in\s+cursor\s*[.?]?$',
+    re.IGNORECASE)
+_CURSOR_SYMBOL_RE = re.compile(
+    r'^(?:search|find|go\s*to|jump\s*to)\s+(?:the\s+)?symbol\s+(?P<sym>.+?)'
+    r'\s*(?:in\s+cursor)?\s*[.?]?$', re.IGNORECASE)
+
+
 def detect_action_fast(text: str, ws=None) -> dict | None:
     """Keyword/regex-based action detection — ONLY for short, obvious commands.
 
@@ -4267,6 +4294,34 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         task = am.group("task").strip()
         if agent_raw and task:
             return {"action": "dispatch_to_agent", "agent": agent_raw, "task": task}
+
+    # ── (2c) UC3 universal control: "click on X" / "type X into the Y field".
+    # Exempt from the word-count gate (a typed phrase can be long) — the verb
+    # anchor keeps it command-shaped, and an unresolved target fails honestly.
+    _tm = _UI_TYPE_RE.match(text.strip())
+    if _tm:
+        field = _tm.group("field").strip(" .?!")
+        typed = _tm.group("text").strip()
+        if field and typed:
+            return {"action": "ui_act", "ui_action": "type", "target": field, "text": typed}
+    _cm = _UI_CLICK_RE.match(text.strip())
+    if _cm:
+        tgt = _cm.group("target").strip(" .?!")
+        if tgt and len(tgt.split()) <= 6:
+            return {"action": "ui_act", "ui_action": "click", "target": tgt}
+
+    # ── (2d) UC6 skills: Cursor goto / symbol, then terminal command. (Cursor
+    # patterns first so "open X at line N in cursor" isn't read as a command.)
+    _gm = _CURSOR_GOTO_RE.match(text.strip())
+    if _gm:
+        return {"action": "cursor_goto", "target": _gm.group("file").strip(" .?"),
+                "line": int(_gm.group("line"))}
+    _sm = _CURSOR_SYMBOL_RE.match(text.strip())
+    if _sm:
+        return {"action": "cursor_symbol", "target": _sm.group("sym").strip(" .?")}
+    _rm = _RUN_CMD_RE.match(text.strip())
+    if _rm:
+        return {"action": "run_command", "target": _rm.group("cmd").strip()}
 
     # ── (3) Word-count gate for everything else.
     if len(words) > 12:
@@ -4839,8 +4894,17 @@ async def _do_mail_lookup() -> str:
 
 
 async def _do_screen_lookup() -> str:
-    """Screen describe — runs in thread."""
+    """Screen describe — UC2 focused-window observation (window screenshot + the
+    AX element snapshot) sent to the model via the proxy. Falls back to the
+    whole-display describe, then to a window-list summary."""
     if anthropic_client:
+        try:
+            import perception
+            obs = await perception.build_observation(executor)
+            if obs.get("image") or obs.get("elements"):
+                return await perception.describe_observation(obs, anthropic_client)
+        except Exception as e:
+            log.warning(f"perception observation failed, falling back: {e}")
         return await describe_screen(anthropic_client)
     windows = await get_active_windows()
     if windows:
@@ -5096,6 +5160,18 @@ async def voice_handler(ws: WebSocket):
                 await task_manager._notify({"type": "kill_state", "engaged": False})
                 continue
 
+            # ── Barge-in (UC5): cancel the in-flight reply + UC loop/action so the
+            # user can talk over Vee, WITHOUT latching the kill switch — the new
+            # utterance that follows is processed immediately. Stays on the receive
+            # loop (just flips a flag + cancels a task), so the loop never parks.
+            if msg.get("type") == "barge_in":
+                _cancel_response = True
+                _uc = getattr(ws, "_uc_task", None)
+                if _uc is not None and not _uc.done():
+                    _uc.cancel()
+                confirmations.cancel_all(allow=False)  # release any pending confirm
+                continue
+
             # ── Fix-self: activate work mode in VALET repo ──
             if msg.get("type") == "fix_self":
                 valet_dir = str(Path(__file__).parent)
@@ -5201,6 +5277,12 @@ async def voice_handler(ws: WebSocket):
             _current_response_id += 1
             my_response_id = _current_response_id
             _cancel_response = True
+            # UC5: a fresh command also interrupts a running UC loop/action (the
+            # frontend usually sends an explicit barge_in first; this covers the
+            # case it didn't), so the new instruction isn't queued behind the old.
+            _uc = getattr(ws, "_uc_task", None)
+            if _uc is not None and not _uc.done():
+                _uc.cancel()
             await asyncio.sleep(0.05)  # Let any pending sends notice the cancellation
             _cancel_response = False
 
@@ -5461,6 +5543,23 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "describe_screen":
                             response_text = "Taking a look now, sir."
                             asyncio.create_task(_lookup_and_report("screen", _do_screen_lookup, ws, history=history, voice_state=voice_state))
+                        elif action["action"] == "ui_act":
+                            # UC3 — "click on X" / "type X into the Y field". Resolve +
+                            # gated execute on a background task (keeps the WS loop free
+                            # for the confirm reply).
+                            response_text = "On it, sir."
+                            _track_uc(ws, _handle_ui_act(action, ws))
+                        elif action["action"] == "run_command":
+                            # UC6 — voice terminal command (Tier 0 auto / Tier 1 confirm).
+                            response_text = "Let me run that, sir."
+                            _track_uc(ws, _run_terminal_command(action.get("target", ""), ws))
+                        elif action["action"] == "cursor_goto":
+                            response_text = "Opening Cursor, sir."
+                            asyncio.create_task(_cursor_goto(
+                                action.get("target", ""), action.get("line", 1), ws))
+                        elif action["action"] == "cursor_symbol":
+                            response_text = "Searching in Cursor, sir."
+                            _track_uc(ws, _cursor_symbol(action.get("target", ""), ws))
                         elif action["action"] == "check_calendar":
                             response_text = "Checking your calendar now, sir."
                             asyncio.create_task(_lookup_and_report("calendar", _do_calendar_lookup, ws, history=history, voice_state=voice_state))
@@ -5751,6 +5850,13 @@ async def voice_handler(ws: WebSocket):
                                         lambda t=wx_t, w=wx_w: _do_weather_lookup(t, ws, w),
                                         ws, history=history, voice_state=voice_state,
                                     ))
+                                elif embedded_action["action"] == "ui_task":
+                                    # UC4 — multi-step UI task: observe→decide→act loop,
+                                    # supervised (per-step confirm + STOP), on a bg task.
+                                    goal = (embedded_action.get("target") or "").strip()
+                                    if goal:
+                                        response_text = "On it, sir — I'll work through it."
+                                        _track_uc(ws, _handle_ui_task(goal, ws))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "save_contact":
@@ -6322,6 +6428,16 @@ def _accessibility_access_granted():
         return None
 
 
+def _screen_recording_granted():
+    """Real TCC check via CGPreflightScreenCaptureAccess (no prompt). True/False
+    for the live grant; None if the perception backend can't be imported."""
+    try:
+        import perception
+        return bool(perception.screen_recording_trusted())
+    except Exception:
+        return None
+
+
 @app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
@@ -6363,6 +6479,12 @@ async def api_permissions_status():
             "why": "Let Vee read the screen and click or type in any app, not just scriptable ones.",
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
         },
+        "screen_recording": {
+            "granted": _screen_recording_granted(),  # real CGPreflightScreenCaptureAccess check
+            "label": "Screen Recording",
+            "why": "See what's on your screen — capture the focused window so Vee can read it.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        },
     }
 
 
@@ -6371,6 +6493,7 @@ _SETTINGS_PANES = {
     "full_disk": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
     "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    "screen_recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
     "calendars": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
     "contacts": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
 }
@@ -6425,6 +6548,16 @@ async def api_permissions_trigger(request: Request):
             return {"ok": True, "granted": bool(granted)}
         except Exception as e:
             return {"ok": False, "error": str(e)[:160]}
+    if target == "screen_recording":
+        # Fire the native Screen Recording prompt (CGRequestScreenCaptureAccess).
+        # Same as Accessibility: the grant lands in System Settings and needs a
+        # relaunch, so `granted` is the current state (usually still False here).
+        try:
+            import perception
+            granted = await asyncio.to_thread(perception.request_screen_recording)
+            return {"ok": True, "granted": bool(granted)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:160]}
     if target != "automation":
         return {"ok": False, "error": "no inline prompt for this target"}
     try:
@@ -6458,6 +6591,261 @@ async def api_ax_observe(request: Request):
     body = await request.json() if await request.body() else {}
     res = await executor.observe_ui(app=(body or {}).get("app") or None)
     return res.to_dict()
+
+
+@app.post("/api/perception/observe")
+async def api_perception_observe(request: Request):
+    """UC2 observation: focused-window screenshot + AX snapshot (Tier 0). Returns
+    image metadata only — the base64 bytes stay out of the response/logs (they're
+    an observation for the model, never an analytics payload)."""
+    body = await request.json() if await request.body() else {}
+    import perception
+    obs = await perception.build_observation(executor, app=(body or {}).get("app") or None)
+    img = obs.get("image")
+    return {
+        "app": obs["app"],
+        "ax_ok": obs["ax_ok"],
+        "screen_recording": obs["screen_recording"],
+        "element_count": len(obs["elements"]),
+        "elements": obs["elements"],
+        "window_frame": obs["window_frame"],
+        "image": None if not img else {
+            "media_type": img["media_type"], "width": img["width"],
+            "height": img["height"], "bytes": len(img["b64"]) * 3 // 4,
+        },
+    }
+
+
+async def _resolve_and_act(action: str, target: str, text: str = "",
+                           app: Optional[str] = None, *, task_id: Optional[str] = None) -> dict:
+    """UC3: resolve a natural-language target against a fresh observation, then
+    execute the click/type through the safety-gated executor (confirm card +
+    kill switch). Ambiguous → ask; miss → honest fail; never a wild click.
+
+    For 'type', the field is focused via benign AX (no synthetic input) so only
+    the keystroke itself raises a confirm — a vision-point target has no ref, so
+    it falls back to a (gated) point-click to focus."""
+    import perception
+    import target_resolver
+    if not target:
+        return {"ok": False, "status": "miss", "message": "Tell me what to act on, sir."}
+
+    obs = await perception.build_observation(executor, app=app)
+    intent = "type into" if action == "type" else "click"
+    res = await target_resolver.resolve(obs, target, anthropic_client, intent=intent)
+
+    if res.status == "ambiguous":
+        return {"ok": False, "status": "ambiguous", "message": res.message,
+                "alternatives": res.alternatives}
+    if res.status == "miss":
+        return {"ok": False, "status": "miss",
+                "message": res.message or f"I don't see a '{target}', sir."}
+
+    # Surface the chosen target on the process panel BEFORE acting (supervision).
+    if task_id:
+        await emit_step(task_id, f"Target: {res.label or target}",
+                        detail=f"resolved via {res.via}", status="active")
+
+    if action == "type":
+        if res.status == "ref":
+            await _ax_executor.focus_element(res.ref)          # benign focus, no confirm
+        else:
+            await executor.click_element(point=res.point, app=app)  # gated focus-click
+        r = await executor.send_keystroke(app or "", text, task_id=task_id)
+    else:
+        if res.status == "ref":
+            r = await executor.click_element(ref=res.ref, app=app, task_id=task_id)
+        else:
+            r = await executor.click_element(point=res.point, app=app, task_id=task_id)
+
+    return {"ok": r.ok, "status": res.status, "via": res.via,
+            "label": res.label, "message": r.message, "target": res.to_dict()}
+
+
+def _track_uc(ws, coro):
+    """Spawn a UC3/UC4 background task and remember it on the WS as the current
+    interruptible turn, so a barge-in (UC5) — or a fresh command — can cancel it.
+    The reference self-clears when the task finishes."""
+    task = asyncio.create_task(coro)
+    setattr(ws, "_uc_task", task)
+
+    def _clear(t):
+        if getattr(ws, "_uc_task", None) is t:
+            setattr(ws, "_uc_task", None)
+
+    task.add_done_callback(_clear)
+    return task
+
+
+async def _handle_ui_act(action: dict, ws) -> None:
+    """Voice path for UC3. Runs on a background task (NOT the WS receive loop) so
+    the confirm reply for the gated click/type can be read — same deadlock-safe
+    pattern as `_confirm_and_dispatch`. Streams the chosen target to the process
+    panel and speaks the outcome (asks on ambiguous, honest on miss)."""
+    ui_action = action.get("ui_action", "click")
+    target = action.get("target", "")
+    text = action.get("text", "")
+    label = f"{'Type into' if ui_action == 'type' else 'Click'} {target}"
+    try:
+        async with process_bus.task_context(label) as task_id:
+            result = await _resolve_and_act(ui_action, target, text, None, task_id=task_id)
+    except Exception as e:
+        log.error(f"ui_act error: {e}")
+        await _speak(ws, "I couldn't do that, sir.")
+        return
+    msg = result.get("message") or ("Done, sir." if result.get("ok") else "I couldn't do that, sir.")
+    await _speak(ws, msg)
+
+
+@app.post("/api/ui/act")
+async def api_ui_act(request: Request):
+    """UC3 — act on a natural-language target. Body: {action: click|type, target,
+    text?, app?}. Routes through resolve → confirm card → gated execute."""
+    body = (await request.json() if await request.body() else {}) or {}
+    return await _resolve_and_act(
+        (body.get("action") or "click").lower(),
+        body.get("target") or "",
+        body.get("text") or "",
+        body.get("app") or None,
+    )
+
+
+async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
+                       task_id: Optional[str] = None) -> dict:
+    """UC4 — run the supervised observe→decide→act loop for `goal`, streaming each
+    beat to the process panel. Each mutating step is gated (confirm card) and the
+    kill switch is live throughout."""
+    import agent_loop
+
+    async def _emit(kind, title, detail="", status="active"):
+        if task_id:
+            await emit_step(task_id, title, detail=detail, status=status)
+
+    return await agent_loop.run_loop(
+        executor, goal, anthropic_client, app=app, max_steps=max_steps,
+        kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit)
+
+
+@app.post("/api/ui/task")
+async def api_ui_task(request: Request):
+    """UC4 — run a multi-step UI task. Body: {goal, app?, max_steps?}."""
+    body = (await request.json() if await request.body() else {}) or {}
+    goal = (body.get("goal") or "").strip()
+    if not goal:
+        return {"status": "failed", "message": "No goal given, sir."}
+    return await _run_ui_task(goal, app=body.get("app") or None,
+                              max_steps=int(body.get("max_steps") or 8))
+
+
+# ── UC6: skills (accelerators) — terminal + Cursor ──────────────────────────
+async def _run_terminal_command(cmd: str, ws=None, cwd: Optional[str] = None) -> dict:
+    """Run a shell command by voice, safety-tiered: read-only → auto (Tier 0);
+    everything else → confirm card (Tier 1), with a loud warning on destructive
+    commands. Honors the kill switch."""
+    import terminal_skill
+    cmd = (cmd or "").strip()
+    if not cmd:
+        return {"ok": False, "message": "No command, sir."}
+    tier = terminal_skill.classify_command(cmd)
+    if tier == 1:
+        if kill_switch.is_engaged():
+            return {"ok": False, "message": "Halted, sir."}
+        allowed = await confirmations.request(
+            summary=f"Run in terminal: {cmd[:140]}", detail="terminal command",
+            tier=1, warning=terminal_skill.danger_warning(cmd))
+        if not allowed:
+            if ws:
+                await _speak(ws, "Cancelled, sir.")
+            return {"ok": False, "denied": True, "tier": tier, "message": "Cancelled, sir."}
+    if kill_switch.is_engaged():
+        return {"ok": False, "message": "Halted, sir."}
+    result = await terminal_skill.run_command(cmd, cwd)
+    msg = terminal_skill.summarize_result(cmd, result)
+    if ws:
+        await _speak(ws, msg)
+    return {**result, "tier": tier, "message": msg}
+
+
+async def _cursor_goto(path: str, line: int = 1, ws=None) -> dict:
+    """Open a file at a line in Cursor via the cursor:// deep link (Tier 0 open)."""
+    import terminal_skill
+    url = terminal_skill.cursor_goto_url(path, line)
+    try:
+        await asyncio.create_subprocess_exec(
+            "open", url, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    except Exception as e:
+        return {"ok": False, "message": f"Couldn't open Cursor, sir: {str(e)[:80]}"}
+    if ws:
+        await _speak(ws, f"Opening {Path(path).name} at line {line} in Cursor, sir.")
+    return {"ok": True, "url": url}
+
+
+async def _cursor_symbol(symbol: str, ws=None) -> dict:
+    """Search a symbol in Cursor through the universal layer: activate Cursor →
+    Go-to-Symbol-in-Workspace (⌘T) → type the symbol. The keystroke/chord are
+    Tier-1 gated by the executor."""
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return {"ok": False, "message": "Which symbol, sir?"}
+    await executor.open_app("Cursor")
+    await asyncio.sleep(0.6)
+    kc = await executor.key_combo("cmd+t", app="Cursor")
+    if not kc.ok:
+        return {"ok": False, "message": kc.message}
+    await asyncio.sleep(0.3)
+    r = await executor.send_keystroke("Cursor", symbol)
+    if ws:
+        await _speak(ws, r.message if r.ok else "I couldn't search that, sir.")
+    return {"ok": r.ok, "message": r.message}
+
+
+@app.get("/api/skills")
+async def api_skills():
+    """The skill registry — the free/paid boundary (no enforcement)."""
+    import skills
+    return {
+        "skills": [
+            {"name": s.name, "description": s.description, "tier": s.tier.value,
+             "category": s.category}
+            for s in skills.SKILLS.values()
+        ],
+        "free": len(skills.free_skills()),
+        "paid": len(skills.paid_skills()),
+    }
+
+
+@app.post("/api/skill/run")
+async def api_skill_run(request: Request):
+    """Run a terminal command (Tier 0 auto / Tier 1 confirm). Body: {cmd, cwd?}."""
+    body = (await request.json() if await request.body() else {}) or {}
+    return await _run_terminal_command((body.get("cmd") or ""), cwd=body.get("cwd") or None)
+
+
+@app.post("/api/skill/cursor/goto")
+async def api_cursor_goto(request: Request):
+    """Open a file at a line in Cursor. Body: {path, line?}."""
+    body = (await request.json() if await request.body() else {}) or {}
+    return await _cursor_goto((body.get("path") or ""), int(body.get("line") or 1))
+
+
+@app.post("/api/skill/cursor/symbol")
+async def api_cursor_symbol(request: Request):
+    """Search a symbol in Cursor via the universal layer. Body: {symbol}."""
+    body = (await request.json() if await request.body() else {}) or {}
+    return await _cursor_symbol(body.get("symbol") or "")
+
+
+async def _handle_ui_task(goal: str, ws) -> None:
+    """Voice path for UC4 — runs the loop on a background task (keeps the WS loop
+    free for per-step confirm replies + STOP), then speaks the outcome."""
+    try:
+        async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
+            result = await _run_ui_task(goal, task_id=task_id)
+    except Exception as e:
+        log.error(f"ui_task error: {e}")
+        await _speak(ws, "I ran into trouble with that, sir.")
+        return
+    await _speak(ws, result.get("message") or "Done, sir.")
 
 
 @app.post("/api/ax/click")
