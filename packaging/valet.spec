@@ -41,7 +41,7 @@ hiddenimports = [
     "licensing", "action_executor", "applescript_executor", "safe_executor",
     "safety", "voice_text", "task_manager", "project_scanner", "design_partner",
     "accessibility_executor", "composite_executor", "apple_calendar",
-    "Quartz", "AppKit", "EventKit",
+    "contacts_access", "Quartz", "AppKit", "EventKit", "Contacts",
     "observability", "sentry_sdk", "anthropic", "httpx", "uvicorn", "uvicorn.lifespan.on",
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",
@@ -56,11 +56,17 @@ _ek_datas, _ek_binaries, _ek_hidden = collect_all("EventKit")
 datas += _ek_datas
 hiddenimports += _ek_hidden
 
+# Contacts framework — same FULL collection as EventKit so CNContactStore and the
+# dynamic Objective-C bindings resolve in the signed build (contacts_access.py).
+_cn_datas, _cn_binaries, _cn_hidden = collect_all("Contacts")
+datas += _cn_datas
+hiddenimports += _cn_hidden
+
 # Google API client libs need FULL collection too: googleapiclient ships static
 # discovery documents (data files) and several submodules are imported lazily,
 # so a bare hidden import leaves the frozen OAuth flow / Gmail+Calendar calls
 # broken. collect_all gathers data + binaries + submodules for each.
-_extra_binaries = list(_ek_binaries)
+_extra_binaries = list(_ek_binaries) + list(_cn_binaries)
 for _gpkg in ("googleapiclient", "google_auth_oauthlib", "google.auth",
               "google.oauth2", "google_auth_httplib2", "oauthlib", "requests_oauthlib"):
     try:

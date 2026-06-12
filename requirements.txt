@@ -17,3 +17,4 @@ sentry-sdk>=2.0
 pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
 pyobjc-framework-EventKit>=10.0; sys_platform == "darwin"
+pyobjc-framework-Contacts>=10.0; sys_platform == "darwin"

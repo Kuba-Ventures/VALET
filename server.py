@@ -131,7 +131,9 @@ from memory import (
     create_note, search_notes, get_tasks_for_date, build_memory_context,
     format_tasks_for_voice, extract_memories, get_important_memories,
     get_bio_summary, set_bio_summary, get_bio_sources, add_bio_note,
+    add_contact, find_contact, list_contacts, delete_contact,
 )
+import contacts_access
 from notes_access import get_recent_notes, read_note, open_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
@@ -563,7 +565,11 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
 - [ACTION:DRAFT_EMAIL] to ||| subject ||| body ||| cc? ||| bcc? — create a Gmail DRAFT. VALET NEVER sends mail — the user clicks Send themselves after reviewing. Use this for any "draft an email to X", "write an email saying Y", "compose a message" request. Write a complete, well-formed email body in the user's voice.
   "draft an email to sarah@example.com asking about the proposal" → [ACTION:DRAFT_EMAIL] sarah@example.com ||| Following up on the proposal ||| Hi Sarah,\n\nJust circling back on the proposal we discussed last week — let me know if you've had a chance to review it.\n\nThanks,\n{user_name}
   "write a quick note to my team about the all-hands tomorrow" → [ACTION:DRAFT_EMAIL] team@company.com ||| All-hands tomorrow ||| Team — quick reminder about the all-hands tomorrow at 2pm. See you then.\n\n{user_name}
-  If the user doesn't specify a recipient, ASK them — don't guess.
+  RECIPIENTS — read this carefully:
+  • You may put a bare NAME in the `to` field ("email Nick" → [ACTION:DRAFT_EMAIL] Nick ||| ...). The backend resolves the name against the user's saved CONTACTS and Apple Contacts and, if it can't, asks the user — so passing the name through is safe.
+  • NEVER invent, guess, or auto-complete an email ADDRESS. Only ever emit an @-address that the user stated explicitly OR that appears verbatim in the CONTACTS list below. If you have neither a known address nor a name to resolve, ASK for the address — do not fabricate one.
+- [ACTION:SAVE_CONTACT] name ||| email — save a contact to the user's profile so future "email <name>" requests resolve. Use when the user gives someone's address ("Nick's email is nick@…", "save Sarah as sarah@co.com", or right after you asked for an address). After saving, if there was a pending email request, follow with the DRAFT_EMAIL.
+  "Nick's email is nick@qsbsrollover.com" → [ACTION:SAVE_CONTACT] Nick ||| nick@qsbsrollover.com
 - [ACTION:APPLESCRIPT] raw applescript — execute ANY AppleScript. This gives you full control over macOS apps and the system. Use for tasks like:
   • Listing/manipulating files (Finder)
   • Controlling Music, Safari, Mail, Reminders, Calendar via their scripting dictionaries
@@ -626,6 +632,9 @@ SCHEDULE:
 
 EMAIL:
 {mail_context}
+
+CONTACTS (the user's saved address book — resolve "email <name>" to these; never invent an address):
+{contacts_context}
 
 ACTIVE TASKS:
 {active_tasks}
@@ -700,7 +709,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1908,6 +1917,49 @@ def _format_projects_for_voice(projects: list[dict]) -> str:
     return f"{n} projects, sir. The latest are: {sample}, and {n - 5} more."
 
 
+def _format_contacts_for_prompt(limit: int = 50) -> str:
+    """The saved address book as 'Name — email' lines for the system prompt.
+    Capped so a large book doesn't bloat context."""
+    try:
+        contacts = list_contacts()
+    except Exception:
+        contacts = []
+    if not contacts:
+        return "(none saved yet)"
+    lines = [f"- {c['name']} — {c['email']}" for c in contacts[:limit]]
+    if len(contacts) > limit:
+        lines.append(f"…and {len(contacts) - limit} more.")
+    return "\n".join(lines)
+
+
+async def _resolve_contact_email(name: str) -> dict | None:
+    """Resolve a spoken name to {name, email, source}. VALET's profile store
+    first, then Apple Contacts (if access was granted). None if unknown or
+    ambiguous — the caller asks instead of guessing."""
+    hit = find_contact(name)
+    if hit:
+        return {"name": hit["name"], "email": hit["email"], "source": "profile"}
+    try:
+        if contacts_access.has_access():
+            ac = await contacts_access.find_one(name)
+            if ac:
+                return {"name": ac["name"], "email": ac["email"], "source": "apple"}
+    except Exception as e:
+        log.warning(f"apple contacts resolve failed: {e}")
+    return None
+
+
+async def _execute_save_contact(target: str, ws):
+    """Save a contact from a SAVE_CONTACT tag. target: "name ||| email"."""
+    name, _, email = target.partition("|||")
+    name, email = name.strip(), email.strip()
+    if not name or "@" not in email:
+        await _speak(ws, "I need a name and an email to save a contact, sir.")
+        return
+    ok = add_contact(name, email)
+    await _speak(ws, f"Saved {name}, sir." if ok else f"I couldn't save {name}, sir.")
+
+
 async def _execute_draft_email(target: str, ws):
     """Create a Gmail draft from a DRAFT_EMAIL action tag.
 
@@ -1941,8 +1993,8 @@ async def _execute_draft_email(target: str, ws):
     except Exception:
         gmail_ready = False
     if not gmail_ready:
-        msg = ("I can't draft emails yet, sir — Gmail isn't connected. "
-               "It's on the roadmap.")
+        msg = ("I can't draft emails yet, sir — connect Gmail under "
+               "Settings, Console Settings, Accounts.")
         audio = await synthesize_speech(msg)
         if audio and ws:
             try:
@@ -1951,6 +2003,23 @@ async def _execute_draft_email(target: str, ws):
             except Exception:
                 pass
         return
+
+    # Resolve a NAME recipient ("email Nick") to a real address — VALET's profile
+    # store first, then Apple Contacts. NEVER fabricate: if it's a name we can't
+    # resolve, ask (the user can save it) rather than guessing an address. An
+    # explicit address (already contains "@") is used as-is.
+    if to and "@" not in to:
+        hit = await _resolve_contact_email(to)
+        if hit:
+            log.info(f"resolved recipient {to!r} -> {hit['email']} ({hit['source']})")
+            to = hit["email"]
+        else:
+            await _speak(
+                ws,
+                f"I don't have an email for {to}, sir. What's the address? "
+                f"You can say, save {to} as their address.",
+            )
+            return
 
     async with process_bus.task_context(f"Drafting email to {to}", detail=subject[:80]) as task_id:
         try:
@@ -2871,6 +2940,7 @@ async def generate_response(
         screen_context=screen_ctx or "Not checked yet.",
         calendar_context=calendar_ctx,
         mail_context=mail_ctx,
+        contacts_context=_format_contacts_for_prompt(),
         active_tasks=task_mgr.get_active_tasks_summary(),
         dispatch_context=dispatch_registry.format_for_prompt(),
         known_projects=format_projects_for_prompt(projects),
@@ -5679,6 +5749,8 @@ async def voice_handler(ws: WebSocket):
                                     ))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "save_contact":
+                                    asyncio.create_task(_execute_save_contact(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "prompt_project":
                                     target = embedded_action["target"]
                                     if "|||" in target:
@@ -6021,6 +6093,33 @@ async def api_google_disconnect():
     return {"success": True}
 
 
+@app.get("/api/contacts")
+async def api_contacts_list():
+    """The user's saved contacts (profile store) for the settings address book."""
+    return {"contacts": list_contacts()}
+
+
+@app.post("/api/contacts")
+async def api_contacts_add(request: Request):
+    """Add or update a saved contact. Body: {name, email}."""
+    body = await request.json()
+    name = (body or {}).get("name", "")
+    email = (body or {}).get("email", "")
+    if not (name or "").strip() or "@" not in (email or ""):
+        return JSONResponse({"success": False, "error": "name and a valid email are required"}, status_code=400)
+    ok = add_contact(name, email)
+    return {"success": ok, "contacts": list_contacts()}
+
+
+@app.delete("/api/contacts")
+async def api_contacts_delete(request: Request):
+    """Remove a saved contact by name. Body: {name}."""
+    body = await request.json()
+    name = (body or {}).get("name", "")
+    ok = delete_contact(name)
+    return {"success": ok, "contacts": list_contacts()}
+
+
 @app.post("/api/settings/bio/regenerate")
 async def api_regenerate_bio():
     """Synthesize a fresh user-profile summary from accumulated notes.
@@ -6193,6 +6292,21 @@ def _calendar_access_granted():
         return None
 
 
+def _contacts_access_granted():
+    """Silent Contacts check (no prompt). True authorized, False denied/restricted,
+    None not-yet-asked. Contacts is an optional fallback for name→email lookup —
+    VALET's own saved contacts work without it."""
+    try:
+        s = contacts_access.auth_status()
+        if s == 3:
+            return True
+        if s in (1, 2):
+            return False
+        return None
+    except Exception:
+        return None
+
+
 @app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
@@ -6222,6 +6336,12 @@ async def api_permissions_status():
             "why": "Drive Calendar, Mail, Notes and Chrome via AppleScript.",
             "note": "Granted per app the first time VALET controls it.",
         },
+        "contacts": {
+            "granted": _contacts_access_granted(),  # silent check, no prompt
+            "label": "Contacts",
+            "why": "Look up a name → email when you say 'email Nick'. Optional — your saved contacts work without it.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
+        },
         "accessibility": {
             "granted": None,
             "label": "Accessibility",
@@ -6237,6 +6357,7 @@ _SETTINGS_PANES = {
     "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
     "calendars": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
+    "contacts": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
 }
 
 
@@ -6269,6 +6390,12 @@ async def api_permissions_trigger(request: Request):
         try:
             import apple_calendar
             granted = await asyncio.to_thread(apple_calendar.request_access)
+            return {"ok": True, "granted": bool(granted)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:160]}
+    if target == "contacts":
+        try:
+            granted = await asyncio.to_thread(contacts_access.request_access)
             return {"ok": True, "granted": bool(granted)}
         except Exception as e:
             return {"ok": False, "error": str(e)[:160]}
