@@ -2939,6 +2939,29 @@ async def _confirm_action(ws: "WebSocket", ea: dict) -> bool:
     return allowed
 
 
+async def _confirm_and_dispatch(ws: "WebSocket", ea: dict) -> None:
+    """Confirm a Tier 1 action, then run it — all on a background task.
+
+    CRITICAL: this MUST NOT be awaited inline inside the WebSocket receive loop.
+    `_confirm_action` blocks on the user's reply, which arrives as a
+    `confirm_response` frame the receive loop has to read. Awaiting it inline
+    parks the loop before its next `receive_text()`, so the reply is never
+    consumed and the confirmation can only resolve at its 120s timeout (the
+    "thinking forever" hang). Spawned as a task, the loop stays free to read the
+    reply and the future resolves immediately on Allow/Deny.
+    """
+    if not await _confirm_action(ws, ea):
+        return  # denied — _confirm_action already spoke
+    action = ea["action"]
+    target = ea.get("target", "")
+    if action == "create_event":
+        await _execute_create_event(target, ws)
+    elif action == "cancel_event":
+        await _execute_cancel_event(target, ws)
+    elif action == "send":
+        await _execute_type(target, press_enter=True)
+
+
 # ── Account sync: wire SuccessTracker into the live loop + push a snapshot up ──
 # The desktop app records task outcomes and action usage locally (SuccessTracker,
 # tracking.py); a background loop periodically pushes a privacy-preserving
@@ -5310,8 +5333,14 @@ async def voice_handler(ws: WebSocket):
                                 # Tier 1 actions outside the gated executor confirm here.
                                 if kill_switch.is_engaged():
                                     await _speak(ws, "Halted, sir.")
-                                elif embedded_action["action"] in _CONFIRM_ACTIONS and not await _confirm_action(ws, embedded_action):
-                                    pass  # denied — _confirm_action already spoke
+                                elif embedded_action["action"] in _CONFIRM_ACTIONS:
+                                    # Confirm + run on a background task. Awaiting the
+                                    # confirmation here would deadlock the receive loop
+                                    # against its own confirm_response reply (see
+                                    # _confirm_and_dispatch). create_event / cancel_event
+                                    # / send are dispatched there, NOT in the branches
+                                    # below.
+                                    asyncio.create_task(_confirm_and_dispatch(ws, embedded_action))
                                 elif embedded_action["action"] == "build":
                                     # Build in background — VALET stays conversational
                                     target = embedded_action["target"]
@@ -5405,8 +5434,9 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_run_gated_action(ws, executor.run_script(embedded_action["target"])))
                                 elif embedded_action["action"] == "type":
                                     asyncio.create_task(_execute_type(embedded_action["target"], press_enter=False))
-                                elif embedded_action["action"] == "send":
-                                    asyncio.create_task(_execute_type(embedded_action["target"], press_enter=True))
+                                # NOTE: "send", "create_event" and "cancel_event" are in
+                                # _CONFIRM_ACTIONS and dispatched via _confirm_and_dispatch
+                                # above — no branch for them here.
                                 elif embedded_action["action"] == "dispatch_to_agent":
                                     # LLM-emitted dispatch: target is "<agent> ||| <task>".
                                     raw = embedded_action.get("target", "")
@@ -5417,10 +5447,6 @@ async def voice_handler(ws: WebSocket):
                                         ))
                                     else:
                                         log.warning(f"dispatch_to_agent missing |||: {raw[:120]!r}")
-                                elif embedded_action["action"] == "create_event":
-                                    asyncio.create_task(_execute_create_event(embedded_action["target"], ws))
-                                elif embedded_action["action"] == "cancel_event":
-                                    asyncio.create_task(_execute_cancel_event(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "check_date":
                                     asyncio.create_task(_execute_check_date(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "check_weather":
