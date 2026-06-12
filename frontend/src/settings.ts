@@ -112,25 +112,10 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-field setup-hide">
-            <label>Proxy URL</label>
-            <div class="settings-input-row">
-              <input type="text" id="input-proxy-url" placeholder="https://valetvoice.vercel.app" />
-            </div>
-          </div>
-
-          <div class="settings-field setup-hide">
             <label>Voice</label>
             <div class="settings-input-row settings-voice-toggle">
               <button class="settings-btn voice-opt active" id="voice-male" data-voice="male" type="button">British Male</button>
               <button class="settings-btn voice-opt" id="voice-female" data-voice="female" type="button">British Female</button>
-            </div>
-          </div>
-
-          <div class="settings-field setup-hide">
-            <label>Voice ID (advanced)</label>
-            <div class="settings-input-row">
-              <input type="text" id="input-fish-voice-id" placeholder="Fish reference_id override" />
-              <button class="settings-btn" id="btn-save-voice-id">Save</button>
             </div>
           </div>
 
@@ -501,26 +486,14 @@ function wireEvents() {
   document.getElementById("settings-close")?.addEventListener("click", closeSettings);
   document.getElementById("settings-backdrop")?.addEventListener("click", closeSettings);
 
-  // Save keys
+  // Save keys (license only — Proxy URL is a fixed default; Voice ID moved to
+  // the web account dashboard and is applied to the app from there).
   document.getElementById("btn-save-keys")?.addEventListener("click", async () => {
     const licenseKey = (document.getElementById("input-license-key") as HTMLInputElement).value.trim();
-    const proxyUrl = (document.getElementById("input-proxy-url") as HTMLInputElement).value.trim();
-
     if (licenseKey) {
       await apiPost("/api/settings/keys", { key_name: "LICENSE_KEY", key_value: licenseKey });
     }
-    if (proxyUrl) {
-      await apiPost("/api/settings/keys", { key_name: "PROXY_BASE_URL", key_value: proxyUrl });
-    }
     await loadStatus();
-  });
-
-  // Save voice ID
-  document.getElementById("btn-save-voice-id")?.addEventListener("click", async () => {
-    const voiceId = (document.getElementById("input-fish-voice-id") as HTMLInputElement).value.trim();
-    if (voiceId) {
-      await apiPost("/api/settings/keys", { key_name: "FISH_VOICE_ID", key_value: voiceId });
-    }
   });
 
   // Test License (validates against the proxy)
