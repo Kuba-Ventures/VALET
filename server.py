@@ -5964,6 +5964,32 @@ async def api_permissions_open(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)[:160]}
 
+
+@app.post("/api/permissions/trigger")
+async def api_permissions_trigger(request: Request):
+    """Fire the NATIVE macOS permission prompt for a target inline — no Settings
+    hunt. Automation: send a harmless Apple Event to System Events; the first one
+    makes macOS show the "VALET wants to control System Events" prompt. The
+    AppleScript succeeds once granted and errors (-1743) if denied, so the
+    return value doubles as the live grant status. Microphone uses getUserMedia
+    in the webview; Full Disk Access has no inline prompt on macOS."""
+    body = await request.json()
+    if (body or {}).get("target") != "automation":
+        return {"ok": False, "error": "no inline prompt for this target"}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", 'tell application "System Events" to count processes',
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return {"ok": True, "granted": False}
+        return {"ok": True, "granted": proc.returncode == 0}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:160]}
+
 # ---------------------------------------------------------------------------
 # Control endpoints (restart, fix-self)
 # ---------------------------------------------------------------------------

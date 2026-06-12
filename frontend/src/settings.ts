@@ -441,6 +441,9 @@ async function loadSettingsPermissions() {
           side = `<span style="margin-left:auto;opacity:0.6">Granted</span>`;
         } else if (k === "microphone") {
           side = `<button class="settings-btn" data-perm-mic="1" style="margin-left:auto">Enable</button>`;
+        } else if (k === "automation") {
+          // Inline native prompt rather than a Settings deep-link.
+          side = `<button class="settings-btn" data-perm-trigger="automation" style="margin-left:auto">Enable</button>`;
         } else {
           side = `<button class="settings-btn" data-perm-open="${PERM_TARGET[k]}" style="margin-left:auto">Open Settings</button>`;
         }
@@ -614,6 +617,28 @@ function wireEvents() {
         btn.textContent = "Open Settings";
         delete btn.dataset.permMic;
         btn.dataset.permOpen = "microphone";
+      }
+      return;
+    }
+    if (btn.dataset.permTrigger) {
+      // Automation: fire the native "control System Events" prompt inline.
+      btn.disabled = true;
+      btn.textContent = "Requesting...";
+      const res = await apiPost<{ ok: boolean; granted?: boolean }>(
+        "/api/permissions/trigger", { target: btn.dataset.permTrigger },
+      );
+      if (res?.granted) {
+        // Mark granted in-place — the backend status endpoint can't detect
+        // automation without re-prompting, so don't reload (it'd revert to
+        // yellow). The grant persists in macOS regardless.
+        const dot = btn.closest(".account-row")?.querySelector(".status-dot");
+        if (dot) dot.className = "status-dot status-green";
+        btn.textContent = "Granted";
+      } else {
+        btn.disabled = false;
+        btn.textContent = "Open Settings";
+        btn.dataset.permOpen = "automation";
+        delete btn.dataset.permTrigger;
       }
       return;
     }
