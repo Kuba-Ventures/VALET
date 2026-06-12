@@ -5967,7 +5967,10 @@ async def api_permissions_status():
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
         },
         "calendars": {
-            "granted": _calendar_access_granted(),  # silent EventKit check, no prompt
+            # Determined via the inline "Enable" (request_access) — NOT probed
+            # here. Calling EventKit synchronously in this request path nulled
+            # the whole response in the frozen build, so keep it out of status.
+            "granted": None,
             "label": "Calendar",
             "why": "Read and create events in your Calendar.",
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
