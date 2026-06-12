@@ -3666,17 +3666,27 @@ _OPEN_PROJECT_PATTERNS = [
 # calendar" / "what's on my calendar" don't start with a launch verb, so they
 # still reach the lookups.)
 _OPEN_APP_LAUNCH_RE = _action_re.compile(
-    r'^\s*(?:can you |could you |please )?'
-    r'(?:open|launch|pull up|bring up|fire up)\s+'
-    r'(?:the |my )?'
-    r'(calendar|mail|e-?mail|notes|reminders|messages)'
+    r'^\s*'
+    # Tolerate a leaked wake word ("hey vee, open …") if it wasn't stripped.
+    r'(?:(?:hey|ok|okay|yo)\s+)?(?:vee|v|valet)?[\s,]*'
+    # Optional polite lead-ins, any number.
+    r"(?:(?:can|could|would|will) you |please |i(?:'d like| want| wanna)(?: to)? |let'?s |go ahead and |go )*"
+    # Launch verbs only — unambiguous "open the app". ("show me / what's on my
+    # calendar" stay with the read lookups; they have no launch verb here.)
+    r'(?:open(?:\s+up)?|launch|pull up|bring up|fire up)\s+'
+    r'(?:the |my |up |to )?'
+    r'(calendar|mail|e-?mail|inbox|notes|reminders|messages|music|photos|maps|contacts|facetime|safari|finder)'
     r'(?:\s+app)?'
+    r'(?:\s+(?:for me|now|please|up))?'
     r'\s*\??\.?\s*$',
     _action_re.IGNORECASE,
 )
 _OPEN_APP_LAUNCH_MAP = {
     "calendar": "Calendar", "mail": "Mail", "email": "Mail", "e-mail": "Mail",
-    "notes": "Notes", "reminders": "Reminders", "messages": "Messages",
+    "inbox": "Mail", "notes": "Notes", "reminders": "Reminders",
+    "messages": "Messages", "music": "Music", "photos": "Photos", "maps": "Maps",
+    "contacts": "Contacts", "facetime": "FaceTime", "safari": "Safari",
+    "finder": "Finder",
 }
 
 # Register-project intent — for one-off projects outside any configured root.
