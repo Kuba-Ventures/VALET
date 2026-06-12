@@ -53,7 +53,11 @@ tell application "Notes"
         set n to item i of allNotes
         set nName to name of n
         set nDate to creation date of n as string
-        set nFolder to name of container of n
+        try
+            set nFolder to name of container of n
+        on error
+            set nFolder to "Notes"
+        end try
         set output to output & nName & "|||" & nDate & "|||" & nFolder & linefeed
     end repeat
     return output
@@ -72,6 +76,26 @@ end tell
                 "folder": parts[2].strip(),
             })
     return notes
+
+
+async def _recent_titles(count: int = 200) -> list[str]:
+    """Just the note names — deliberately avoids `container of n`, which throws
+    (-1728) on some notes and aborts the folder-aware get_recent_notes script.
+    Used by read_note's normalized fallback, which only needs titles."""
+    script = f'''
+tell application "Notes"
+    set output to ""
+    set allNotes to every note
+    set lim to count of allNotes
+    if lim > {count} then set lim to {count}
+    repeat with i from 1 to lim
+        set output to output & (name of item i of allNotes) & linefeed
+    end repeat
+    return output
+end tell
+'''
+    raw = await _run_notes_script(script, timeout=15)
+    return [t.strip() for t in raw.split("\n") if t.strip()]
 
 
 async def _read_note_by_exact_title(title: str) -> dict | None:
@@ -129,7 +153,7 @@ end tell
     q = _norm(title_match)
     if not q:
         return None
-    titles = [n["title"] for n in await get_recent_notes(count=200)]
+    titles = await _recent_titles(200)
     best, best_gap = None, None
     for t in titles:
         nt = _norm(t)
