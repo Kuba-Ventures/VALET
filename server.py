@@ -58,6 +58,38 @@ if _env_path.exists():
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
+
+def _suppress_dock_icon() -> None:
+    """Keep the backend out of the macOS Dock.
+
+    The backend imports AppKit/Quartz (pyobjc) for screen + accessibility
+    features. Loading AppKit promotes this process to a GUI app with its own
+    Dock icon — and because the shipped `valet-backend` sidecar lives inside
+    VALET.app, that icon is VALET's, so the user sees TWO identical Dock icons
+    next to the Tauri shell. Marking the process "prohibited" (a faceless
+    background app) up front, before any AppKit use, prevents the second icon.
+    Only runs in the packaged backend; dev (`python server.py`) is untouched.
+    """
+    if sys.platform != "darwin":
+        return
+    if not (getattr(sys, "frozen", False) or os.environ.get("VALET_SHIPPED")):
+        return
+    try:
+        from AppKit import (
+            NSApplication,
+            NSApplicationActivationPolicyProhibited,
+        )
+
+        NSApplication.sharedApplication().setActivationPolicy_(
+            NSApplicationActivationPolicyProhibited
+        )
+    except Exception:
+        # pyobjc missing or AppKit unavailable — nothing to suppress.
+        pass
+
+
+_suppress_dock_icon()
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, asdict
