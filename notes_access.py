@@ -7,8 +7,17 @@ CANNOT edit or delete existing notes (safety).
 
 import asyncio
 import logging
+import re
 
 log = logging.getLogger("valet.notes")
+
+
+def _norm(s: str) -> str:
+    """Collapse a title to comparable form: lowercase, alphanumerics only. This
+    bridges speech-to-text seams the literal AppleScript `contains` misses —
+    e.g. "new employee on boarding" and "New Employee Onboarding" both become
+    "newemployeeonboarding"."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
 async def _run_notes_script(script: str, timeout: float = 10) -> str:
@@ -65,8 +74,32 @@ end tell
     return notes
 
 
+async def _read_note_by_exact_title(title: str) -> dict | None:
+    """Read one note whose name is exactly `title`. Returns title + body."""
+    escaped = title.replace('"', '\\"')
+    script = f'''
+tell application "Notes"
+    repeat with n in every note
+        if name of n is "{escaped}" then
+            set nBody to plaintext of n
+            if length of nBody > 3000 then set nBody to text 1 thru 3000 of nBody
+            return name of n & "|||" & nBody
+        end if
+    end repeat
+    return ""
+end tell
+'''
+    raw = await _run_notes_script(script, timeout=10)
+    if not raw or "|||" not in raw:
+        return None
+    title_, _, body = raw.partition("|||")
+    return {"title": title_.strip(), "body": body.strip()}
+
+
 async def read_note(title_match: str) -> dict | None:
-    """Read a note by title (partial match). Returns title + body."""
+    """Read a note by title. Tries a literal substring match first, then falls
+    back to a normalized match so speech-to-text seams (e.g. "on boarding" vs
+    "Onboarding") still resolve. Returns title + body, or None if nothing fits."""
     escaped = title_match.replace('"', '\\"')
     script = f'''
 tell application "Notes"
@@ -86,10 +119,28 @@ tell application "Notes"
 end tell
 '''
     raw = await _run_notes_script(script, timeout=10)
-    if not raw or "|||" not in raw:
+    if raw and "|||" in raw:
+        title, _, body = raw.partition("|||")
+        return {"title": title.strip(), "body": body.strip()}
+
+    # Fallback: normalize both sides and match on the collapsed forms. Picks the
+    # closest title (a containment match with the smallest length gap) so a short
+    # query doesn't latch onto an unrelated longer note that merely contains it.
+    q = _norm(title_match)
+    if not q:
         return None
-    title, _, body = raw.partition("|||")
-    return {"title": title.strip(), "body": body.strip()}
+    titles = [n["title"] for n in await get_recent_notes(count=200)]
+    best, best_gap = None, None
+    for t in titles:
+        nt = _norm(t)
+        if nt and (q in nt or nt in q):
+            gap = abs(len(nt) - len(q))
+            if best_gap is None or gap < best_gap:
+                best, best_gap = t, gap
+    if best:
+        log.info(f"read_note fuzzy-matched {title_match!r} -> {best!r}")
+        return await _read_note_by_exact_title(best)
+    return None
 
 
 async def search_notes_apple(query: str, count: int = 5) -> list[dict]:

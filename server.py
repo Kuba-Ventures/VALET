@@ -1930,6 +1930,28 @@ async def _execute_draft_email(target: str, ws):
     to, subject, body = parts[0], parts[1], parts[2]
     cc = parts[3] if len(parts) > 3 else ""
     bcc = parts[4] if len(parts) > 4 else ""
+
+    # Drafting writes to Gmail, which is an opt-in integration that isn't wired up
+    # yet (Google/Gmail is deferred). If it isn't connected, fail honestly instead
+    # of claiming a "re-authentication" problem with an account that was never set
+    # up. Apple Mail is read-only by design, so there's no local draft path either.
+    try:
+        import google_auth
+        gmail_ready = google_auth.is_connected()
+    except Exception:
+        gmail_ready = False
+    if not gmail_ready:
+        msg = ("I can't draft emails yet, sir — Gmail isn't connected. "
+               "It's on the roadmap.")
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
+        return
+
     async with process_bus.task_context(f"Drafting email to {to}", detail=subject[:80]) as task_id:
         try:
             await emit_step(task_id, "Creating Gmail draft…", status="active")
