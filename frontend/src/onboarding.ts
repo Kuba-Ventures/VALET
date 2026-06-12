@@ -171,28 +171,34 @@ function profileBody(): string {
 }
 
 function connectionsBody(): string {
-  const conn = (id: string, label: string, desc: string, soon: boolean) => `
+  // `state`: "soon" = not built yet; "settings" = available, connect in Settings
+  // (the OAuth consent flow lives there); "ready" = works with no setup.
+  const conn = (label: string, desc: string, state: "soon" | "settings" | "ready") => {
+    const pill =
+      state === "soon"
+        ? `<span class="ob-pill muted">Coming soon</span>`
+        : state === "settings"
+          ? `<span class="ob-pill">In Settings</span>`
+          : `<span class="ob-pill muted">Ready</span>`;
+    return `
     <div class="ob-row">
       <div class="ob-row-main">
         <div class="ob-row-label">${label}</div>
         <div class="ob-row-why">${desc}</div>
       </div>
-      <div class="ob-row-side">
-        ${soon
-          ? `<span class="ob-pill muted">Coming soon</span>`
-          : `<button class="ob-open" data-connect="${id}">Connect</button>`}
-      </div>
+      <div class="ob-row-side">${pill}</div>
     </div>`;
+  };
   return `
     <h2 class="ob-title">Connections.</h2>
     <p class="ob-sub">Link the apps Vee can reach into. You can add these now or later in Settings.</p>
     <div class="ob-rows">
-      ${conn("google_cal", "Google Calendar", "Read and create events by voice.", true)}
-      ${conn("gmail", "Gmail", "Triage and draft mail.", true)}
-      ${conn("mcp", "MCP servers", "Connect tools that speak the Model Context Protocol.", true)}
-      ${conn("apps", "Other apps", "Spotify, Notes, the browser, and more work out of the box.", true)}
+      ${conn("Google Calendar", "Read your events by voice, merged with Apple Calendar.", "settings")}
+      ${conn("Gmail", "Triage and draft mail.", "settings")}
+      ${conn("MCP servers", "Connect tools that speak the Model Context Protocol.", "soon")}
+      ${conn("Other apps", "Spotify, Notes, the browser, and more work out of the box.", "ready")}
     </div>
-    <p class="ob-fineprint">Google and Gmail connections are landing in a coming update. Everything else is ready to use the moment you finish setup.</p>`;
+    <p class="ob-fineprint">Connect Google Calendar and Gmail anytime under Settings &rsaquo; Console Settings &rsaquo; Accounts. Everything else is ready the moment you finish setup.</p>`;
 }
 
 function doneBody(): string {

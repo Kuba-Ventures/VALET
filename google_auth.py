@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -36,8 +38,41 @@ SCOPES = [
 ]
 
 _ROOT = Path(__file__).parent
-CREDENTIALS_PATH = _ROOT / "google_credentials.json"
-TOKEN_PATH = _ROOT / "data" / "google_tokens.json"
+
+
+def _writable_data_dir() -> Path:
+    """Where mutable Google state (tokens) lives — a writable dir that survives
+    relaunch. Application Support in a packaged build, the repo's data/ in dev.
+    Mirrors server.valet_data_dir() without importing server (avoids a cycle).
+    Critical for the frozen app: __file__ points into the read-only, per-launch
+    PyInstaller temp dir, so tokens written there would never persist."""
+    here = Path(__file__).resolve().parent
+    shipped = (
+        bool(os.environ.get("VALET_SHIPPED"))
+        or getattr(sys, "frozen", False)
+        or not (here / ".git").exists()
+    )
+    d = (Path.home() / "Library" / "Application Support" / "VALET") if shipped else (here / "data")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _bundle_dir() -> Path:
+    """Where bundled read-only assets live: the PyInstaller extraction root
+    (_MEIPASS) when frozen, else the repo dir."""
+    return Path(getattr(sys, "_MEIPASS", str(_ROOT)))
+
+
+def _resolve_credentials_path() -> Path:
+    """OAuth client JSON. A user-supplied copy in the writable data dir wins (so
+    someone can swap in their own client); otherwise the bundled one. In the
+    frozen app the bundled copy lives at the _MEIPASS root (added to spec datas)."""
+    user = _writable_data_dir() / "google_credentials.json"
+    return user if user.exists() else (_bundle_dir() / "google_credentials.json")
+
+
+CREDENTIALS_PATH = _resolve_credentials_path()
+TOKEN_PATH = _writable_data_dir() / "google_tokens.json"
 
 _cached_creds: Credentials | None = None
 _cached_email: str | None = None
