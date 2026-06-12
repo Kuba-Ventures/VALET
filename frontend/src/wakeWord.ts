@@ -60,11 +60,22 @@ function escapeRegExp(s: string): string {
 const WAKE_PREFIXES = ["ok", "okay", "hey", "yo", "hi", "hello", "hey there", "morning"] as const;
 
 // Speech recognizers rarely transcribe the one-syllable "vee" cleanly — they
-// hear "V", "B", "Bee", "Vi", etc. When the name is "vee" we match all of these
-// so the wake phrase fires regardless. Single letters (v/b) are allowed ONLY
-// after a wake prefix ("hey v"), never as a bare re-engage (too noisy alone).
-const VEE_WAKE_VARIANTS = ["vee", "vi", "vie", "v", "b", "bee"];
-const VEE_SOFT_VARIANTS = ["vee", "vi", "vie", "bee"];
+// hear "V", "B", "Bee", "Vi", "D", "E", "Z", "fee", etc. When the name is "vee"
+// we match all of these so the wake phrase fires regardless of how the user
+// pronounces it. These only match AFTER a wake prefix ("hey d", "ok z"), which
+// is what keeps them safe: letter-sounds and rhymes essentially never follow a
+// greeting in normal speech, so false wakes stay rare. DELIBERATELY EXCLUDED:
+// real words that rhyme with "vee" (the, be, see, tea, pea, key, gee) — "hey the
+// meeting started" must NOT wake. Single letters/rhymes are allowed here but NOT
+// as a bare re-engage (VEE_SOFT_VARIANTS), where there's no prefix to gate them.
+const VEE_WAKE_VARIANTS = [
+  "vee", "vi", "vie", "ve",        // direct mishearings of "vee"
+  "v", "b", "c", "d", "e", "g", "p", "t", "z",  // letter-sounds that rhyme with "vee"
+  "bee", "fee",                    // rhyming homophones STT emits as words
+];
+// Bare re-engage ("vee" as the whole utterance) — no prefix gating it, so keep
+// this TIGHT: only clear two-letter mishearings, never single letters or words.
+const VEE_SOFT_VARIANTS = ["vee", "vi", "vie", "ve", "bee", "fee"];
 
 function nameAlternation(name: string, soft: boolean): string {
   if (name === "vee") {
