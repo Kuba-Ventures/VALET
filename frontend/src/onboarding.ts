@@ -61,6 +61,7 @@ const TARGET_FOR = (key: string): string =>
   key === "full_disk_access" ? "full_disk"
   : key === "microphone" ? "microphone"
   : key === "automation" ? "automation"
+  : key === "screen_recording" ? "screen_recording"
   : "accessibility";
 
 function pill(p: Permission): { text: string; cls: string } {
@@ -110,7 +111,7 @@ function licenseBody(): string {
 
 function permsBody(status: PermStatus | null): string {
   if (!status) return `<h2 class="ob-title">Permissions.</h2><p class="ob-sub">Could not reach the backend yet. You can grant these later in Settings.</p>`;
-  const rows = ["microphone", "calendars", "automation", "accessibility", "full_disk_access"]
+  const rows = ["microphone", "calendars", "automation", "accessibility", "screen_recording", "full_disk_access"]
     .filter((k) => status[k])
     .map((k) => {
       const p = status[k]; const s = pill(p);
@@ -126,9 +127,11 @@ function permsBody(status: PermStatus | null): string {
               ? `<button class="ob-open" data-calendars-enable="1">Enable</button>`
               : k === "accessibility" && p.granted !== true
                 ? `<button class="ob-open" data-accessibility-enable="1">Enable</button>`
-                : canOpen
-                  ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
-                  : "";
+                : k === "screen_recording" && p.granted !== true
+                  ? `<button class="ob-open" data-screenrec-enable="1">Enable</button>`
+                  : canOpen
+                    ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
+                    : "";
       return `
         <div class="ob-row" data-key="${k}">
           <div class="ob-row-main">
@@ -290,6 +293,26 @@ function wireStep(state: State, root: HTMLElement): void {
           } else {
             delete btn.dataset.accessibilityEnable;
             btn.dataset.target = "accessibility";
+            btn.textContent = "Open Settings";
+            btn.disabled = false;
+          }
+          return;
+        }
+        // Screen Recording: fire the native prompt. Like Accessibility, the grant
+        // lands in System Settings and needs a relaunch, so it usually still reads
+        // not-granted right after — fall back to Open Settings + Re-check.
+        if (btn.dataset.screenrecEnable) {
+          btn.disabled = true;
+          btn.textContent = "Requesting...";
+          const res = await postJSON<{ ok: boolean; granted?: boolean }>(
+            "/api/permissions/trigger", { target: "screen_recording" },
+          );
+          if (res?.granted) {
+            state.perms = await loadPerms();
+            renderBody(state, root);
+          } else {
+            delete btn.dataset.screenrecEnable;
+            btn.dataset.target = "screen_recording";
             btn.textContent = "Open Settings";
             btn.disabled = false;
           }
