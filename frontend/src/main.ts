@@ -515,9 +515,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 const btnWakeToggle = document.getElementById("btn-wake-toggle")!;
 const wakeLabelEl = btnWakeToggle.querySelector(".wake-label")!;
 const btnMenu = document.getElementById("btn-menu")!;
-const menuDropdown = document.getElementById("menu-dropdown")!;
-const btnRestart = document.getElementById("btn-restart")!;
-const btnFixSelf = document.getElementById("btn-fix-self")!;
 
 function applyWakeVisuals() {
   btnWakeToggle.classList.toggle("sleeping", isSleeping);
@@ -556,41 +553,11 @@ btnWakeToggle.addEventListener("click", (e) => {
 // kicks in (see setTimeout below).
 applyWakeVisuals();
 
+// The three-dot button opens Settings directly. The old dropdown's other items
+// (Restart Server, Fix Yourself) were dev-only and have been removed from the
+// user-facing UI.
 btnMenu.addEventListener("click", (e) => {
   e.stopPropagation();
-  menuDropdown.style.display = menuDropdown.style.display === "none" ? "block" : "none";
-});
-
-document.addEventListener("click", () => {
-  menuDropdown.style.display = "none";
-});
-
-btnRestart.addEventListener("click", async (e) => {
-  e.stopPropagation();
-  menuDropdown.style.display = "none";
-  statusEl.textContent = "restarting...";
-  try {
-    await fetch("/api/restart", { method: "POST" });
-    // Wait a few seconds then reload
-    setTimeout(() => window.location.reload(), 4000);
-  } catch {
-    statusEl.textContent = "restart failed";
-  }
-});
-
-btnFixSelf.addEventListener("click", (e) => {
-  e.stopPropagation();
-  menuDropdown.style.display = "none";
-  // Activate work mode on the WebSocket session (VALET becomes Claude Code's voice)
-  socket.send({ type: "fix_self" });
-  statusEl.textContent = "entering work mode...";
-});
-
-// Settings button
-const btnSettings = document.getElementById("btn-settings")!;
-btnSettings.addEventListener("click", (e) => {
-  e.stopPropagation();
-  menuDropdown.style.display = "none";
   openSettings();
 });
 
