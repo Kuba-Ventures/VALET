@@ -25,6 +25,33 @@ async function postJSON<T = unknown>(url: string, body: unknown): Promise<T | nu
 }
 const saveKey = (key_name: string, key_value: string) => postJSON("/api/settings/keys", { key_name, key_value });
 
+/**
+ * Real microphone-grant state, read where the mic actually lives — the webview.
+ * The backend can't cleanly detect this, so it returns null ("prompts on first
+ * use"); we override with the Permissions API so the indicator goes green once
+ * the user has allowed the mic. Returns null if unsupported (keeps backend value).
+ */
+async function micGranted(): Promise<boolean | null> {
+  try {
+    const s = await navigator.permissions.query({ name: "microphone" as PermissionName });
+    if (s.state === "granted") return true;
+    if (s.state === "denied") return false;
+    return null; // "prompt"
+  } catch {
+    return null;
+  }
+}
+
+/** Load permission status from the backend, then refine microphone client-side. */
+async function loadPerms(): Promise<PermStatus | null> {
+  const perms = await loadPerms();
+  if (perms?.microphone) {
+    const mic = await micGranted();
+    if (mic !== null) perms.microphone.granted = mic;
+  }
+  return perms;
+}
+
 // ---- permission helpers (carried from the original screen) -----------------
 
 interface Permission { granted: boolean | null; label: string; why: string; note?: string; required_v1?: boolean; }
@@ -204,7 +231,7 @@ function wireStep(state: State, root: HTMLElement): void {
           try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             stream.getTracks().forEach((t) => t.stop()); // release immediately
-            state.perms = await getJSON<PermStatus>("/api/permissions/status");
+            state.perms = await loadPerms();
             renderBody(state, root); // mic should now read Granted
           } catch {
             // Previously denied or blocked: native prompt won't show, so guide
@@ -222,7 +249,7 @@ function wireStep(state: State, root: HTMLElement): void {
       });
     });
     root.querySelector("#ob-recheck")?.addEventListener("click", async () => {
-      state.perms = await getJSON<PermStatus>("/api/permissions/status");
+      state.perms = await loadPerms();
       renderBody(state, root);
     });
   }
@@ -314,7 +341,7 @@ export async function maybeShowOnboarding(): Promise<void> {
   const cfg = await getJSON<{ build_id?: string; voice?: string }>("/api/config");
   const buildId = cfg?.build_id || "dev";
   if (localStorage.getItem(SEEN_KEY) === buildId) return; // already onboarded this build
-  const perms = await getJSON<PermStatus>("/api/permissions/status");
+  const perms = await loadPerms();
   const state: State = {
     step: 0,
     buildId,
