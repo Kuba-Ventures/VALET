@@ -4217,6 +4217,21 @@ _UI_TYPE_RE = re.compile(
     r'^type\s+(?P<text>.+?)\s+(?:in|into)\s+(?:the\s+)?(?P<field>.+?)(?:\s+(?:field|box|bar))?\s*[.?!]*$',
     re.IGNORECASE)
 
+# UC6 skills. "run npm install" (only when the command starts with a known tool —
+# so "run the tests" stays conversation), "open <file> at line <n> in cursor",
+# "search symbol <x> in cursor".
+_RUN_CMD_RE = re.compile(
+    r'^(?:run|execute)\s+(?:the\s+command\s+)?'
+    r'(?P<cmd>(?:git|npm|node|python3?|pip3?|ls|pwd|cargo|go|yarn|pnpm|brew|make|'
+    r'docker|kubectl|cat|grep|find|mkdir|touch|cp|mv|rm|echo|curl|ssh|ps|df|du)\b.*?)'
+    r'(?:\s+in\s+(?:the\s+)?terminal)?\s*[.?]?$', re.IGNORECASE)
+_CURSOR_GOTO_RE = re.compile(
+    r'^open\s+(?P<file>.+?)\s+(?:at\s+|on\s+)?line\s+(?P<line>\d+)\s+in\s+cursor\s*[.?]?$',
+    re.IGNORECASE)
+_CURSOR_SYMBOL_RE = re.compile(
+    r'^(?:search|find|go\s*to|jump\s*to)\s+(?:the\s+)?symbol\s+(?P<sym>.+?)'
+    r'\s*(?:in\s+cursor)?\s*[.?]?$', re.IGNORECASE)
+
 
 def detect_action_fast(text: str, ws=None) -> dict | None:
     """Keyword/regex-based action detection — ONLY for short, obvious commands.
@@ -4294,6 +4309,19 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         tgt = _cm.group("target").strip(" .?!")
         if tgt and len(tgt.split()) <= 6:
             return {"action": "ui_act", "ui_action": "click", "target": tgt}
+
+    # ── (2d) UC6 skills: Cursor goto / symbol, then terminal command. (Cursor
+    # patterns first so "open X at line N in cursor" isn't read as a command.)
+    _gm = _CURSOR_GOTO_RE.match(text.strip())
+    if _gm:
+        return {"action": "cursor_goto", "target": _gm.group("file").strip(" .?"),
+                "line": int(_gm.group("line"))}
+    _sm = _CURSOR_SYMBOL_RE.match(text.strip())
+    if _sm:
+        return {"action": "cursor_symbol", "target": _sm.group("sym").strip(" .?")}
+    _rm = _RUN_CMD_RE.match(text.strip())
+    if _rm:
+        return {"action": "run_command", "target": _rm.group("cmd").strip()}
 
     # ── (3) Word-count gate for everything else.
     if len(words) > 12:
@@ -5521,6 +5549,17 @@ async def voice_handler(ws: WebSocket):
                             # for the confirm reply).
                             response_text = "On it, sir."
                             _track_uc(ws, _handle_ui_act(action, ws))
+                        elif action["action"] == "run_command":
+                            # UC6 — voice terminal command (Tier 0 auto / Tier 1 confirm).
+                            response_text = "Let me run that, sir."
+                            _track_uc(ws, _run_terminal_command(action.get("target", ""), ws))
+                        elif action["action"] == "cursor_goto":
+                            response_text = "Opening Cursor, sir."
+                            asyncio.create_task(_cursor_goto(
+                                action.get("target", ""), action.get("line", 1), ws))
+                        elif action["action"] == "cursor_symbol":
+                            response_text = "Searching in Cursor, sir."
+                            _track_uc(ws, _cursor_symbol(action.get("target", ""), ws))
                         elif action["action"] == "check_calendar":
                             response_text = "Checking your calendar now, sir."
                             asyncio.create_task(_lookup_and_report("calendar", _do_calendar_lookup, ws, history=history, voice_state=voice_state))
@@ -6696,6 +6735,104 @@ async def api_ui_task(request: Request):
         return {"status": "failed", "message": "No goal given, sir."}
     return await _run_ui_task(goal, app=body.get("app") or None,
                               max_steps=int(body.get("max_steps") or 8))
+
+
+# ── UC6: skills (accelerators) — terminal + Cursor ──────────────────────────
+async def _run_terminal_command(cmd: str, ws=None, cwd: Optional[str] = None) -> dict:
+    """Run a shell command by voice, safety-tiered: read-only → auto (Tier 0);
+    everything else → confirm card (Tier 1), with a loud warning on destructive
+    commands. Honors the kill switch."""
+    import terminal_skill
+    cmd = (cmd or "").strip()
+    if not cmd:
+        return {"ok": False, "message": "No command, sir."}
+    tier = terminal_skill.classify_command(cmd)
+    if tier == 1:
+        if kill_switch.is_engaged():
+            return {"ok": False, "message": "Halted, sir."}
+        allowed = await confirmations.request(
+            summary=f"Run in terminal: {cmd[:140]}", detail="terminal command",
+            tier=1, warning=terminal_skill.danger_warning(cmd))
+        if not allowed:
+            if ws:
+                await _speak(ws, "Cancelled, sir.")
+            return {"ok": False, "denied": True, "tier": tier, "message": "Cancelled, sir."}
+    if kill_switch.is_engaged():
+        return {"ok": False, "message": "Halted, sir."}
+    result = await terminal_skill.run_command(cmd, cwd)
+    msg = terminal_skill.summarize_result(cmd, result)
+    if ws:
+        await _speak(ws, msg)
+    return {**result, "tier": tier, "message": msg}
+
+
+async def _cursor_goto(path: str, line: int = 1, ws=None) -> dict:
+    """Open a file at a line in Cursor via the cursor:// deep link (Tier 0 open)."""
+    import terminal_skill
+    url = terminal_skill.cursor_goto_url(path, line)
+    try:
+        await asyncio.create_subprocess_exec(
+            "open", url, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    except Exception as e:
+        return {"ok": False, "message": f"Couldn't open Cursor, sir: {str(e)[:80]}"}
+    if ws:
+        await _speak(ws, f"Opening {Path(path).name} at line {line} in Cursor, sir.")
+    return {"ok": True, "url": url}
+
+
+async def _cursor_symbol(symbol: str, ws=None) -> dict:
+    """Search a symbol in Cursor through the universal layer: activate Cursor →
+    Go-to-Symbol-in-Workspace (⌘T) → type the symbol. The keystroke/chord are
+    Tier-1 gated by the executor."""
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return {"ok": False, "message": "Which symbol, sir?"}
+    await executor.open_app("Cursor")
+    await asyncio.sleep(0.6)
+    kc = await executor.key_combo("cmd+t", app="Cursor")
+    if not kc.ok:
+        return {"ok": False, "message": kc.message}
+    await asyncio.sleep(0.3)
+    r = await executor.send_keystroke("Cursor", symbol)
+    if ws:
+        await _speak(ws, r.message if r.ok else "I couldn't search that, sir.")
+    return {"ok": r.ok, "message": r.message}
+
+
+@app.get("/api/skills")
+async def api_skills():
+    """The skill registry — the free/paid boundary (no enforcement)."""
+    import skills
+    return {
+        "skills": [
+            {"name": s.name, "description": s.description, "tier": s.tier.value,
+             "category": s.category}
+            for s in skills.SKILLS.values()
+        ],
+        "free": len(skills.free_skills()),
+        "paid": len(skills.paid_skills()),
+    }
+
+
+@app.post("/api/skill/run")
+async def api_skill_run(request: Request):
+    """Run a terminal command (Tier 0 auto / Tier 1 confirm). Body: {cmd, cwd?}."""
+    body = (await request.json() if await request.body() else {}) or {}
+    return await _run_terminal_command((body.get("cmd") or ""), cwd=body.get("cwd") or None)
+
+
+@app.post("/api/skill/cursor/goto")
+async def api_cursor_goto(request: Request):
+    """Open a file at a line in Cursor. Body: {path, line?}."""
+    body = (await request.json() if await request.body() else {}) or {}
+    return await _cursor_goto((body.get("path") or ""), int(body.get("line") or 1))
+
+
+@app.post("/api/skill/cursor/symbol")
+async def api_cursor_symbol(request: Request):
+    """Search a symbol in Cursor via the universal layer. Body: {symbol}."""
+    body = (await request.json() if await request.body() else {}) or {}
+    return await _cursor_symbol(body.get("symbol") or "")
 
 
 async def _handle_ui_task(goal: str, ws) -> None:
