@@ -42,6 +42,8 @@ hiddenimports = [
     "safety", "voice_text", "task_manager", "project_scanner", "design_partner",
     "accessibility_executor", "composite_executor", "apple_calendar",
     "contacts_access", "Quartz", "AppKit", "EventKit", "Contacts",
+    # UC1: AX tree + AXIsProcessTrusted (ApplicationServices, which pulls CoreText).
+    "ApplicationServices", "CoreText",
     "observability", "sentry_sdk", "anthropic", "httpx", "uvicorn", "uvicorn.lifespan.on",
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",
@@ -62,11 +64,25 @@ _cn_datas, _cn_binaries, _cn_hidden = collect_all("Contacts")
 datas += _cn_datas
 hiddenimports += _cn_hidden
 
+# Quartz (CGEvent synthetic input) + ApplicationServices (AXUIElement tree,
+# AXIsProcessTrusted) — UC1 universal control. Same FULL collection as EventKit:
+# the dynamic Objective-C bindings + package data must ship or the AX/CGEvent
+# symbols resolve as "missing module" in the signed build and click/observe break.
+_ax_binaries = []
+for _axpkg in ("Quartz", "ApplicationServices", "CoreText"):
+    try:
+        _axd, _axb, _axh = collect_all(_axpkg)
+        datas += _axd
+        _ax_binaries += _axb
+        hiddenimports += _axh
+    except Exception as _e:
+        print(f"[valet.spec] collect_all({_axpkg!r}) skipped: {_e}")
+
 # Google API client libs need FULL collection too: googleapiclient ships static
 # discovery documents (data files) and several submodules are imported lazily,
 # so a bare hidden import leaves the frozen OAuth flow / Gmail+Calendar calls
 # broken. collect_all gathers data + binaries + submodules for each.
-_extra_binaries = list(_ek_binaries) + list(_cn_binaries)
+_extra_binaries = list(_ek_binaries) + list(_cn_binaries) + list(_ax_binaries)
 for _gpkg in ("googleapiclient", "google_auth_oauthlib", "google.auth",
               "google.oauth2", "google_auth_httplib2", "oauthlib", "requests_oauthlib"):
     try:
