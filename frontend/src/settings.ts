@@ -418,11 +418,33 @@ const PERM_TARGET: Record<string, string> = {
   automation: "automation",
 };
 
+/**
+ * Real microphone-grant state, read in the webview (where the mic lives). The
+ * backend returns null for mic ("prompts on first use") since it can't cleanly
+ * detect it; the Permissions API can, so the dot goes green once allowed.
+ * Returns null if unsupported (keeps the backend value).
+ */
+async function micGranted(): Promise<boolean | null> {
+  try {
+    const s = await navigator.permissions.query({ name: "microphone" as PermissionName });
+    if (s.state === "granted") return true;
+    if (s.state === "denied") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function loadSettingsPermissions() {
   const list = document.getElementById("settings-perm-list");
   if (!list) return;
   try {
     const status = await apiGet<Record<string, SettingsPerm>>("/api/permissions/status");
+    // Refine microphone client-side — the backend can't detect the grant.
+    if (status.microphone) {
+      const mic = await micGranted();
+      if (mic !== null) status.microphone.granted = mic;
+    }
     const keys = ["microphone", "automation", "full_disk_access"].filter((k) => status[k]);
     list.innerHTML = keys
       .map((k) => {
