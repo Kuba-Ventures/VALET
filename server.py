@@ -462,6 +462,7 @@ INSTEAD SAY:
 ACTION SYSTEM:
 When you decide the user needs something DONE (not just discussed), include an action tag in your response:
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
+- [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
 - [ACTION:RESEARCH] brief — when the user asks an informational question. You search the web natively (web_search + web_fetch on Opus) and the answer renders as result cards in the Process Panel plus a short spoken summary. NEVER produces a file, folder, project, or report document. Do NOT slugify the user's words into a folder name. Pass the question through as the brief.
@@ -709,7 +710,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|UI_TASK)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -5792,6 +5793,13 @@ async def voice_handler(ws: WebSocket):
                                         lambda t=wx_t, w=wx_w: _do_weather_lookup(t, ws, w),
                                         ws, history=history, voice_state=voice_state,
                                     ))
+                                elif embedded_action["action"] == "ui_task":
+                                    # UC4 — multi-step UI task: observe→decide→act loop,
+                                    # supervised (per-step confirm + STOP), on a bg task.
+                                    goal = (embedded_action.get("target") or "").strip()
+                                    if goal:
+                                        response_text = "On it, sir — I'll work through it."
+                                        asyncio.create_task(_handle_ui_task(goal, ws))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "save_contact":
@@ -6628,6 +6636,46 @@ async def api_ui_act(request: Request):
         body.get("text") or "",
         body.get("app") or None,
     )
+
+
+async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
+                       task_id: Optional[str] = None) -> dict:
+    """UC4 — run the supervised observe→decide→act loop for `goal`, streaming each
+    beat to the process panel. Each mutating step is gated (confirm card) and the
+    kill switch is live throughout."""
+    import agent_loop
+
+    async def _emit(kind, title, detail="", status="active"):
+        if task_id:
+            await emit_step(task_id, title, detail=detail, status=status)
+
+    return await agent_loop.run_loop(
+        executor, goal, anthropic_client, app=app, max_steps=max_steps,
+        kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit)
+
+
+@app.post("/api/ui/task")
+async def api_ui_task(request: Request):
+    """UC4 — run a multi-step UI task. Body: {goal, app?, max_steps?}."""
+    body = (await request.json() if await request.body() else {}) or {}
+    goal = (body.get("goal") or "").strip()
+    if not goal:
+        return {"status": "failed", "message": "No goal given, sir."}
+    return await _run_ui_task(goal, app=body.get("app") or None,
+                              max_steps=int(body.get("max_steps") or 8))
+
+
+async def _handle_ui_task(goal: str, ws) -> None:
+    """Voice path for UC4 — runs the loop on a background task (keeps the WS loop
+    free for per-step confirm replies + STOP), then speaks the outcome."""
+    try:
+        async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
+            result = await _run_ui_task(goal, task_id=task_id)
+    except Exception as e:
+        log.error(f"ui_task error: {e}")
+        await _speak(ws, "I ran into trouble with that, sir.")
+        return
+    await _speak(ws, result.get("message") or "Done, sir.")
 
 
 @app.post("/api/ax/click")
