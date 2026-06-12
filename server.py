@@ -3846,6 +3846,17 @@ def _looks_like_app(name: str) -> bool:
     open_project resolution as before.
     """
     n = name.lower().strip()
+    # Strip trailing locational / filler phrases so an app name buried in natural
+    # speech still matches: "notes on my computer" → "notes", "calendar app" →
+    # "calendar". Without this, the extra words break the exact-match against
+    # _OPEN_APP_NAMES and "open Notes on my computer" wrongly hits the project
+    # resolver. These suffixes never appear in real project names.
+    n = _action_re.sub(
+        r"\s+(?:on|in)\s+(?:my|this|the)\s+"
+        r"(?:computer|mac|macbook|laptop|desktop|machine)\s*$",
+        "", n,
+    )
+    n = _action_re.sub(r"\s+app\s*$", "", n).strip()
     if not n:
         return False
     if n in _OPEN_APP_NAMES:
