@@ -3615,6 +3615,25 @@ _OPEN_PROJECT_PATTERNS = [
     ),
 ]
 
+# "open/launch my calendar|email|mail|notes|…" must LAUNCH the app, not route to
+# the read-the-data lookups (check_calendar/check_mail). Maps the spoken name to
+# the macOS app; checked BEFORE those lookups in detect_action_fast. ("check my
+# calendar" / "what's on my calendar" don't start with a launch verb, so they
+# still reach the lookups.)
+_OPEN_APP_LAUNCH_RE = _action_re.compile(
+    r'^\s*(?:can you |could you |please )?'
+    r'(?:open|launch|pull up|bring up|fire up)\s+'
+    r'(?:the |my )?'
+    r'(calendar|mail|e-?mail|notes|reminders|messages)'
+    r'(?:\s+app)?'
+    r'\s*\??\.?\s*$',
+    _action_re.IGNORECASE,
+)
+_OPEN_APP_LAUNCH_MAP = {
+    "calendar": "Calendar", "mail": "Mail", "email": "Mail", "e-mail": "Mail",
+    "notes": "Notes", "reminders": "Reminders", "messages": "Messages",
+}
+
 # Register-project intent — for one-off projects outside any configured root.
 # All patterns capture an absolute or tilde-prefixed path; alias is optional
 # (defaults to the dir's basename in register_project).
@@ -4022,6 +4041,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                              "can you see my screen", "look at my screen", "what am i looking at",
                              "what's open", "whats open", "what apps are open"]):
         return {"action": "describe_screen"}
+
+    # "open/launch my calendar|email|notes" → LAUNCH the app (not the read
+    # lookup). Checked before the calendar/mail lookups below, which match on
+    # substrings like "my calendar" and would otherwise intercept "open ...".
+    _oa = _OPEN_APP_LAUNCH_RE.match(t)
+    if _oa:
+        return {"action": "open_app", "target": _OPEN_APP_LAUNCH_MAP[_oa.group(1).lower()]}
 
     # Calendar — explicit schedule requests
     if any(p in t for p in ["what's my schedule", "whats my schedule", "what's on my calendar",
@@ -5095,6 +5121,11 @@ async def voice_handler(ws: WebSocket):
                             response_text = format_tasks_for_voice(tasks)
                         elif action["action"] == "list_projects":
                             response_text = _format_projects_for_voice(list_projects())
+                        elif action["action"] == "open_app":
+                            target = action.get("target", "").strip()
+                            response_text = f"Opening {target}, sir." if target else "Opening that now, sir."
+                            if target:
+                                asyncio.create_task(_execute_open_app(target))
                         elif action["action"] == "open_project":
                             target = action.get("target", "").strip()
                             response_text = f"Opening {target}, sir." if target else "Which project, sir?"
