@@ -16,6 +16,10 @@
   <key>com.apple.security.device.audio-input</key>
   <true/>
 
+  <!-- Read + create events in Apple Calendar via EventKit (apple_calendar.py). -->
+  <key>com.apple.security.personal-information.calendars</key>
+  <true/>
+
   <!-- Drive other apps via AppleScript (the AppleScript control backend) -->
   <key>com.apple.security.automation.apple-events</key>
   <true/>

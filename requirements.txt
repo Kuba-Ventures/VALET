@@ -16,3 +16,4 @@ opentelemetry-instrumentation-anthropic>=0.40.0
 sentry-sdk>=2.0
 pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-EventKit>=10.0; sys_platform == "darwin"
