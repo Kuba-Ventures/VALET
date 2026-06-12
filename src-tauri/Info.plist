@@ -15,5 +15,7 @@
   <string>VALET reads and creates events in your Calendar when you ask.</string>
   <key>NSCalendarsUsageDescription</key>
   <string>VALET reads and creates events in your Calendar when you ask.</string>
+  <key>NSContactsUsageDescription</key>
+  <string>VALET looks up your contacts to find the right email address when you ask it to write someone.</string>
 </dict>
 </plist>

@@ -12,14 +12,34 @@ so VALET gets smarter over time.
 
 import json
 import logging
+import os
 import sqlite3
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 log = logging.getLogger("valet.memory")
 
-DB_PATH = Path(__file__).parent / "data" / "valet.db"
+
+def _resolve_db_path() -> Path:
+    """Where valet.db lives. CRITICAL for the packaged app: __file__ points into
+    the read-only, per-launch PyInstaller temp dir, so the DB must live in a
+    writable location or nothing (bio, tasks, contacts) survives a relaunch.
+    Application Support in a packaged build; the repo's data/ in dev. Mirrors
+    server.valet_data_dir() / google_auth without importing them (avoids a cycle)."""
+    here = Path(__file__).resolve().parent
+    shipped = (
+        bool(os.environ.get("VALET_SHIPPED"))
+        or getattr(sys, "frozen", False)
+        or not (here / ".git").exists()
+    )
+    base = (Path.home() / "Library" / "Application Support" / "VALET") if shipped else (here / "data")
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "valet.db"
+
+
+DB_PATH = _resolve_db_path()
 
 # Bump when adding migrations below. PRAGMA user_version is checked on init.
 SCHEMA_VERSION = 3
@@ -126,6 +146,14 @@ def init_db():
             content TEXT NOT NULL,
             topic TEXT DEFAULT '',       -- project name, person, or topic
             tags TEXT DEFAULT '[]',      -- JSON array
+            created_at REAL NOT NULL,
+            updated_at REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,  -- "Nick", "Nick Underwood"
+            email TEXT NOT NULL,
             created_at REAL NOT NULL,
             updated_at REAL
         );
@@ -452,6 +480,68 @@ def add_bio_note(content: str) -> int:
     )
     db.commit()
     return cur.lastrowid
+
+
+# ── Contacts: name → email, the user's profile address book ──────────────────
+# VALET resolves "email Nick" against this first, then Apple Contacts. Names are
+# unique case-insensitively; re-saving a name updates its address.
+
+def add_contact(name: str, email: str) -> bool:
+    """Save (or update) a contact. Returns True on success."""
+    name = (name or "").strip()
+    email = (email or "").strip()
+    if not name or "@" not in email:
+        return False
+    now = time.time()
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO contacts (name, email, created_at, updated_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET email=excluded.email, updated_at=excluded.updated_at",
+        (name, email, now, now),
+    )
+    conn.commit()
+    log.info(f"contact saved: {name} -> {email}")
+    return True
+
+
+def find_contact(name: str) -> dict | None:
+    """Resolve a spoken name to a contact. Exact (case-insensitive) match first,
+    then a first-name / prefix match — but only when it's UNAMBIGUOUS (exactly
+    one candidate). Returns {'name','email'} or None (unknown OR ambiguous, so
+    the caller asks instead of guessing)."""
+    q = (name or "").strip()
+    if not q:
+        return None
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT name, email FROM contacts WHERE name = ? COLLATE NOCASE", (q,)
+    ).fetchone()
+    if row:
+        return {"name": row["name"], "email": row["email"]}
+    ql = q.lower()
+    cands = []
+    for r in conn.execute("SELECT name, email FROM contacts").fetchall():
+        nl = r["name"].lower()
+        if nl == ql or nl.split()[0] == ql or nl.startswith(ql + " "):
+            cands.append({"name": r["name"], "email": r["email"]})
+    return cands[0] if len(cands) == 1 else None
+
+
+def list_contacts() -> list[dict]:
+    """All saved contacts, name-sorted."""
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT name, email FROM contacts ORDER BY name COLLATE NOCASE"
+    ).fetchall()
+    return [{"name": r["name"], "email": r["email"]} for r in rows]
+
+
+def delete_contact(name: str) -> bool:
+    """Remove a contact by exact (case-insensitive) name. True if one was removed."""
+    conn = _get_db()
+    cur = conn.execute("DELETE FROM contacts WHERE name = ? COLLATE NOCASE", ((name or "").strip(),))
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def get_recent_memories(limit: int = 10) -> list[dict]:

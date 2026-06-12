@@ -155,6 +155,18 @@ function buildPanelHTML(): string {
           </div>
         </section>
 
+        <!-- Contacts (Computer) -->
+        <section class="settings-section" id="section-contacts">
+          <h3>Contacts</h3>
+          <div class="account-hint">Save names → emails so "email Nick" knows the address. VALET checks these first, then your Mac's Contacts.</div>
+          <div class="contacts-list" id="contacts-list"><div class="account-hint">Loading…</div></div>
+          <div class="settings-input-row" style="margin-top:8px; gap:6px">
+            <input class="settings-input" id="contact-name" type="text" placeholder="Name (e.g. Nick)" style="flex:1" />
+            <input class="settings-input" id="contact-email" type="email" placeholder="email@example.com" style="flex:2" />
+            <button class="settings-btn" id="btn-contact-add">Add</button>
+          </div>
+        </section>
+
         <!-- Connection Status (Computer) -->
         <section class="settings-section" id="section-status">
           <h3>Connection Status</h3>
@@ -294,6 +306,7 @@ async function loadStatus() {
     setDotStatus("status-notes", status.notes_accessible ? "green" : "red");
     setDotStatus("status-server", "green");
     applyGoogleStatus(status.google_connected, status.google_email, status.google_credentials_present);
+    void loadContacts();
 
     const serverDetail = document.getElementById("status-server-detail");
     if (serverDetail) serverDetail.textContent = `port ${status.server_port} | up ${formatUptime(status.uptime_seconds)}`;
@@ -348,6 +361,42 @@ function formatRelativeTime(iso: string): string {
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
   return `${Math.floor(secs / 86400)}d ago`;
+}
+
+interface Contact { name: string; email: string; }
+
+async function loadContacts() {
+  try {
+    const { contacts } = await apiGet<{ contacts: Contact[] }>("/api/contacts");
+    renderContacts(contacts || []);
+  } catch {
+    renderContacts([]);
+  }
+}
+
+function renderContacts(contacts: Contact[]) {
+  const el = document.getElementById("contacts-list");
+  if (!el) return;
+  if (!contacts.length) {
+    el.innerHTML = `<div class="account-hint">No contacts saved yet.</div>`;
+    return;
+  }
+  el.innerHTML = contacts
+    .map(
+      (c) => `
+      <div class="account-row" style="gap:8px">
+        <span style="font-weight:600">${escapeHtml(c.name)}</span>
+        <span class="account-hint" style="margin:0">${escapeHtml(c.email)}</span>
+        <button class="settings-btn" data-contact-remove="${escapeHtml(c.name)}" style="margin-left:auto">Remove</button>
+      </div>`
+    )
+    .join("");
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || c)
+  );
 }
 
 function applyGoogleStatus(connected: boolean, email: string, credsPresent: boolean) {
@@ -597,6 +646,32 @@ function wireEvents() {
   document.getElementById("btn-google-disconnect")?.addEventListener("click", async () => {
     await apiPost("/api/google/disconnect", {});
     await loadStatus();
+  });
+
+  // Contacts — add
+  document.getElementById("btn-contact-add")?.addEventListener("click", async () => {
+    const nameEl = document.getElementById("contact-name") as HTMLInputElement | null;
+    const emailEl = document.getElementById("contact-email") as HTMLInputElement | null;
+    const name = (nameEl?.value || "").trim();
+    const email = (emailEl?.value || "").trim();
+    if (!name || !email.includes("@")) return;
+    await apiPost("/api/contacts", { name, email });
+    if (nameEl) nameEl.value = "";
+    if (emailEl) emailEl.value = "";
+    await loadContacts();
+  });
+
+  // Contacts — remove (delegated, survives re-render)
+  document.getElementById("contacts-list")?.addEventListener("click", async (e) => {
+    const btn = (e.target as HTMLElement).closest("button") as HTMLButtonElement | null;
+    const name = btn?.dataset.contactRemove;
+    if (!name) return;
+    await fetch("/api/contacts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    await loadContacts();
   });
 
   // Permissions (Console) — delegated so it survives the dynamic re-render.

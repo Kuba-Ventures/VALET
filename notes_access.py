@@ -7,8 +7,17 @@ CANNOT edit or delete existing notes (safety).
 
 import asyncio
 import logging
+import re
 
 log = logging.getLogger("valet.notes")
+
+
+def _norm(s: str) -> str:
+    """Collapse a title to comparable form: lowercase, alphanumerics only. This
+    bridges speech-to-text seams the literal AppleScript `contains` misses —
+    e.g. "new employee on boarding" and "New Employee Onboarding" both become
+    "newemployeeonboarding"."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
 async def _run_notes_script(script: str, timeout: float = 10) -> str:
@@ -44,7 +53,11 @@ tell application "Notes"
         set n to item i of allNotes
         set nName to name of n
         set nDate to creation date of n as string
-        set nFolder to name of container of n
+        try
+            set nFolder to name of container of n
+        on error
+            set nFolder to "Notes"
+        end try
         set output to output & nName & "|||" & nDate & "|||" & nFolder & linefeed
     end repeat
     return output
@@ -65,21 +78,36 @@ end tell
     return notes
 
 
-async def read_note(title_match: str) -> dict | None:
-    """Read a note by title (partial match). Returns title + body."""
-    escaped = title_match.replace('"', '\\"')
+async def _recent_titles(count: int = 200) -> list[str]:
+    """Just the note names — deliberately avoids `container of n`, which throws
+    (-1728) on some notes and aborts the folder-aware get_recent_notes script.
+    Used by read_note's normalized fallback, which only needs titles."""
     script = f'''
 tell application "Notes"
+    set output to ""
     set allNotes to every note
-    repeat with n in allNotes
-        if name of n contains "{escaped}" then
-            set nName to name of n
+    set lim to count of allNotes
+    if lim > {count} then set lim to {count}
+    repeat with i from 1 to lim
+        set output to output & (name of item i of allNotes) & linefeed
+    end repeat
+    return output
+end tell
+'''
+    raw = await _run_notes_script(script, timeout=15)
+    return [t.strip() for t in raw.split("\n") if t.strip()]
+
+
+async def _read_note_by_exact_title(title: str) -> dict | None:
+    """Read one note whose name is exactly `title`. Returns title + body."""
+    escaped = title.replace('"', '\\"')
+    script = f'''
+tell application "Notes"
+    repeat with n in every note
+        if name of n is "{escaped}" then
             set nBody to plaintext of n
-            -- Truncate very long notes
-            if length of nBody > 3000 then
-                set nBody to text 1 thru 3000 of nBody
-            end if
-            return nName & "|||" & nBody
+            if length of nBody > 3000 then set nBody to text 1 thru 3000 of nBody
+            return name of n & "|||" & nBody
         end if
     end repeat
     return ""
@@ -88,8 +116,74 @@ end tell
     raw = await _run_notes_script(script, timeout=10)
     if not raw or "|||" not in raw:
         return None
-    title, _, body = raw.partition("|||")
-    return {"title": title.strip(), "body": body.strip()}
+    title_, _, body = raw.partition("|||")
+    return {"title": title_.strip(), "body": body.strip()}
+
+
+async def _resolve_note_title(title_match: str) -> str | None:
+    """Best-matching note NAME for a query: a literal substring match first, then
+    a normalized match so speech-to-text seams (e.g. "on boarding" vs
+    "Onboarding") still resolve. Returns the note's exact name, or None.
+    Shared by read_note (reads its body) and open_note (shows it in Notes)."""
+    escaped = title_match.replace('"', '\\"')
+    script = f'''
+tell application "Notes"
+    repeat with n in every note
+        if name of n contains "{escaped}" then return name of n
+    end repeat
+    return ""
+end tell
+'''
+    raw = await _run_notes_script(script, timeout=10)
+    if raw.strip():
+        return raw.strip()
+
+    # Fallback: normalize both sides and match on the collapsed forms. Picks the
+    # closest title (a containment match with the smallest length gap) so a short
+    # query doesn't latch onto an unrelated longer note that merely contains it.
+    q = _norm(title_match)
+    if not q:
+        return None
+    best, best_gap = None, None
+    for t in await _recent_titles(200):
+        nt = _norm(t)
+        if nt and (q in nt or nt in q):
+            gap = abs(len(nt) - len(q))
+            if best_gap is None or gap < best_gap:
+                best, best_gap = t, gap
+    if best:
+        log.info(f"note title fuzzy-matched {title_match!r} -> {best!r}")
+    return best
+
+
+async def read_note(title_match: str) -> dict | None:
+    """Read a note's title + body, or None if nothing matches."""
+    title = await _resolve_note_title(title_match)
+    if not title:
+        return None
+    return await _read_note_by_exact_title(title)
+
+
+async def open_note(title_match: str) -> dict | None:
+    """Open Notes.app and SHOW the best-matching note (don't read it aloud).
+    Returns {"title": <exact name>} on success, or None if nothing matches."""
+    title = await _resolve_note_title(title_match)
+    if not title:
+        return None
+    escaped = title.replace('"', '\\"')
+    script = f'''
+tell application "Notes"
+    activate
+    set matches to (every note whose name is "{escaped}")
+    if (count of matches) > 0 then
+        show item 1 of matches
+        return name of item 1 of matches
+    end if
+    return ""
+end tell
+'''
+    raw = await _run_notes_script(script, timeout=10)
+    return {"title": title} if raw.strip() else None
 
 
 async def search_notes_apple(query: str, count: int = 5) -> list[dict]:

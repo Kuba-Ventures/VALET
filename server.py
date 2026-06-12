@@ -131,8 +131,10 @@ from memory import (
     create_note, search_notes, get_tasks_for_date, build_memory_context,
     format_tasks_for_voice, extract_memories, get_important_memories,
     get_bio_summary, set_bio_summary, get_bio_sources, add_bio_note,
+    add_contact, find_contact, list_contacts, delete_contact,
 )
-from notes_access import get_recent_notes, read_note, search_notes_apple, create_apple_note
+import contacts_access
+from notes_access import get_recent_notes, read_note, open_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 from page_preview import fetch_page_preview
@@ -563,7 +565,11 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
 - [ACTION:DRAFT_EMAIL] to ||| subject ||| body ||| cc? ||| bcc? — create a Gmail DRAFT. VALET NEVER sends mail — the user clicks Send themselves after reviewing. Use this for any "draft an email to X", "write an email saying Y", "compose a message" request. Write a complete, well-formed email body in the user's voice.
   "draft an email to sarah@example.com asking about the proposal" → [ACTION:DRAFT_EMAIL] sarah@example.com ||| Following up on the proposal ||| Hi Sarah,\n\nJust circling back on the proposal we discussed last week — let me know if you've had a chance to review it.\n\nThanks,\n{user_name}
   "write a quick note to my team about the all-hands tomorrow" → [ACTION:DRAFT_EMAIL] team@company.com ||| All-hands tomorrow ||| Team — quick reminder about the all-hands tomorrow at 2pm. See you then.\n\n{user_name}
-  If the user doesn't specify a recipient, ASK them — don't guess.
+  RECIPIENTS — read this carefully:
+  • You may put a bare NAME in the `to` field ("email Nick" → [ACTION:DRAFT_EMAIL] Nick ||| ...). The backend resolves the name against the user's saved CONTACTS and Apple Contacts and, if it can't, asks the user — so passing the name through is safe.
+  • NEVER invent, guess, or auto-complete an email ADDRESS. Only ever emit an @-address that the user stated explicitly OR that appears verbatim in the CONTACTS list below. If you have neither a known address nor a name to resolve, ASK for the address — do not fabricate one.
+- [ACTION:SAVE_CONTACT] name ||| email — save a contact to the user's profile so future "email <name>" requests resolve. Use when the user gives someone's address ("Nick's email is nick@…", "save Sarah as sarah@co.com", or right after you asked for an address). After saving, if there was a pending email request, follow with the DRAFT_EMAIL.
+  "Nick's email is nick@qsbsrollover.com" → [ACTION:SAVE_CONTACT] Nick ||| nick@qsbsrollover.com
 - [ACTION:APPLESCRIPT] raw applescript — execute ANY AppleScript. This gives you full control over macOS apps and the system. Use for tasks like:
   • Listing/manipulating files (Finder)
   • Controlling Music, Safari, Mail, Reminders, Calendar via their scripting dictionaries
@@ -626,6 +632,9 @@ SCHEDULE:
 
 EMAIL:
 {mail_context}
+
+CONTACTS (the user's saved address book — resolve "email <name>" to these; never invent an address):
+{contacts_context}
 
 ACTIVE TASKS:
 {active_tasks}
@@ -700,7 +709,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1908,6 +1917,49 @@ def _format_projects_for_voice(projects: list[dict]) -> str:
     return f"{n} projects, sir. The latest are: {sample}, and {n - 5} more."
 
 
+def _format_contacts_for_prompt(limit: int = 50) -> str:
+    """The saved address book as 'Name — email' lines for the system prompt.
+    Capped so a large book doesn't bloat context."""
+    try:
+        contacts = list_contacts()
+    except Exception:
+        contacts = []
+    if not contacts:
+        return "(none saved yet)"
+    lines = [f"- {c['name']} — {c['email']}" for c in contacts[:limit]]
+    if len(contacts) > limit:
+        lines.append(f"…and {len(contacts) - limit} more.")
+    return "\n".join(lines)
+
+
+async def _resolve_contact_email(name: str) -> dict | None:
+    """Resolve a spoken name to {name, email, source}. VALET's profile store
+    first, then Apple Contacts (if access was granted). None if unknown or
+    ambiguous — the caller asks instead of guessing."""
+    hit = find_contact(name)
+    if hit:
+        return {"name": hit["name"], "email": hit["email"], "source": "profile"}
+    try:
+        if contacts_access.has_access():
+            ac = await contacts_access.find_one(name)
+            if ac:
+                return {"name": ac["name"], "email": ac["email"], "source": "apple"}
+    except Exception as e:
+        log.warning(f"apple contacts resolve failed: {e}")
+    return None
+
+
+async def _execute_save_contact(target: str, ws):
+    """Save a contact from a SAVE_CONTACT tag. target: "name ||| email"."""
+    name, _, email = target.partition("|||")
+    name, email = name.strip(), email.strip()
+    if not name or "@" not in email:
+        await _speak(ws, "I need a name and an email to save a contact, sir.")
+        return
+    ok = add_contact(name, email)
+    await _speak(ws, f"Saved {name}, sir." if ok else f"I couldn't save {name}, sir.")
+
+
 async def _execute_draft_email(target: str, ws):
     """Create a Gmail draft from a DRAFT_EMAIL action tag.
 
@@ -1930,6 +1982,45 @@ async def _execute_draft_email(target: str, ws):
     to, subject, body = parts[0], parts[1], parts[2]
     cc = parts[3] if len(parts) > 3 else ""
     bcc = parts[4] if len(parts) > 4 else ""
+
+    # Drafting writes to Gmail, which is an opt-in integration that isn't wired up
+    # yet (Google/Gmail is deferred). If it isn't connected, fail honestly instead
+    # of claiming a "re-authentication" problem with an account that was never set
+    # up. Apple Mail is read-only by design, so there's no local draft path either.
+    try:
+        import google_auth
+        gmail_ready = google_auth.is_connected()
+    except Exception:
+        gmail_ready = False
+    if not gmail_ready:
+        msg = ("I can't draft emails yet, sir — connect Gmail under "
+               "Settings, Console Settings, Accounts.")
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
+        return
+
+    # Resolve a NAME recipient ("email Nick") to a real address — VALET's profile
+    # store first, then Apple Contacts. NEVER fabricate: if it's a name we can't
+    # resolve, ask (the user can save it) rather than guessing an address. An
+    # explicit address (already contains "@") is used as-is.
+    if to and "@" not in to:
+        hit = await _resolve_contact_email(to)
+        if hit:
+            log.info(f"resolved recipient {to!r} -> {hit['email']} ({hit['source']})")
+            to = hit["email"]
+        else:
+            await _speak(
+                ws,
+                f"I don't have an email for {to}, sir. What's the address? "
+                f"You can say, save {to} as their address.",
+            )
+            return
+
     async with process_bus.task_context(f"Drafting email to {to}", detail=subject[:80]) as task_id:
         try:
             await emit_step(task_id, "Creating Gmail draft…", status="active")
@@ -1960,12 +2051,12 @@ async def _execute_check_date(target: str, ws):
     date_str = target.strip()
     if not date_str:
         msg = "Which date, sir?"
-    elif apple_calendar.auth_status() != 3:
+    elif apple_calendar.auth_status() != 3 and not google_auth.is_connected():
         msg = ("I don't have Calendar access yet, sir — grant it under Settings, "
-               "Permissions, Calendar.")
+               "Permissions, Calendar, or connect Google in Settings.")
     else:
         try:
-            events = apple_calendar.read_events(date_str)
+            events = await _read_calendar_merged(date_str)
             if not events:
                 msg = f"You have nothing on the calendar for {date_str}, sir."
             else:
@@ -2048,6 +2139,43 @@ async def _execute_open_app(target: str):
         except Exception as e:
             log.error(f"open_app failed: {e}")
             await emit_error(task_id, "Open app failed", detail=str(e)[:200])
+
+
+async def _execute_open_url(url: str, browser: str = "chrome", label: str = ""):
+    """Open a resolved web destination in the browser via `open -a` (no
+    keystrokes / Accessibility). Backs the open_url fast-path for websites."""
+    async with process_bus.task_context(f"Opening {label or url}"[:60]) as task_id:
+        try:
+            await emit_step(task_id, f"Opening {url}", status="active")
+            result = await open_browser(url, browser=browser)
+            if result.get("success", True):
+                await emit_step(task_id, "Opened", detail=url, status="done")
+            else:
+                await emit_error(task_id, "Couldn't open", detail=result.get("confirmation", url))
+        except Exception as e:
+            log.error(f"open_url failed: {e}")
+            await emit_error(task_id, "Open URL failed", detail=str(e)[:200])
+
+
+async def _execute_open_note(query: str, ws):
+    """Show a note in Notes.app (don't read it aloud). Runs inside a task_context
+    so the process panel shows "Opening … note" and clears when done."""
+    async with process_bus.task_context(f"Opening note: {query}"[:60]) as task_id:
+        try:
+            await emit_step(task_id, "Finding note…", status="active")
+            note = await open_note(query)
+            if note:
+                title = note.get("title", query)
+                await emit_app_launch(task_id, "Notes", status="done", detail=title)
+                msg = f"Opened '{title}' in Notes, sir."
+            else:
+                await emit_error(task_id, "No matching note", detail=query[:120])
+                msg = f"I couldn't find a note matching '{query}', sir."
+        except Exception as e:
+            log.error(f"open_note failed: {e}")
+            await emit_error(task_id, "Open note failed", detail=str(e)[:200])
+            msg = "Something went wrong opening that note, sir."
+    await _speak(ws, msg)
 
 
 async def _execute_type(target: str, press_enter: bool):
@@ -2812,6 +2940,7 @@ async def generate_response(
         screen_context=screen_ctx or "Not checked yet.",
         calendar_context=calendar_ctx,
         mail_context=mail_ctx,
+        contacts_context=_format_contacts_for_prompt(),
         active_tasks=task_mgr.get_active_tasks_summary(),
         dispatch_context=dispatch_registry.format_for_prompt(),
         known_projects=format_projects_for_prompt(projects),
@@ -2937,6 +3066,29 @@ async def _confirm_action(ws: "WebSocket", ea: dict) -> bool:
     if not allowed:
         await _speak(ws, "Cancelled, sir.")
     return allowed
+
+
+async def _confirm_and_dispatch(ws: "WebSocket", ea: dict) -> None:
+    """Confirm a Tier 1 action, then run it — all on a background task.
+
+    CRITICAL: this MUST NOT be awaited inline inside the WebSocket receive loop.
+    `_confirm_action` blocks on the user's reply, which arrives as a
+    `confirm_response` frame the receive loop has to read. Awaiting it inline
+    parks the loop before its next `receive_text()`, so the reply is never
+    consumed and the confirmation can only resolve at its 120s timeout (the
+    "thinking forever" hang). Spawned as a task, the loop stays free to read the
+    reply and the future resolves immediately on Allow/Deny.
+    """
+    if not await _confirm_action(ws, ea):
+        return  # denied — _confirm_action already spoke
+    action = ea["action"]
+    target = ea.get("target", "")
+    if action == "create_event":
+        await _execute_create_event(target, ws)
+    elif action == "cancel_event":
+        await _execute_cancel_event(target, ws)
+    elif action == "send":
+        await _execute_type(target, press_enter=True)
 
 
 # ── Account sync: wire SuccessTracker into the live loop + push a snapshot up ──
@@ -3693,6 +3845,86 @@ _OPEN_APP_LAUNCH_MAP = {
     "finder": "Finder",
 }
 
+# Web destinations openable by name — "open my gmail", "open google analytics in
+# chrome", "go to github". Routed to open_url (open -a <browser> <url>), which
+# needs NO keystrokes / Accessibility (the old path tried to drive Chrome via
+# System Events and failed with -1728/1002). Native-app launches above are
+# matched first, so "open my calendar" still launches Calendar.app. Entries are
+# multi-word or unambiguous brands so a bare project name ("open analytics") is
+# NOT hijacked — single ambiguous words are deliberately left out.
+_WEB_DESTINATIONS = {
+    "gmail": "https://mail.google.com",
+    "google mail": "https://mail.google.com",
+    "google calendar": "https://calendar.google.com",
+    "google analytics": "https://analytics.google.com",
+    "google drive": "https://drive.google.com",
+    "google docs": "https://docs.google.com",
+    "google sheets": "https://sheets.google.com",
+    "google slides": "https://slides.google.com",
+    "google meet": "https://meet.google.com",
+    "google maps": "https://maps.google.com",
+    "google search": "https://www.google.com",
+    "google": "https://www.google.com",
+    "youtube": "https://www.youtube.com",
+    "gemini": "https://gemini.google.com",
+    "github": "https://github.com",
+    "stripe": "https://dashboard.stripe.com",
+    "vercel": "https://vercel.com/dashboard",
+    "supabase": "https://supabase.com/dashboard",
+    "notion": "https://www.notion.so",
+    "linkedin": "https://www.linkedin.com",
+    "reddit": "https://www.reddit.com",
+    "amazon": "https://www.amazon.com",
+    "chatgpt": "https://chatgpt.com",
+    "claude": "https://claude.ai",
+}
+
+# Spoken browser name → open_browser() arg (it knows chrome/firefox; safari maps
+# to chrome's loader path which `open -a` resolves by display name anyway).
+_OPEN_BROWSER_MAP = {
+    "chrome": "chrome", "google chrome": "chrome", "firefox": "firefox",
+    "safari": "safari", "the browser": "chrome", "a browser": "chrome",
+    "my browser": "chrome", "browser": "chrome",
+}
+
+_OPEN_WEB_RE = _action_re.compile(
+    r'^\s*'
+    r'(?:(?:hey|ok|okay|yo)\s+)?(?:vee|v|valet)?[\s,]*'
+    r"(?:(?:can|could|would|will) you |please |i(?:'d like| want| wanna)(?: to)? |let'?s |go ahead and )*"
+    r'(?:open(?:\s+up)?|launch|pull up|bring up|fire up|go to|navigate to|take me to)\s+'
+    r'(?:the |my )?'
+    r'(?P<target>.+?)'
+    r'(?:\s+(?:in|on|with|using)\s+(?P<browser>google chrome|chrome|firefox|safari|the browser|a browser|my browser|browser))?'
+    r'\s*\??\.?\s*$',
+    _action_re.IGNORECASE,
+)
+
+
+def _resolve_web_url(name: str) -> str | None:
+    """Spoken destination → URL. Known service, bare domain (github.com), or None
+    (caller decides whether to fall back to a search)."""
+    n = name.strip().lower().rstrip(".?! ")
+    if n in _WEB_DESTINATIONS:
+        return _WEB_DESTINATIONS[n]
+    if _action_re.match(r'^[a-z0-9.\-]+\.[a-z]{2,}(?:/\S*)?$', n):
+        return n if n.startswith("http") else f"https://{n}"
+    return None
+
+
+# "go to / open / pull up my <title> note" → SHOW that note in Notes.app (vs.
+# read_note, which reads it aloud). Requires a title before "note", so "open my
+# notes" (plural) still hits the Notes.app launcher above.
+_OPEN_NOTE_RE = _action_re.compile(
+    r'^\s*'
+    r'(?:(?:hey|ok|okay|yo)\s+)?(?:vee|v|valet)?[\s,]*'
+    r"(?:(?:can|could|would|will) you |please |i(?:'d like| want| wanna)(?: to)? |let'?s |go ahead and )*"
+    r'(?:open(?:\s+up)?|go to|pull up|bring up|take me to|show me|jump to|find)\s+'
+    r'(?:the |my )?'
+    r'(?P<title>.+?)'
+    r'\s+note\s*\??\.?\s*$',
+    _action_re.IGNORECASE,
+)
+
 # Register-project intent — for one-off projects outside any configured root.
 # All patterns capture an absolute or tilde-prefixed path; alias is optional
 # (defaults to the dir's basename in register_project).
@@ -4108,6 +4340,29 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if _oa:
         return {"action": "open_app", "target": _OPEN_APP_LAUNCH_MAP[_oa.group(1).lower()]}
 
+    # "open / go to my <title> note" → show it in Notes.app (before the web route
+    # so a "… note" request is never mistaken for a website).
+    _on = _OPEN_NOTE_RE.match(t)
+    if _on:
+        _nt = (_on.group("title") or "").strip()
+        if _nt and _nt.lower() not in ("a", "the", "this", "that", "another", "new", "my", "your", "me", "it"):
+            return {"action": "open_note", "target": _nt}
+
+    # Web destinations: "open my gmail", "open google analytics in chrome",
+    # "go to github". Only fires when a URL resolves OR a browser was named, so
+    # "open Spotify" / "open <project>" still fall through to app/project routing.
+    _ow = _OPEN_WEB_RE.match(t)
+    if _ow:
+        _wt = (_ow.group("target") or "").strip()
+        _wb = _OPEN_BROWSER_MAP.get((_ow.group("browser") or "").strip().lower(), "")
+        _url = _resolve_web_url(_wt)
+        if _url or _wb:
+            if not _url:  # browser named but destination unknown → search it
+                from urllib.parse import quote
+                _url = f"https://www.google.com/search?q={quote(_wt)}"
+            return {"action": "open_url", "target": _url,
+                    "browser": _wb or "chrome", "label": _wt}
+
     # Calendar — explicit schedule requests
     if any(p in t for p in ["what's my schedule", "whats my schedule", "what's on my calendar",
                              "whats on my calendar", "do i have any meetings", "any meetings",
@@ -4413,13 +4668,57 @@ def _format_apple_cal(events: list[dict], label: str) -> str:
     return f"You have {n} {'event' if n == 1 else 'events'} {label}, sir: " + "; ".join(parts) + extra + "."
 
 
-async def _do_calendar_lookup() -> str:
-    """Read today's events from Apple Calendar via EventKit (fast + local)."""
+def _merge_calendar_events(apple: list[dict], google: list[dict]) -> list[dict]:
+    """Merge Apple (EventKit) + Google event lists, de-duplicating the overlap.
+    A Google account commonly syncs into macOS Calendar, so the same event shows
+    in both — dedup on a normalized (title, time) key. All-day events key on the
+    date; timed events on the UTC minute (both sources expose start_iso in UTC)."""
+    import re
+
+    def key(e: dict) -> tuple:
+        title = re.sub(r"[^a-z0-9]", "", (e.get("title") or "").lower())
+        digits = re.sub(r"\D", "", e.get("start_iso") or "")
+        when = digits[:8] if e.get("all_day") else digits[:12]
+        return (title, when)
+
+    seen, merged = set(), []
+    for e in list(apple or []) + list(google or []):
+        k = key(e)
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(e)
+    merged.sort(key=lambda x: x.get("start_iso") or "")
+    return merged
+
+
+async def _read_calendar_merged(date_str: str | None = None) -> list[dict]:
+    """Events from Apple + Google, merged + deduped. Apple is the always-local
+    source (full access); Google layers on when connected. Either source failing
+    degrades to the other instead of erroring."""
     import apple_calendar
-    if apple_calendar.auth_status() != 3:  # need full access to read
-        return ("I don't have Calendar access yet, sir — grant it under Settings, "
-                "Permissions, Calendar, then ask again.")
-    events = apple_calendar.read_events()  # today
+    apple_events = []
+    if apple_calendar.auth_status() == 3:
+        try:
+            apple_events = apple_calendar.read_events(date_str)
+        except Exception as e:
+            log.warning(f"apple read_events failed: {e}")
+    google_events = []
+    try:
+        import google_calendar
+        google_events = await google_calendar.read_events(date_str)
+    except Exception as e:
+        log.warning(f"google read_events failed: {e}")
+    return _merge_calendar_events(apple_events, google_events)
+
+
+async def _do_calendar_lookup() -> str:
+    """Read today's events from Apple Calendar (EventKit) + Google, merged."""
+    import apple_calendar
+    if apple_calendar.auth_status() != 3 and not google_auth.is_connected():
+        return ("I don't have Calendar access yet, sir — grant Calendar under "
+                "Settings, Permissions, or connect Google in Settings, then ask again.")
+    events = await _read_calendar_merged()  # today
     if events:
         _ctx_cache["calendar"] = "; ".join(
             f"{e['title']}{(' at ' + e['time_str']) if e.get('time_str') else ''}" for e in events
@@ -5204,6 +5503,18 @@ async def voice_handler(ws: WebSocket):
                             response_text = f"Opening {target}, sir." if target else "Opening that now, sir."
                             if target:
                                 asyncio.create_task(_execute_open_app(target))
+                        elif action["action"] == "open_url":
+                            url = action.get("target", "").strip()
+                            label = (action.get("label") or "").strip() or "that"
+                            browser = action.get("browser", "chrome")
+                            response_text = f"Opening {label}, sir."
+                            if url:
+                                asyncio.create_task(_execute_open_url(url, browser, label))
+                        elif action["action"] == "open_note":
+                            note_q = action.get("target", "").strip()
+                            response_text = f"Opening your {note_q} note, sir." if note_q else "Which note, sir?"
+                            if note_q:
+                                asyncio.create_task(_execute_open_note(note_q, ws))
                         elif action["action"] == "open_project":
                             target = action.get("target", "").strip()
                             response_text = f"Opening {target}, sir." if target else "Which project, sir?"
@@ -5310,8 +5621,14 @@ async def voice_handler(ws: WebSocket):
                                 # Tier 1 actions outside the gated executor confirm here.
                                 if kill_switch.is_engaged():
                                     await _speak(ws, "Halted, sir.")
-                                elif embedded_action["action"] in _CONFIRM_ACTIONS and not await _confirm_action(ws, embedded_action):
-                                    pass  # denied — _confirm_action already spoke
+                                elif embedded_action["action"] in _CONFIRM_ACTIONS:
+                                    # Confirm + run on a background task. Awaiting the
+                                    # confirmation here would deadlock the receive loop
+                                    # against its own confirm_response reply (see
+                                    # _confirm_and_dispatch). create_event / cancel_event
+                                    # / send are dispatched there, NOT in the branches
+                                    # below.
+                                    asyncio.create_task(_confirm_and_dispatch(ws, embedded_action))
                                 elif embedded_action["action"] == "build":
                                     # Build in background — VALET stays conversational
                                     target = embedded_action["target"]
@@ -5405,8 +5722,9 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_run_gated_action(ws, executor.run_script(embedded_action["target"])))
                                 elif embedded_action["action"] == "type":
                                     asyncio.create_task(_execute_type(embedded_action["target"], press_enter=False))
-                                elif embedded_action["action"] == "send":
-                                    asyncio.create_task(_execute_type(embedded_action["target"], press_enter=True))
+                                # NOTE: "send", "create_event" and "cancel_event" are in
+                                # _CONFIRM_ACTIONS and dispatched via _confirm_and_dispatch
+                                # above — no branch for them here.
                                 elif embedded_action["action"] == "dispatch_to_agent":
                                     # LLM-emitted dispatch: target is "<agent> ||| <task>".
                                     raw = embedded_action.get("target", "")
@@ -5417,10 +5735,6 @@ async def voice_handler(ws: WebSocket):
                                         ))
                                     else:
                                         log.warning(f"dispatch_to_agent missing |||: {raw[:120]!r}")
-                                elif embedded_action["action"] == "create_event":
-                                    asyncio.create_task(_execute_create_event(embedded_action["target"], ws))
-                                elif embedded_action["action"] == "cancel_event":
-                                    asyncio.create_task(_execute_cancel_event(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "check_date":
                                     asyncio.create_task(_execute_check_date(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "check_weather":
@@ -5435,6 +5749,8 @@ async def voice_handler(ws: WebSocket):
                                     ))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "save_contact":
+                                    asyncio.create_task(_execute_save_contact(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "prompt_project":
                                     target = embedded_action["target"]
                                     if "|||" in target:
@@ -5777,6 +6093,33 @@ async def api_google_disconnect():
     return {"success": True}
 
 
+@app.get("/api/contacts")
+async def api_contacts_list():
+    """The user's saved contacts (profile store) for the settings address book."""
+    return {"contacts": list_contacts()}
+
+
+@app.post("/api/contacts")
+async def api_contacts_add(request: Request):
+    """Add or update a saved contact. Body: {name, email}."""
+    body = await request.json()
+    name = (body or {}).get("name", "")
+    email = (body or {}).get("email", "")
+    if not (name or "").strip() or "@" not in (email or ""):
+        return JSONResponse({"success": False, "error": "name and a valid email are required"}, status_code=400)
+    ok = add_contact(name, email)
+    return {"success": ok, "contacts": list_contacts()}
+
+
+@app.delete("/api/contacts")
+async def api_contacts_delete(request: Request):
+    """Remove a saved contact by name. Body: {name}."""
+    body = await request.json()
+    name = (body or {}).get("name", "")
+    ok = delete_contact(name)
+    return {"success": ok, "contacts": list_contacts()}
+
+
 @app.post("/api/settings/bio/regenerate")
 async def api_regenerate_bio():
     """Synthesize a fresh user-profile summary from accumulated notes.
@@ -5949,6 +6292,21 @@ def _calendar_access_granted():
         return None
 
 
+def _contacts_access_granted():
+    """Silent Contacts check (no prompt). True authorized, False denied/restricted,
+    None not-yet-asked. Contacts is an optional fallback for name→email lookup —
+    VALET's own saved contacts work without it."""
+    try:
+        s = contacts_access.auth_status()
+        if s == 3:
+            return True
+        if s in (1, 2):
+            return False
+        return None
+    except Exception:
+        return None
+
+
 @app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
@@ -5978,6 +6336,12 @@ async def api_permissions_status():
             "why": "Drive Calendar, Mail, Notes and Chrome via AppleScript.",
             "note": "Granted per app the first time VALET controls it.",
         },
+        "contacts": {
+            "granted": _contacts_access_granted(),  # silent check, no prompt
+            "label": "Contacts",
+            "why": "Look up a name → email when you say 'email Nick'. Optional — your saved contacts work without it.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
+        },
         "accessibility": {
             "granted": None,
             "label": "Accessibility",
@@ -5993,6 +6357,7 @@ _SETTINGS_PANES = {
     "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
     "calendars": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
+    "contacts": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
 }
 
 
@@ -6025,6 +6390,12 @@ async def api_permissions_trigger(request: Request):
         try:
             import apple_calendar
             granted = await asyncio.to_thread(apple_calendar.request_access)
+            return {"ok": True, "granted": bool(granted)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:160]}
+    if target == "contacts":
+        try:
+            granted = await asyncio.to_thread(contacts_access.request_access)
             return {"ok": True, "granted": bool(granted)}
         except Exception as e:
             return {"ok": False, "error": str(e)[:160]}

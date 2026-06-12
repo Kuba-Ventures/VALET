@@ -20,6 +20,10 @@
   <key>com.apple.security.personal-information.calendars</key>
   <true/>
 
+  <!-- Read Apple Contacts to resolve a name → email (contacts_access.py). -->
+  <key>com.apple.security.personal-information.contacts</key>
+  <true/>
+
   <!-- Drive other apps via AppleScript (the AppleScript control backend) -->
   <key>com.apple.security.automation.apple-events</key>
   <true/>
