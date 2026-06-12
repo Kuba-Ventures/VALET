@@ -3011,15 +3011,19 @@ dispatch_registry = DispatchRegistry()
 # Stage D: the safety-gated control executor. Destructive (Tier 1) actions route
 # through this — it asks the user to confirm and honors the global kill switch.
 _base_executor = AppleScriptExecutor()
-if os.getenv("VALET_UI_FALLBACK"):
-    # Phase K (opt-in): extend control to non-scriptable apps via the
-    # Accessibility/synthetic-input backend. Off by default until validated
-    # on-device (needs pyobjc + Accessibility permission).
-    from composite_executor import CompositeExecutor
-    from accessibility_executor import AccessibilityExecutor
-    _base_executor = CompositeExecutor(_base_executor, AccessibilityExecutor())
-    log.info("UI fallback enabled: %s", _base_executor.name)
+# Phase K / UC1: always layer the Accessibility backend underneath the
+# AppleScript primary. It adds the universal-control primitives (observe_ui /
+# click_element / key_combo) and a synthetic-input keystroke fallback for
+# non-scriptable apps. The backend is import-safe and inert without pyobjc + the
+# Accessibility grant (every method returns not_supported / a clean failure), so
+# composing it unconditionally is safe on any host and never changes the
+# AppleScript path for capabilities AppleScript already handles.
+from composite_executor import CompositeExecutor
+from accessibility_executor import AccessibilityExecutor
+_ax_executor = AccessibilityExecutor()
+_base_executor = CompositeExecutor(_base_executor, _ax_executor)
 executor = SafeExecutor(_base_executor)
+log.info("control backend: %s", executor.name)
 
 
 async def _run_gated_action(ws: "WebSocket", result_coro) -> None:
@@ -6307,6 +6311,17 @@ def _contacts_access_granted():
         return None
 
 
+def _accessibility_access_granted():
+    """Real TCC check via AXIsProcessTrusted (no prompt). True/False reflects the
+    live grant for THIS process — so a revoke flips it straight back to False.
+    None only if the AX backend can't be imported on this host."""
+    try:
+        import accessibility_executor
+        return bool(accessibility_executor.is_trusted())
+    except Exception:
+        return None
+
+
 @app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
@@ -6343,10 +6358,10 @@ async def api_permissions_status():
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
         },
         "accessibility": {
-            "granted": None,
+            "granted": _accessibility_access_granted(),  # real AXIsProcessTrusted check
             "label": "Accessibility",
-            "why": "Only needed once UI-scripting / vision control ship (after v1).",
-            "required_v1": False,
+            "why": "Let Vee read the screen and click or type in any app, not just scriptable ones.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
         },
     }
 
@@ -6399,6 +6414,17 @@ async def api_permissions_trigger(request: Request):
             return {"ok": True, "granted": bool(granted)}
         except Exception as e:
             return {"ok": False, "error": str(e)[:160]}
+    if target == "accessibility":
+        # Fire the native "grant Accessibility" prompt. The actual grant happens
+        # in System Settings and usually needs an app relaunch to take effect, so
+        # `granted` is the CURRENT trust state (typically still False right after
+        # the prompt). The UI falls back to Open Settings and re-checks live.
+        try:
+            import accessibility_executor
+            granted = await asyncio.to_thread(accessibility_executor.is_trusted_prompt)
+            return {"ok": True, "granted": bool(granted)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:160]}
     if target != "automation":
         return {"ok": False, "error": "no inline prompt for this target"}
     try:
@@ -6414,6 +6440,57 @@ async def api_permissions_trigger(request: Request):
         return {"ok": True, "granted": proc.returncode == 0}
     except Exception as e:
         return {"ok": False, "error": str(e)[:160]}
+
+# ---------------------------------------------------------------------------
+# Universal control (UC1) — Accessibility primitives
+#
+# These route through the same safety-gated `executor` as every other action:
+# observe is Tier 0 (runs straight through); click / type / key_combo are Tier 1
+# and raise a confirm card over the WebSocket (and honor the kill switch) before
+# anything is synthesized. They are the integration seam the UC4 observe→act loop
+# will drive; exposed here so the primitives are independently exercisable in a
+# signed build.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ax/observe")
+async def api_ax_observe(request: Request):
+    """Enumerate the focused window's accessibility tree (Tier 0)."""
+    body = await request.json() if await request.body() else {}
+    res = await executor.observe_ui(app=(body or {}).get("app") or None)
+    return res.to_dict()
+
+
+@app.post("/api/ax/click")
+async def api_ax_click(request: Request):
+    """Click an element by `ref` (from a prior observe) or `point` [x, y] (Tier 1)."""
+    body = (await request.json() if await request.body() else {}) or {}
+    pt = body.get("point")
+    res = await executor.click_element(
+        ref=body.get("ref"),
+        point=tuple(pt) if isinstance(pt, (list, tuple)) else None,
+        app=body.get("app"),
+    )
+    return res.to_dict()
+
+
+@app.post("/api/ax/type")
+async def api_ax_type(request: Request):
+    """Type text into the active (or named) app via synthetic input (Tier 1)."""
+    body = (await request.json() if await request.body() else {}) or {}
+    res = await executor.send_keystroke(
+        body.get("app", "") or "", body.get("text", "") or "",
+        press_enter=bool(body.get("press_enter")),
+    )
+    return res.to_dict()
+
+
+@app.post("/api/ax/key")
+async def api_ax_key(request: Request):
+    """Send a modifier chord like 'cmd+s' (Tier 1)."""
+    body = (await request.json() if await request.body() else {}) or {}
+    res = await executor.key_combo(body.get("combo", "") or "", app=body.get("app"))
+    return res.to_dict()
+
 
 # ---------------------------------------------------------------------------
 # Control endpoints (restart, fix-self)

@@ -125,6 +125,28 @@ class SafeExecutor(ActionExecutor):
         blocked = await self._guard(Capability.RUN_SCRIPT, summary=f"Run a script: {script[:80]}")
         return blocked or await self._delegate.run_script(script)
 
+    # --- universal control (UC1) -----------------------------------------
+    async def observe_ui(self, *, app: Optional[str] = None, max_elements: int = 250,
+                         task_id: Optional[str] = None) -> ActionResult:
+        # Tier 0 — observation runs straight through (the guard returns None for
+        # AUTO), but still respects the kill switch.
+        blocked = await self._guard(Capability.OBSERVE_UI, summary=f"Read the screen ({app or 'frontmost app'})")
+        return blocked or await self._delegate.observe_ui(app=app, max_elements=max_elements, task_id=task_id)
+
+    async def click_element(self, *, ref: Optional[str] = None, point: Optional[tuple] = None,
+                           app: Optional[str] = None, task_id: Optional[str] = None) -> ActionResult:
+        where = f"element {ref}" if ref else (f"point {point}" if point else "a control")
+        blocked = await self._guard(Capability.CLICK_ELEMENT, summary=f"Click {where}",
+                                    targets=[ref] if ref else [])
+        return blocked or await self._delegate.click_element(ref=ref, point=point, app=app, task_id=task_id)
+
+    async def key_combo(self, combo: str, *, app: Optional[str] = None,
+                       task_id: Optional[str] = None) -> ActionResult:
+        blocked = await self._guard(Capability.KEY_COMBO,
+                                    summary=f"Press {combo}" + (f" in {app}" if app else ""),
+                                    targets=[app] if app else [])
+        return blocked or await self._delegate.key_combo(combo, app=app, task_id=task_id)
+
     # --- introspection (no gate) ----------------------------------------
     async def is_app_scriptable(self, app: str) -> bool:
         return await self._delegate.is_app_scriptable(app)

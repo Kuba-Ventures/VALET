@@ -37,6 +37,12 @@ class Capability(str, Enum):
     NAVIGATE = "navigate"
     RUN_SCRIPT = "run_script"
 
+    # Phase K (UC1): universal control primitives. The AppleScript backend
+    # leaves these not_supported; the Accessibility backend implements them.
+    OBSERVE_UI = "observe_ui"        # enumerate the focused window's AX tree (read)
+    CLICK_ELEMENT = "click_element"  # click an element by ref or point (input)
+    KEY_COMBO = "key_combo"          # send a modifier+key chord (input)
+
 
 @dataclass
 class ActionResult:
@@ -89,6 +95,33 @@ class ActionResult:
             "error": self.error,
             "reason": self.reason,
             "meta": self.meta,
+        }
+
+
+@dataclass
+class UIElement:
+    """One node in a focused window's accessibility tree (UC1 observation).
+
+    `ref` is a stable handle for the duration of the observation snapshot that
+    produced it — pass it back to `click_element(ref=...)`. `frame` is
+    [x, y, w, h] in global screen points (top-left origin).
+    """
+
+    ref: str
+    role: str
+    title: str = ""
+    value: str = ""
+    enabled: bool = True
+    frame: Optional[list] = None  # [x, y, w, h]
+
+    def to_dict(self) -> dict:
+        return {
+            "ref": self.ref,
+            "role": self.role,
+            "title": self.title,
+            "value": self.value,
+            "enabled": self.enabled,
+            "frame": self.frame,
         }
 
 
@@ -158,3 +191,41 @@ class ActionExecutor(ABC):
     @abstractmethod
     async def is_app_scriptable(self, app: str) -> bool:
         """Whether `app` exposes a scripting interface this backend can drive."""
+
+    # --- Universal control (UC1) ------------------------------------------
+    # Concrete defaults (NOT abstract) so existing backends — notably the
+    # AppleScript executor — inherit a clean not_supported and stay untouched.
+    # The Accessibility backend overrides these; the composite routes a
+    # not_supported result to it.
+
+    async def observe_ui(
+        self, *, app: Optional[str] = None, max_elements: int = 200,
+        task_id: Optional[str] = None,
+    ) -> ActionResult:
+        """Enumerate the focused window's accessibility tree into a list of
+        `UIElement` dicts (in `data["elements"]`). Read-only (Tier 0)."""
+        return ActionResult.not_supported(
+            Capability.OBSERVE_UI,
+            reason=f"{self.name} cannot read the accessibility tree",
+        )
+
+    async def click_element(
+        self, *, ref: Optional[str] = None, point: Optional[tuple] = None,
+        app: Optional[str] = None, task_id: Optional[str] = None,
+    ) -> ActionResult:
+        """Click a UI element identified by `ref` (from a prior observe) or by an
+        absolute screen `point` (x, y). Input action (Tier 1)."""
+        return ActionResult.not_supported(
+            Capability.CLICK_ELEMENT,
+            reason=f"{self.name} cannot synthesize a click",
+        )
+
+    async def key_combo(
+        self, combo: str, *, app: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> ActionResult:
+        """Send a modifier chord like 'cmd+s' or 'cmd+shift+4'. Input (Tier 1)."""
+        return ActionResult.not_supported(
+            Capability.KEY_COMBO,
+            reason=f"{self.name} cannot synthesize key combos",
+        )

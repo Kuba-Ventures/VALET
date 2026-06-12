@@ -77,3 +77,19 @@ class CompositeExecutor(ActionExecutor):
 
     async def is_app_scriptable(self, app: str) -> bool:
         return await self._primary.is_app_scriptable(app)
+
+    # --- universal control (UC1) — AppleScript can't do these, so they fall
+    #     through to the Accessibility backend ------------------------------
+    async def observe_ui(self, *, app: Optional[str] = None, max_elements: int = 250,
+                         task_id: Optional[str] = None) -> ActionResult:
+        return await self._with_fallback("observe_ui", app=app,
+                                         max_elements=max_elements, task_id=task_id)
+
+    async def click_element(self, *, ref: Optional[str] = None, point: Optional[tuple] = None,
+                           app: Optional[str] = None, task_id: Optional[str] = None) -> ActionResult:
+        return await self._with_fallback("click_element", ref=ref, point=point,
+                                         app=app, task_id=task_id)
+
+    async def key_combo(self, combo: str, *, app: Optional[str] = None,
+                       task_id: Optional[str] = None) -> ActionResult:
+        return await self._with_fallback("key_combo", combo, app=app, task_id=task_id)

@@ -479,7 +479,7 @@ async function loadSettingsPermissions() {
       const mic = await micGranted();
       if (mic !== null) status.microphone.granted = mic;
     }
-    const keys = ["microphone", "calendars", "automation", "full_disk_access"].filter((k) => status[k]);
+    const keys = ["microphone", "calendars", "automation", "accessibility", "full_disk_access"].filter((k) => status[k]);
     list.innerHTML = keys
       .map((k) => {
         const p = status[k];
@@ -490,8 +490,10 @@ async function loadSettingsPermissions() {
           side = `<span style="margin-left:auto;opacity:0.6">Granted</span>`;
         } else if (k === "microphone") {
           side = `<button class="settings-btn" data-perm-mic="1" style="margin-left:auto">Enable</button>`;
-        } else if (k === "automation" || k === "calendars") {
-          // Inline native prompt rather than a Settings deep-link.
+        } else if (k === "automation" || k === "calendars" || k === "accessibility") {
+          // Inline native prompt rather than a Settings deep-link. (Accessibility's
+          // grant lands in System Settings + needs a relaunch, so its dot stays
+          // red until Re-check; the button falls back to Open Settings.)
           side = `<button class="settings-btn" data-perm-trigger="${k}" style="margin-left:auto">Enable</button>`;
         } else {
           side = `<button class="settings-btn" data-perm-open="${PERM_TARGET[k]}" style="margin-left:auto">Open Settings</button>`;
