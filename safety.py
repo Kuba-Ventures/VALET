@@ -42,15 +42,21 @@ _ALWAYS_TIER1 = {
     Capability.RUN_SCRIPT,
     Capability.RUN_APP_COMMAND,
     Capability.SEND_KEYSTROKE,
+    # UC1 universal-control input: a synthesized click or key chord mutates the
+    # world (presses buttons, triggers shortcuts) — always confirm.
+    Capability.CLICK_ELEMENT,
+    Capability.KEY_COMBO,
 }
 
-# Capabilities that are always safe (reads / opens / navigation).
+# Capabilities that are always safe (reads / opens / navigation / observation).
 _ALWAYS_TIER0 = {
     Capability.READ_FILE,
     Capability.LIST_FOLDER,
     Capability.OPEN_APP,
     Capability.OPEN_PATH,
     Capability.NAVIGATE,
+    # Reading the accessibility tree is a pure observation.
+    Capability.OBSERVE_UI,
 }
 
 # Protected roots: writing/moving/deleting under these warrants an explicit

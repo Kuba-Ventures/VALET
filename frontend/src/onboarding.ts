@@ -44,7 +44,7 @@ async function micGranted(): Promise<boolean | null> {
 
 /** Load permission status from the backend, then refine microphone client-side. */
 async function loadPerms(): Promise<PermStatus | null> {
-  const perms = await loadPerms();
+  const perms = await getJSON<PermStatus>("/api/permissions/status");
   if (perms?.microphone) {
     const mic = await micGranted();
     if (mic !== null) perms.microphone.granted = mic;
@@ -124,9 +124,11 @@ function permsBody(status: PermStatus | null): string {
             ? `<button class="ob-open" data-automation-enable="1">Enable</button>`
             : k === "calendars" && p.granted !== true
               ? `<button class="ob-open" data-calendars-enable="1">Enable</button>`
-              : canOpen
-                ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
-                : "";
+              : k === "accessibility" && p.granted !== true
+                ? `<button class="ob-open" data-accessibility-enable="1">Enable</button>`
+                : canOpen
+                  ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
+                  : "";
       return `
         <div class="ob-row" data-key="${k}">
           <div class="ob-row-main">
@@ -268,6 +270,26 @@ function wireStep(state: State, root: HTMLElement): void {
             // Denied/cancelled — macOS won't re-prompt; point to Settings.
             delete btn.dataset.automationEnable;
             btn.dataset.target = "automation";
+            btn.textContent = "Open Settings";
+            btn.disabled = false;
+          }
+          return;
+        }
+        // Accessibility: fire the native "grant Accessibility" prompt. The grant
+        // itself lands in System Settings and needs a relaunch, so it usually
+        // reads not-granted right after — fall back to Open Settings + Re-check.
+        if (btn.dataset.accessibilityEnable) {
+          btn.disabled = true;
+          btn.textContent = "Requesting...";
+          const res = await postJSON<{ ok: boolean; granted?: boolean }>(
+            "/api/permissions/trigger", { target: "accessibility" },
+          );
+          if (res?.granted) {
+            state.perms = await loadPerms();
+            renderBody(state, root);
+          } else {
+            delete btn.dataset.accessibilityEnable;
+            btn.dataset.target = "accessibility";
             btn.textContent = "Open Settings";
             btn.disabled = false;
           }
