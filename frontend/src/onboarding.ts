@@ -121,9 +121,11 @@ function permsBody(status: PermStatus | null): string {
       const sideBtn =
         k === "microphone" && p.granted !== true
           ? `<button class="ob-open" data-mic-enable="1">Enable microphone</button>`
-          : canOpen
-            ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
-            : "";
+          : k === "automation" && p.granted !== true
+            ? `<button class="ob-open" data-automation-enable="1">Enable</button>`
+            : canOpen
+              ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
+              : "";
       return `
         <div class="ob-row" data-key="${k}">
           <div class="ob-row-main">
@@ -238,6 +240,27 @@ function wireStep(state: State, root: HTMLElement): void {
             // the user to System Settings instead.
             delete btn.dataset.micEnable;
             btn.dataset.target = "microphone";
+            btn.textContent = "Open Settings";
+            btn.disabled = false;
+          }
+          return;
+        }
+        // Automation: fire the native "control System Events" prompt inline,
+        // then reflect the grant the trigger reports back.
+        if (btn.dataset.automationEnable) {
+          btn.disabled = true;
+          btn.textContent = "Requesting...";
+          const res = await postJSON<{ ok: boolean; granted?: boolean }>(
+            "/api/permissions/trigger", { target: "automation" },
+          );
+          if (res?.granted) {
+            state.perms = await loadPerms();
+            if (state.perms?.automation) state.perms.automation.granted = true;
+            renderBody(state, root);
+          } else {
+            // Denied/cancelled — macOS won't re-prompt; point to Settings.
+            delete btn.dataset.automationEnable;
+            btn.dataset.target = "automation";
             btn.textContent = "Open Settings";
             btn.disabled = false;
           }
