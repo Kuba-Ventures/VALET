@@ -10,6 +10,11 @@ control primitives against a live app. Requires a GUI session and the
   ./.venv/bin/python scripts/ax_smoke.py observe
   ./.venv/bin/python scripts/ax_smoke.py observe --app "System Settings"
 
+  # One-shot acceptance chain (observe → click the first text field → type →
+  # re-observe and read it back), all in one process so refs resolve. Open a
+  # blank document in the target app first. Synthesizes input:
+  ./.venv/bin/python scripts/ax_smoke.py demo --app TextEdit --text "Hello from Vee."
+
   # Synthesize input (MOVES THE MOUSE / TYPES — run deliberately, watch it):
   ./.venv/bin/python scripts/ax_smoke.py click --ref e3 --yes
   ./.venv/bin/python scripts/ax_smoke.py click --point 200,400 --yes
@@ -51,6 +56,33 @@ def _build_executor():
     return SafeExecutor(base, confirmations=_AutoConfirm(), kill_switch=_Kill())
 
 
+async def _demo(ex, app, text):
+    """One-process acceptance chain: observe → click the first text field → type
+    → re-observe and read the field value back. Refs are snapshot-scoped to this
+    process, so observe and click must share one run (the UC4 loop does too)."""
+    obs = await ex.observe_ui(app=app)
+    if not obs.ok:
+        print(f"observe failed: {obs.error} — {obs.message}")
+        return
+    els = obs.data["elements"]
+    print(f"1) observe: {len(els)} elements in {app}")
+    field = next((e for e in els if e["role"] in ("AXTextArea", "AXTextField", "AXSearchField")), None)
+    if not field:
+        print("   no text field/area found to type into — observe-only result above.")
+        return
+    print(f"   target field: {field['ref']} {field['role']} value={field['value']!r}")
+    clk = await ex.click_element(ref=field["ref"], app=app)
+    print(f"2) click({field['ref']}): ok={clk.ok} method={clk.meta.get('method')} {clk.message}")
+    await asyncio.sleep(0.4)
+    typ = await ex.send_keystroke(app, text, press_enter=False)
+    print(f"3) type {text!r}: ok={typ.ok} {typ.message}")
+    await asyncio.sleep(0.4)
+    obs2 = await ex.observe_ui(app=app)
+    f2 = next((e for e in obs2.data["elements"] if e["ref"] == field["ref"]
+               or e["role"] == field["role"]), None)
+    print(f"4) re-observe field value = {f2['value']!r}" if f2 else "4) field gone on re-observe")
+
+
 async def _observe(ex, app):
     res = await ex.observe_ui(app=app)
     if not res.ok:
@@ -69,6 +101,7 @@ async def _main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
     po = sub.add_parser("observe"); po.add_argument("--app", default=None)
+    pd = sub.add_parser("demo"); pd.add_argument("--app", default="TextEdit"); pd.add_argument("--text", default="Hello from Vee.")
     pc = sub.add_parser("click"); pc.add_argument("--ref"); pc.add_argument("--point"); pc.add_argument("--app"); pc.add_argument("--yes", action="store_true")
     pt = sub.add_parser("type"); pt.add_argument("--app", default=""); pt.add_argument("--text", required=True); pt.add_argument("--enter", action="store_true"); pt.add_argument("--yes", action="store_true")
     pk = sub.add_parser("key"); pk.add_argument("--combo", required=True); pk.add_argument("--app"); pk.add_argument("--yes", action="store_true")
@@ -82,6 +115,9 @@ async def _main():
 
     if args.cmd == "observe":
         await _observe(ex, args.app)
+        return
+    if args.cmd == "demo":
+        await _demo(ex, args.app, args.text)
         return
     if not getattr(args, "yes", False):
         print("Refusing to synthesize input without --yes.")
