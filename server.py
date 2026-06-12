@@ -2072,6 +2072,22 @@ async def _execute_open_app(target: str):
             await emit_error(task_id, "Open app failed", detail=str(e)[:200])
 
 
+async def _execute_open_url(url: str, browser: str = "chrome", label: str = ""):
+    """Open a resolved web destination in the browser via `open -a` (no
+    keystrokes / Accessibility). Backs the open_url fast-path for websites."""
+    async with process_bus.task_context(f"Opening {label or url}"[:60]) as task_id:
+        try:
+            await emit_step(task_id, f"Opening {url}", status="active")
+            result = await open_browser(url, browser=browser)
+            if result.get("success", True):
+                await emit_step(task_id, "Opened", detail=url, status="done")
+            else:
+                await emit_error(task_id, "Couldn't open", detail=result.get("confirmation", url))
+        except Exception as e:
+            log.error(f"open_url failed: {e}")
+            await emit_error(task_id, "Open URL failed", detail=str(e)[:200])
+
+
 async def _execute_type(target: str, press_enter: bool):
     """Wrap an [ACTION:TYPE] / [ACTION:SEND] call in a task_context so the
     typed text shows up in the process panel."""
@@ -3738,6 +3754,71 @@ _OPEN_APP_LAUNCH_MAP = {
     "finder": "Finder",
 }
 
+# Web destinations openable by name — "open my gmail", "open google analytics in
+# chrome", "go to github". Routed to open_url (open -a <browser> <url>), which
+# needs NO keystrokes / Accessibility (the old path tried to drive Chrome via
+# System Events and failed with -1728/1002). Native-app launches above are
+# matched first, so "open my calendar" still launches Calendar.app. Entries are
+# multi-word or unambiguous brands so a bare project name ("open analytics") is
+# NOT hijacked — single ambiguous words are deliberately left out.
+_WEB_DESTINATIONS = {
+    "gmail": "https://mail.google.com",
+    "google mail": "https://mail.google.com",
+    "google calendar": "https://calendar.google.com",
+    "google analytics": "https://analytics.google.com",
+    "google drive": "https://drive.google.com",
+    "google docs": "https://docs.google.com",
+    "google sheets": "https://sheets.google.com",
+    "google slides": "https://slides.google.com",
+    "google meet": "https://meet.google.com",
+    "google maps": "https://maps.google.com",
+    "google search": "https://www.google.com",
+    "google": "https://www.google.com",
+    "youtube": "https://www.youtube.com",
+    "gemini": "https://gemini.google.com",
+    "github": "https://github.com",
+    "stripe": "https://dashboard.stripe.com",
+    "vercel": "https://vercel.com/dashboard",
+    "supabase": "https://supabase.com/dashboard",
+    "notion": "https://www.notion.so",
+    "linkedin": "https://www.linkedin.com",
+    "reddit": "https://www.reddit.com",
+    "amazon": "https://www.amazon.com",
+    "chatgpt": "https://chatgpt.com",
+    "claude": "https://claude.ai",
+}
+
+# Spoken browser name → open_browser() arg (it knows chrome/firefox; safari maps
+# to chrome's loader path which `open -a` resolves by display name anyway).
+_OPEN_BROWSER_MAP = {
+    "chrome": "chrome", "google chrome": "chrome", "firefox": "firefox",
+    "safari": "safari", "the browser": "chrome", "a browser": "chrome",
+    "my browser": "chrome", "browser": "chrome",
+}
+
+_OPEN_WEB_RE = _action_re.compile(
+    r'^\s*'
+    r'(?:(?:hey|ok|okay|yo)\s+)?(?:vee|v|valet)?[\s,]*'
+    r"(?:(?:can|could|would|will) you |please |i(?:'d like| want| wanna)(?: to)? |let'?s |go ahead and )*"
+    r'(?:open(?:\s+up)?|launch|pull up|bring up|fire up|go to|navigate to|take me to)\s+'
+    r'(?:the |my )?'
+    r'(?P<target>.+?)'
+    r'(?:\s+(?:in|on|with|using)\s+(?P<browser>google chrome|chrome|firefox|safari|the browser|a browser|my browser|browser))?'
+    r'\s*\??\.?\s*$',
+    _action_re.IGNORECASE,
+)
+
+
+def _resolve_web_url(name: str) -> str | None:
+    """Spoken destination → URL. Known service, bare domain (github.com), or None
+    (caller decides whether to fall back to a search)."""
+    n = name.strip().lower().rstrip(".?! ")
+    if n in _WEB_DESTINATIONS:
+        return _WEB_DESTINATIONS[n]
+    if _action_re.match(r'^[a-z0-9.\-]+\.[a-z]{2,}(?:/\S*)?$', n):
+        return n if n.startswith("http") else f"https://{n}"
+    return None
+
 # Register-project intent — for one-off projects outside any configured root.
 # All patterns capture an absolute or tilde-prefixed path; alias is optional
 # (defaults to the dir's basename in register_project).
@@ -4152,6 +4233,21 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     _oa = _OPEN_APP_LAUNCH_RE.match(t)
     if _oa:
         return {"action": "open_app", "target": _OPEN_APP_LAUNCH_MAP[_oa.group(1).lower()]}
+
+    # Web destinations: "open my gmail", "open google analytics in chrome",
+    # "go to github". Only fires when a URL resolves OR a browser was named, so
+    # "open Spotify" / "open <project>" still fall through to app/project routing.
+    _ow = _OPEN_WEB_RE.match(t)
+    if _ow:
+        _wt = (_ow.group("target") or "").strip()
+        _wb = _OPEN_BROWSER_MAP.get((_ow.group("browser") or "").strip().lower(), "")
+        _url = _resolve_web_url(_wt)
+        if _url or _wb:
+            if not _url:  # browser named but destination unknown → search it
+                from urllib.parse import quote
+                _url = f"https://www.google.com/search?q={quote(_wt)}"
+            return {"action": "open_url", "target": _url,
+                    "browser": _wb or "chrome", "label": _wt}
 
     # Calendar — explicit schedule requests
     if any(p in t for p in ["what's my schedule", "whats my schedule", "what's on my calendar",
@@ -5293,6 +5389,13 @@ async def voice_handler(ws: WebSocket):
                             response_text = f"Opening {target}, sir." if target else "Opening that now, sir."
                             if target:
                                 asyncio.create_task(_execute_open_app(target))
+                        elif action["action"] == "open_url":
+                            url = action.get("target", "").strip()
+                            label = (action.get("label") or "").strip() or "that"
+                            browser = action.get("browser", "chrome")
+                            response_text = f"Opening {label}, sir."
+                            if url:
+                                asyncio.create_task(_execute_open_url(url, browser, label))
                         elif action["action"] == "open_project":
                             target = action.get("target", "").strip()
                             response_text = f"Opening {target}, sir." if target else "Which project, sir?"
