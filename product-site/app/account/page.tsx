@@ -13,6 +13,7 @@ import CopyButton from "@/components/CopyButton";
 import SignOutButton from "@/components/account/SignOutButton";
 import ManageBillingButton from "@/components/account/ManageBillingButton";
 import ClaimLicenseForm from "@/components/account/ClaimLicenseForm";
+import DeviceSettingsCard from "@/components/account/DeviceSettingsCard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -337,6 +338,9 @@ export default async function AccountPage() {
               {licenses.map((l) => (
                 <LicenseCard key={l.licenseKey} license={l} />
               ))}
+
+              {/* Web-controlled settings the app applies (Phase 2). */}
+              <DeviceSettingsCard />
 
               {/* Synced from the desktop app via /api/proxy/sync. */}
               {sync ? (
