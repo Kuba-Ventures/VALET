@@ -71,18 +71,62 @@ def request_screen_recording() -> bool:
 # --------------------------------------------------------------------------- #
 # Focused-window capture
 # --------------------------------------------------------------------------- #
+def _is_valet(name: Optional[str]) -> bool:
+    """Our own app/windows — never the target of an observation (Phase 2)."""
+    return "valet" in (name or "").lower()
+
+
+def _valet_pids(ws) -> set:
+    pids = set()
+    try:
+        for r in ws.runningApplications():
+            if _is_valet(r.localizedName()):
+                pids.add(int(r.processIdentifier()))
+    except Exception:
+        pass
+    return pids
+
+
+def _topmost_non_valet_pid(ws) -> Optional[int]:
+    """The owner pid of the topmost on-screen window that isn't VALET's, using the
+    window stacking order — i.e. the app the user was looking at *behind* Vee."""
+    try:
+        opts = (Quartz.kCGWindowListOptionOnScreenOnly
+                | Quartz.kCGWindowListExcludeDesktopElements)
+        info = Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID)
+    except Exception:
+        return None
+    skip = _valet_pids(ws)
+    for w in info or []:
+        if int(w.get(Quartz.kCGWindowLayer, 0)) != 0:
+            continue
+        pid = w.get(Quartz.kCGWindowOwnerPID)
+        if pid is None or int(pid) in skip or _is_valet(w.get(Quartz.kCGWindowOwnerName, "")):
+            continue
+        b = w.get(Quartz.kCGWindowBounds) or {}
+        if b.get("Width", 0) < 200 or b.get("Height", 0) < 150:
+            continue  # skip slivers / menubar items
+        return int(pid)
+    return None
+
+
 def _pid_for_app(app: Optional[str]) -> Optional[int]:
-    """App name → running pid; None → the frontmost app's pid."""
+    """App name → running pid. None → the FRONTMOST NON-VALET app (Phase 2): when
+    the user talks to Vee, VALET is frontmost, but they mean the app they were
+    just using — so skip our own windows and pick the app stacked just behind us."""
     if not _PYOBJC:
         return None
     try:
         ws = NSWorkspace.sharedWorkspace()
-        if not app:
-            front = ws.frontmostApplication()
-            return int(front.processIdentifier()) if front else None
-        for r in ws.runningApplications():
-            if (r.localizedName() or "").lower() == app.lower():
-                return int(r.processIdentifier())
+        if app:
+            for r in ws.runningApplications():
+                if (r.localizedName() or "").lower() == app.lower():
+                    return int(r.processIdentifier())
+            return None
+        front = ws.frontmostApplication()
+        if front and not _is_valet(front.localizedName()):
+            return int(front.processIdentifier())
+        return _topmost_non_valet_pid(ws) or (int(front.processIdentifier()) if front else None)
     except Exception as e:
         log.warning("pid lookup for %r failed: %s", app, e)
     return None

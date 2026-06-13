@@ -6702,6 +6702,13 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
         return {"ok": False, "status": "miss", "message": "Tell me what to act on, sir."}
 
     obs = await perception.build_observation(executor, app=app)
+    # Phase 2: the observation targets the app BEHIND Vee (not VALET itself). Carry
+    # that real app name forward so the click/type act on — and activate — the
+    # right app, instead of synthesizing into the focused VALET window.
+    if not app:
+        obs_app = obs.get("app")
+        if obs_app and obs_app != "frontmost":
+            app = obs_app
     intent = "type into" if action == "type" else "click"
     res = await target_resolver.resolve(obs, target, anthropic_client, intent=intent)
 
