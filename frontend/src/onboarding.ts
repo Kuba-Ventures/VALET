@@ -62,6 +62,7 @@ const TARGET_FOR = (key: string): string =>
   : key === "microphone" ? "microphone"
   : key === "automation" ? "automation"
   : key === "screen_recording" ? "screen_recording"
+  : key === "speech_recognition" ? "speech_recognition"
   : "accessibility";
 
 function pill(p: Permission): { text: string; cls: string } {
@@ -111,7 +112,7 @@ function licenseBody(): string {
 
 function permsBody(status: PermStatus | null): string {
   if (!status) return `<h2 class="ob-title">Permissions.</h2><p class="ob-sub">Could not reach the backend yet. You can grant these later in Settings.</p>`;
-  const rows = ["microphone", "calendars", "automation", "accessibility", "screen_recording", "full_disk_access"]
+  const rows = ["microphone", "speech_recognition", "calendars", "automation", "accessibility", "screen_recording", "full_disk_access"]
     .filter((k) => status[k])
     .map((k) => {
       const p = status[k]; const s = pill(p);
@@ -129,9 +130,11 @@ function permsBody(status: PermStatus | null): string {
                 ? `<button class="ob-open" data-accessibility-enable="1">Enable</button>`
                 : k === "screen_recording" && p.granted !== true
                   ? `<button class="ob-open" data-screenrec-enable="1">Enable</button>`
-                  : canOpen
-                    ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
-                    : "";
+                  : k === "speech_recognition"
+                    ? `<button class="ob-open" data-target="speech_recognition">Open Settings</button>`
+                    : canOpen
+                      ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
+                      : "";
       return `
         <div class="ob-row" data-key="${k}">
           <div class="ob-row-main">
@@ -357,6 +360,21 @@ function wireStep(state: State, root: HTMLElement): void {
       });
     });
   }
+
+  if (step === 4) {
+    // Pre-fill the profile from already-saved preferences so nothing is re-typed.
+    void getJSON<{ user_name?: string; date_of_birth?: string; hometown_city?: string; address?: string }>(
+      "/api/settings/preferences",
+    ).then((p) => {
+      if (!p) return;
+      const name = root.querySelector<HTMLInputElement>("#ob-name");
+      const dob = root.querySelector<HTMLInputElement>("#ob-dob");
+      const loc = root.querySelector<HTMLInputElement>("#ob-loc");
+      if (name && p.user_name) name.value = p.user_name;
+      if (dob && p.date_of_birth) dob.value = p.date_of_birth;
+      if (loc && (p.hometown_city || p.address)) loc.value = p.hometown_city || p.address || "";
+    });
+  }
 }
 
 /** Persist whatever the current step collected before moving on. */
@@ -435,6 +453,15 @@ export async function maybeShowOnboarding(): Promise<void> {
   const cfg = await getJSON<{ build_id?: string; voice?: string }>("/api/config");
   const buildId = cfg?.build_id || "dev";
   if (localStorage.getItem(SEEN_KEY) === buildId) return; // already onboarded this build
+  // If the license is already activated, the user has been through setup before
+  // (e.g. they quit mid-onboarding to grant a permission, then relaunched) — don't
+  // make them redo it. Mark this build seen and stay out of the way; everything is
+  // editable in Settings.
+  const status = await getJSON<{ env_keys_set?: { license?: boolean } }>("/api/settings/status");
+  if (status?.env_keys_set?.license) {
+    localStorage.setItem(SEEN_KEY, buildId);
+    return;
+  }
   const perms = await loadPerms();
   const state: State = {
     step: 0,

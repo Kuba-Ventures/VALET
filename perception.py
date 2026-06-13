@@ -244,9 +244,11 @@ async def describe_observation(observation: dict, anthropic_client) -> str:
                 max_tokens=300,
                 system=(
                     "You are VALET looking at the user's FOCUSED window. You are given a "
-                    "screenshot and a list of its accessibility elements. Describe what's on "
-                    "screen concisely — the app, what the user is doing, notable content. "
-                    "2-4 sentences, no markdown."
+                    "screenshot and a list of its accessibility elements. Reply in ONE short, "
+                    "natural sentence for the voice — name the app and what the user's working "
+                    "on, plus the single most notable detail. No markdown, no lists; spoken "
+                    "aloud, so keep it tight (e.g. \"You're in Affinity Publisher on a "
+                    "toddler-toothbrush survey one-pager, sir\")."
                 ),
                 messages=[{"role": "user", "content": [
                     {"type": "image", "source": {
