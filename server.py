@@ -4945,6 +4945,39 @@ async def _do_screen_lookup() -> str:
     return "Couldn't see the screen, sir."
 
 
+async def _handle_screen(ws, voice_state: dict = None) -> None:
+    """UC2 'what's on screen', panel-first (Phase 1 polish): instead of a spoken
+    'one moment' filler, show a process-panel step with the captured window
+    thumbnail, then speak only the one-line description. Visual ack + concise voice."""
+    dispatch_time = time.time()
+    desc = "I couldn't read the screen, sir."
+    async with process_bus.task_context("Reading the screen") as task_id:
+        try:
+            import perception
+            obs = await perception.build_observation(executor)
+            img = obs.get("image")
+            if img:
+                try:
+                    shot_dir = SCREENSHOTS_DIR / task_id
+                    shot_dir.mkdir(parents=True, exist_ok=True)
+                    (shot_dir / "window.png").write_bytes(base64.b64decode(img["b64"]))
+                    await emit_screenshot(task_id, f"{task_id}/window.png",
+                                          caption=obs.get("app") or "screen")
+                except Exception as e:
+                    log.warning(f"screen thumbnail save failed: {e}")
+            if obs.get("image") or obs.get("elements"):
+                desc = await perception.describe_observation(obs, anthropic_client)
+            else:
+                desc = await _do_screen_lookup()
+            await emit_step(task_id, desc, status="done")
+        except Exception as e:
+            log.error(f"screen read failed: {e}")
+    # Speak the concise result — unless the user already moved on (barge-in).
+    if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
+        return
+    await _speak(ws, desc)
+
+
 def get_lookup_status() -> str:
     """Get status of active lookups for when user asks 'how's that coming'."""
     if not _active_lookups:
@@ -5569,8 +5602,8 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "show_recent":
                             response_text = await handle_show_recent()
                         elif action["action"] == "describe_screen":
-                            response_text = "Taking a look now, sir."
-                            asyncio.create_task(_lookup_and_report("screen", _do_screen_lookup, ws, history=history, voice_state=voice_state))
+                            response_text = ""  # _handle_screen shows the panel + speaks the result
+                            _track_uc(ws, _handle_screen(ws, voice_state))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
@@ -5745,6 +5778,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = "On it, sir."
                                     elif action_type == "research":
                                         response_text = "Looking into that now, sir."
+                                    elif action_type == "screen":
+                                        response_text = ""  # _handle_screen shows the panel + speaks
                                     else:
                                         response_text = "Right away, sir."
 
@@ -5947,7 +5982,7 @@ async def voice_handler(ws: WebSocket):
                                     else:
                                         asyncio.create_task(create_apple_note("VALET Note", target))
                                 elif embedded_action["action"] == "screen":
-                                    asyncio.create_task(_lookup_and_report("screen", _do_screen_lookup, ws, history=history, voice_state=voice_state))
+                                    _track_uc(ws, _handle_screen(ws, voice_state))
                                 elif embedded_action["action"] == "read_note":
                                     # Read note in background and report back
                                     async def _read_and_report(search_term, _ws):
