@@ -3904,6 +3904,19 @@ _OPEN_WEB_RE = _action_re.compile(
     _action_re.IGNORECASE,
 )
 
+# Compound form: "open chrome and go to github.com" / "launch the browser then
+# pull up vercel". The plain _OPEN_WEB_RE only sees one verb, so this one-off
+# pattern peels the browser off the front and routes the destination to open_url.
+_OPEN_BROWSER_THEN_RE = _action_re.compile(
+    r'^\s*(?:(?:hey|ok|okay|yo)\s+)?(?:vee|v|valet)?[\s,]*'
+    r'(?:open(?:\s+up)?|launch|fire up|start|pull up)\s+'
+    r'(?P<browser>google chrome|chrome|firefox|safari|the browser|a browser|my browser|browser)\s*'
+    r'(?:,\s*|\s+(?:and|then)\s+)'
+    r'(?:go to|open|navigate to|pull up|visit|head to|bring up)\s+'
+    r'(?P<target>.+?)\s*\??\.?\s*$',
+    _action_re.IGNORECASE,
+)
+
 
 def _resolve_web_url(name: str) -> str | None:
     """Spoken destination → URL. Known service, bare domain (github.com), or None
@@ -4222,8 +4235,10 @@ _UI_TYPE_RE = re.compile(
 # "search symbol <x> in cursor".
 _RUN_CMD_RE = re.compile(
     r'^(?:run|execute)\s+(?:the\s+command\s+)?'
-    r'(?P<cmd>(?:git|npm|node|python3?|pip3?|ls|pwd|cargo|go|yarn|pnpm|brew|make|'
-    r'docker|kubectl|cat|grep|find|mkdir|touch|cp|mv|rm|echo|curl|ssh|ps|df|du)\b.*?)'
+    # "get"/"github" are common STT mishearings of "git" — accepted here, then
+    # normalized to "git" by terminal_skill.normalize_command before running.
+    r'(?P<cmd>(?:git|get|github|npm|node|python3?|pip3?|ls|pwd|cargo|go|yarn|pnpm|brew|make|'
+    r'docker|kubectl|cat|grep|grip|grab|find|mkdir|touch|cp|mv|rm|echo|curl|ssh|ps|df|du)\b.*?)'
     r'(?:\s+in\s+(?:the\s+)?terminal)?\s*[.?]?$', re.IGNORECASE)
 _CURSOR_GOTO_RE = re.compile(
     r'^open\s+(?P<file>.+?)\s+(?:at\s+|on\s+)?line\s+(?P<line>\d+)\s+in\s+cursor\s*[.?]?$',
@@ -4406,6 +4421,19 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         _nt = (_on.group("title") or "").strip()
         if _nt and _nt.lower() not in ("a", "the", "this", "that", "another", "new", "my", "your", "me", "it"):
             return {"action": "open_note", "target": _nt}
+
+    # Compound "open <browser> and go to <site>" (handled before the single-verb
+    # web route below, which would otherwise read the whole tail as the target).
+    _obt = _OPEN_BROWSER_THEN_RE.match(t)
+    if _obt:
+        _wt2 = (_obt.group("target") or "").strip()
+        _wb2 = _OPEN_BROWSER_MAP.get((_obt.group("browser") or "").strip().lower(), "chrome")
+        if _wt2:
+            _url2 = _resolve_web_url(_wt2)
+            if not _url2:
+                from urllib.parse import quote
+                _url2 = f"https://www.google.com/search?q={quote(_wt2)}"
+            return {"action": "open_url", "target": _url2, "browser": _wb2, "label": _wt2}
 
     # Web destinations: "open my gmail", "open google analytics in chrome",
     # "go to github". Only fires when a URL resolves OR a browser was named, so
@@ -4915,6 +4943,39 @@ async def _do_screen_lookup() -> str:
             result += f" Currently focused on {active['app']}: {active['title']}."
         return result
     return "Couldn't see the screen, sir."
+
+
+async def _handle_screen(ws, voice_state: dict = None) -> None:
+    """UC2 'what's on screen', panel-first (Phase 1 polish): instead of a spoken
+    'one moment' filler, show a process-panel step with the captured window
+    thumbnail, then speak only the one-line description. Visual ack + concise voice."""
+    dispatch_time = time.time()
+    desc = "I couldn't read the screen, sir."
+    async with process_bus.task_context("Reading the screen") as task_id:
+        try:
+            import perception
+            obs = await perception.build_observation(executor)
+            img = obs.get("image")
+            if img:
+                try:
+                    shot_dir = SCREENSHOTS_DIR / task_id
+                    shot_dir.mkdir(parents=True, exist_ok=True)
+                    (shot_dir / "window.png").write_bytes(base64.b64decode(img["b64"]))
+                    await emit_screenshot(task_id, f"{task_id}/window.png",
+                                          caption=obs.get("app") or "screen")
+                except Exception as e:
+                    log.warning(f"screen thumbnail save failed: {e}")
+            if obs.get("image") or obs.get("elements"):
+                desc = await perception.describe_observation(obs, anthropic_client)
+            else:
+                desc = await _do_screen_lookup()
+            await emit_step(task_id, desc, status="done")
+        except Exception as e:
+            log.error(f"screen read failed: {e}")
+    # Speak the concise result — unless the user already moved on (barge-in).
+    if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
+        return
+    await _speak(ws, desc)
 
 
 def get_lookup_status() -> str:
@@ -5541,8 +5602,8 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "show_recent":
                             response_text = await handle_show_recent()
                         elif action["action"] == "describe_screen":
-                            response_text = "Taking a look now, sir."
-                            asyncio.create_task(_lookup_and_report("screen", _do_screen_lookup, ws, history=history, voice_state=voice_state))
+                            response_text = ""  # _handle_screen shows the panel + speaks the result
+                            _track_uc(ws, _handle_screen(ws, voice_state))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
@@ -5717,6 +5778,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = "On it, sir."
                                     elif action_type == "research":
                                         response_text = "Looking into that now, sir."
+                                    elif action_type == "screen":
+                                        response_text = ""  # _handle_screen shows the panel + speaks
                                     else:
                                         response_text = "Right away, sir."
 
@@ -5919,7 +5982,7 @@ async def voice_handler(ws: WebSocket):
                                     else:
                                         asyncio.create_task(create_apple_note("VALET Note", target))
                                 elif embedded_action["action"] == "screen":
-                                    asyncio.create_task(_lookup_and_report("screen", _do_screen_lookup, ws, history=history, voice_state=voice_state))
+                                    _track_uc(ws, _handle_screen(ws, voice_state))
                                 elif embedded_action["action"] == "read_note":
                                     # Read note in background and report back
                                     async def _read_and_report(search_term, _ws):
@@ -6485,6 +6548,13 @@ async def api_permissions_status():
             "why": "See what's on your screen — capture the focused window so Vee can read it.",
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         },
+        "speech_recognition": {
+            "granted": None,  # webview-side (WKWebView) — can't pre-detect from here
+            "label": "Speech Recognition",
+            "why": "Hear and transcribe your voice in the app. Separate from Microphone — the app needs both.",
+            "note": "Required for voice in the desktop app. Grant it, then relaunch VALET.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
+        },
     }
 
 
@@ -6494,6 +6564,7 @@ _SETTINGS_PANES = {
     "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
     "screen_recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    "speech_recognition": "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
     "calendars": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
     "contacts": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
 }
@@ -6634,6 +6705,16 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
     intent = "type into" if action == "type" else "click"
     res = await target_resolver.resolve(obs, target, anthropic_client, intent=intent)
 
+    # "click Verde in Pinterest" → the parser keeps "Verde in Pinterest" as the
+    # literal target; if that misses, retry with the part before " in " ("Verde"),
+    # since "in <app>" is usually context, not part of the label.
+    if res.status == "miss" and " in " in target:
+        short = target.rsplit(" in ", 1)[0].strip()
+        if short and short != target:
+            retry = await target_resolver.resolve(obs, short, anthropic_client, intent=intent)
+            if retry.status in ("ref", "point", "ambiguous"):
+                res, target = retry, short
+
     if res.status == "ambiguous":
         return {"ok": False, "status": "ambiguous", "message": res.message,
                 "alternatives": res.alternatives}
@@ -6743,7 +6824,7 @@ async def _run_terminal_command(cmd: str, ws=None, cwd: Optional[str] = None) ->
     everything else → confirm card (Tier 1), with a loud warning on destructive
     commands. Honors the kill switch."""
     import terminal_skill
-    cmd = (cmd or "").strip()
+    cmd = terminal_skill.normalize_command((cmd or "").strip())  # voice STT fixups (get→git, etc.)
     if not cmd:
         return {"ok": False, "message": "No command, sir."}
     tier = terminal_skill.classify_command(cmd)

@@ -20,6 +20,12 @@
 #valet-onboarding .ob-card {
   position: relative;
   width: min(560px, 92vw);
+  /* Fit within the window: cap height and let the step body scroll, so the
+     action buttons (Back/Continue) are always reachable even on the tall
+     Permissions step / short windows. */
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
   padding: 28px 28px 22px;
   border-radius: 16px;
   background: linear-gradient(180deg, rgba(12, 22, 32, 0.96), rgba(8, 14, 22, 0.96));
@@ -27,6 +33,9 @@
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 60px rgba(80, 180, 220, 0.08);
   color: #d7ecf4;
 }
+/* Head and actions stay fixed; only the body scrolls. */
+#valet-onboarding .ob-head,
+#valet-onboarding .ob-actions { flex-shrink: 0; }
 
 #valet-onboarding .ob-brand {
   font-size: 12px;
@@ -157,7 +166,13 @@
 }
 #valet-onboarding .ob-dot.on { background: rgba(110, 220, 245, 0.85); transform: scale(1.12); }
 
-#valet-onboarding .ob-body { min-height: 264px; }
+#valet-onboarding .ob-body {
+  min-height: 0;        /* allow the flex child to shrink so it can scroll */
+  flex: 1 1 auto;
+  overflow-y: auto;     /* tall steps (Permissions) scroll instead of overflowing */
+  margin: 0 -6px;       /* a little breathing room for the scrollbar */
+  padding: 0 6px;
+}
 
 #valet-onboarding .ob-list {
   margin: 0; padding-left: 18px;
