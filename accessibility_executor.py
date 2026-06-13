@@ -40,7 +40,7 @@ log = logging.getLogger("valet.accessibility")
 try:
     import Quartz  # type: ignore
     import ApplicationServices as _AX  # type: ignore
-    from AppKit import NSWorkspace  # type: ignore
+    from AppKit import NSWorkspace, NSRunningApplication  # type: ignore
 
     _PYOBJC = True
 except Exception:  # ImportError, or a non-macOS host
@@ -114,17 +114,61 @@ def _activate_app(app: str) -> bool:
         return False
 
 
+def _is_valet(name: Optional[str]) -> bool:
+    """Our own app/windows — never the target of observation/control (Phase 2)."""
+    return "valet" in (name or "").lower()
+
+
+def _app_name_for_pid(pid: int) -> Optional[str]:
+    """Localized app name for a pid (so observe_ui reports the REAL app, not
+    'frontmost') — used to activate the right app before typing into it."""
+    try:
+        a = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        return (a.localizedName() if a else None) or None
+    except Exception:
+        return None
+
+
+def _topmost_non_valet_pid(ws) -> Optional[int]:
+    """Owner pid of the topmost on-screen window that isn't VALET's — the app the
+    user was looking at *behind* Vee (Vee is frontmost while they talk to it)."""
+    try:
+        valet = set()
+        for r in ws.runningApplications():
+            if _is_valet(r.localizedName()):
+                valet.add(int(r.processIdentifier()))
+        opts = (Quartz.kCGWindowListOptionOnScreenOnly
+                | Quartz.kCGWindowListExcludeDesktopElements)
+        info = Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID)
+    except Exception:
+        return None
+    for w in info or []:
+        if int(w.get(Quartz.kCGWindowLayer, 0)) != 0:
+            continue
+        pid = w.get(Quartz.kCGWindowOwnerPID)
+        if pid is None or int(pid) in valet or _is_valet(w.get(Quartz.kCGWindowOwnerName, "")):
+            continue
+        b = w.get(Quartz.kCGWindowBounds) or {}
+        if b.get("Width", 0) < 200 or b.get("Height", 0) < 150:
+            continue
+        return int(pid)
+    return None
+
+
 def _pid_for_app(app: Optional[str]) -> Optional[int]:
-    """Resolve an app name to a running pid; None → the frontmost app's pid."""
+    """App name → running pid. None → the FRONTMOST NON-VALET app (Phase 2): skip
+    our own windows and target the app stacked just behind Vee."""
     try:
         ws = NSWorkspace.sharedWorkspace()
-        if not app:
-            front = ws.frontmostApplication()
-            return int(front.processIdentifier()) if front else None
-        for running in ws.runningApplications():
-            name = running.localizedName() or ""
-            if name.lower() == app.lower():
-                return int(running.processIdentifier())
+        if app:
+            for running in ws.runningApplications():
+                if (running.localizedName() or "").lower() == app.lower():
+                    return int(running.processIdentifier())
+            return None
+        front = ws.frontmostApplication()
+        if front and not _is_valet(front.localizedName()):
+            return int(front.processIdentifier())
+        return _topmost_non_valet_pid(ws) or (int(front.processIdentifier()) if front else None)
     except Exception as e:
         log.warning("pid lookup for %r failed: %s", app, e)
     return None
@@ -387,16 +431,17 @@ class AccessibilityExecutor(ActionExecutor):
         def _do():
             pid = _pid_for_app(app)
             if pid is None:
-                return None, "no_target_app"
+                return None, None, "no_target_app"
+            name = _app_name_for_pid(pid) or app or "frontmost"  # the REAL app observed
             app_el = _AX.AXUIElementCreateApplication(pid)
             win = _focused_window(app_el)
             if win is None:
-                return None, "no_window"
+                return None, name, "no_window"
             els, ref_map = _enumerate_window(win, max_elements)
             self._ref_map = ref_map
-            return els, None
+            return els, name, None
 
-        els, err = await asyncio.to_thread(_do)
+        els, name, err = await asyncio.to_thread(_do)
         if err == "no_target_app":
             return ActionResult.failure(Capability.OBSERVE_UI, error=err,
                                         message="I couldn't find that app, sir.")
@@ -405,7 +450,7 @@ class AccessibilityExecutor(ActionExecutor):
                                         message="That app has no window I can read, sir.")
         return ActionResult.success(
             Capability.OBSERVE_UI,
-            data={"app": app or "frontmost", "elements": [e.to_dict() for e in els]},
+            data={"app": name, "elements": [e.to_dict() for e in els]},
             message=f"{len(els)} elements on screen, sir.",
             backend=self.name,
         )
@@ -422,17 +467,24 @@ class AccessibilityExecutor(ActionExecutor):
                                         message="I need a target to click, sir.")
 
         def _do():
-            # By explicit point — synthetic mouse click.
+            # By explicit point — synthetic mouse click. The target app must be
+            # frontmost for the click to land there (Phase 2), so activate it.
             if point is not None:
+                if app:
+                    _activate_app(app)
                 _mouse_click(float(point[0]), float(point[1]))
                 return True, "point"
             el = self._ref_map.get(ref)
             if el is None:
                 return False, "stale_ref"
-            # Prefer AXPress (lands on the real control, no mouse movement).
+            # Prefer AXPress: it presses the real control directly, regardless of
+            # which app is frontmost — so it works on the app behind Vee with no
+            # focus juggling (Phase 2).
             if _kPressAction in _action_names(el) and _ax_press(el):
                 return True, "axpress"
-            # Fall back to a synthetic click at the element's centre.
+            # Mouse fallback needs the window visible/frontmost — activate first.
+            if app:
+                _activate_app(app)
             frame = _frame_of(el)
             if not frame:
                 return False, "no_frame"
