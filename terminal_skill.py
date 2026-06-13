@@ -17,9 +17,38 @@ and `run_command` here.
 from __future__ import annotations
 
 import asyncio
+import re
 import shlex
 from pathlib import Path
 from typing import Optional
+
+# Voice → shell fixups: browser speech-to-text mangles dev terms ("git"→"get"/
+# "github", "rm -rf"→"rm space — rf", "grep"→"grip"). Applied to a spoken command
+# before classify/execute; the confirm card still shows the final command, so an
+# imperfect fixup stays visible and vetoable.
+_VOICE_FIXUPS = [
+    (re.compile(r"^\s*(?:the\s+command\s+)?", re.I), ""),     # drop "the command "
+    (re.compile(r"[—–]"), "-"),                                # em/en dash → hyphen
+    (re.compile(r"^\s*(?:get|github)\b", re.I), "git"),        # get/github <sub> → git
+    (re.compile(r"\bgr[ia][bp]\b", re.I), "grep"),             # grip/grab/grap → grep
+    (re.compile(r"\bpseudo\b", re.I), "sudo"),
+    (re.compile(r"\bpiped?\s+to\b", re.I), "|"),               # "piped to grep" → "| grep"
+    (re.compile(r"\s+space\s+(?=-)", re.I), " "),              # "rm space -rf" → "rm -rf"
+    (re.compile(r"\bdash\s+(?=[a-z])", re.I), "-"),            # "dash rf" → "-rf"
+]
+
+
+def normalize_command(cmd: str) -> str:
+    """Best-effort fixups for a voice-dictated shell command."""
+    c = cmd or ""
+    for pat, rep in _VOICE_FIXUPS:
+        c = pat.sub(rep, c)
+    c = re.sub(r"\s{2,}", " ", c).strip()
+    # STT often capitalizes the leading word ("RM", "LS"); the program name is
+    # lowercase by convention. Lowercase only the first token, keep args' case.
+    head, _, rest = c.partition(" ")
+    return f"{head.lower()} {rest}".strip() if head else c
+
 
 # First tokens that are read-only (Tier 0). Conservative on purpose — anything
 # not clearly read-only falls through to Tier 1 (confirm).

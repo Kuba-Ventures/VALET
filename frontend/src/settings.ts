@@ -450,6 +450,7 @@ const PERM_TARGET: Record<string, string> = {
   full_disk_access: "full_disk",
   microphone: "microphone",
   automation: "automation",
+  speech_recognition: "speech_recognition",
 };
 
 /**
@@ -479,7 +480,7 @@ async function loadSettingsPermissions() {
       const mic = await micGranted();
       if (mic !== null) status.microphone.granted = mic;
     }
-    const keys = ["microphone", "calendars", "automation", "accessibility", "screen_recording", "full_disk_access"].filter((k) => status[k]);
+    const keys = ["microphone", "speech_recognition", "calendars", "automation", "accessibility", "screen_recording", "full_disk_access"].filter((k) => status[k]);
     list.innerHTML = keys
       .map((k) => {
         const p = status[k];
