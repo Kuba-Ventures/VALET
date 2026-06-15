@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 250
 PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://valetvoice.vercel.app").rstrip("/")
+FISH_API_URL = "https://api.fish.audio/v1/tts"
 DEFAULT_VOICE_ID = "612b878b113047d9a770c069c8b4fdfe"
 
 # A representative static-system block. The real one is ~6-8KB; size matters for
@@ -119,6 +120,46 @@ async def time_tts_call(http: httpx.AsyncClient, license_key: str, voice_id: str
     return dt
 
 
+async def fish_tier_compare(fish_key: str, voice_id: str, iters: int) -> None:
+    """PR 3 — compare Fish `latency` tiers (and a model override) directly
+    against api.fish.audio, timing full-clip synthesis of one sentence. The
+    `latency` win is larger in true streaming playback; this measures the
+    full-clip effect (which is what the app currently sees — it buffers)."""
+    url = FISH_API_URL
+    headers_base = {"Authorization": f"Bearer {fish_key}", "Content-Type": "application/json"}
+    variants = [
+        ("normal (current)", {"latency": "normal"}, None),
+        ("balanced", {"latency": "balanced"}, None),
+        ("low", {"latency": "low"}, None),
+        ("balanced model=s1", {"latency": "balanced"}, "s1"),
+    ]
+    print(f"PR 3 — Fish latency tiers (direct, full-clip), iters={iters}:\n")
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        # warm the connection/account once (discard).
+        await http.post(url, headers=headers_base,
+                        json={"text": TTS_SENTENCE, "reference_id": voice_id, "format": "mp3"})
+        for label, extra, model in variants:
+            samples: list[float] = []
+            headers = dict(headers_base)
+            if model:
+                headers["model"] = model
+            body = {"text": TTS_SENTENCE, "reference_id": voice_id, "format": "mp3",
+                    "prosody": {"speed": 1.0}, **extra}
+            ok = True
+            for _ in range(iters):
+                t = time.perf_counter()
+                r = await http.post(url, headers=headers, json=body)
+                if r.status_code != 200:
+                    print(f"  {label}: HTTP {r.status_code} {r.text[:120]}")
+                    ok = False
+                    break
+                samples.append((time.perf_counter() - t) * 1000)
+            if ok and samples:
+                samples.sort()
+                print(f"  {label:22s} median={samples[len(samples)//2]:7.1f}ms  "
+                      f"(min={samples[0]:.0f} max={samples[-1]:.0f})")
+
+
 async def main() -> int:
     _load_dotenv()
     iterations = int(sys.argv[1]) if len(sys.argv) > 1 else 3
@@ -126,6 +167,15 @@ async def main() -> int:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     license_key = os.environ.get("LICENSE_KEY", "")
     voice_id = os.environ.get("FISH_VOICE_ID", "") or DEFAULT_VOICE_ID
+
+    # PR 3 comparison runs without the Anthropic key (Fish-only).
+    if "--fish" in sys.argv:
+        fish_key = os.environ.get("FISH_API_KEY", "")
+        if not fish_key:
+            print("FISH_API_KEY not set — cannot measure Fish tiers directly.")
+            return 1
+        await fish_tier_compare(fish_key, voice_id, iterations)
+        return 0
 
     if not api_key:
         print("ANTHROPIC_API_KEY not set — cannot measure the model segment.")
