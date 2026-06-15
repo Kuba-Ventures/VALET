@@ -568,7 +568,10 @@ function wireEvents() {
   const pttCheckbox = document.getElementById("input-push-to-talk") as HTMLInputElement | null;
   if (pttCheckbox) {
     pttCheckbox.checked = isPushToTalkEnabled();
-    pttCheckbox.addEventListener("change", () => setPushToTalkEnabled(pttCheckbox.checked));
+    pttCheckbox.addEventListener("change", () => {
+      setPushToTalkEnabled(pttCheckbox.checked);
+      window.dispatchEvent(new Event("ptt-changed"));  // main.ts updates the on-screen hint live
+    });
   }
   const pttLabel = document.getElementById("ptt-key-label");
   if (pttLabel) pttLabel.textContent = pushToTalkKeyLabel();
