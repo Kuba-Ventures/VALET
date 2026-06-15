@@ -211,6 +211,30 @@ FISH_API_KEY = os.getenv("FISH_API_KEY", "")  # dev fallback only
 FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # VALET voice (British male)
 FISH_API_URL = "https://api.fish.audio/v1/tts"  # dev fallback only
 
+# TTS latency tier (perceived-latency PR 3). Fish's `latency` ∈ normal|balanced|low
+# ("normal" = best quality default; "balanced" = reduced latency; "low" = lowest,
+# with more quality risk). Measured full-clip delta on VALET's short single-
+# sentence replies is within network noise (~0–12%, run-dependent — see
+# scripts/voice_latency_baseline.py --fish), and the app buffers the whole clip
+# rather than streaming, so the tier's bigger time-to-first-byte effect doesn't
+# apply here. We therefore DEFAULT to "normal" (no quality change to the shipping
+# voice) and expose the knob: set FISH_LATENCY=balanced|low to trade quality for
+# latency after an A/B listen — env-tunable, no rebuild. `model` ("" | s1 |
+# s2-pro) is left to Fish's default unless set, so the cloned voice's character
+# isn't changed unintentionally.
+_VALID_FISH_LATENCY = {"normal", "balanced", "low"}
+_VALID_FISH_MODEL = {"s1", "s2-pro"}
+
+
+def _fish_latency() -> str:
+    v = (os.getenv("FISH_LATENCY", "normal") or "normal").strip().lower()
+    return v if v in _VALID_FISH_LATENCY else "normal"
+
+
+def _fish_model() -> str:
+    v = (os.getenv("FISH_MODEL", "") or "").strip().lower()
+    return v if v in _VALID_FISH_MODEL else ""
+
 # Stage E: two selectable British voices. The persona (VALET, the butler) is
 # unchanged — only the Fish TTS model swaps. The active voice's reference_id is
 # sent on every TTS call (the proxy forwards it). VALET_VOICE = "male" | "female".
@@ -2830,19 +2854,44 @@ _last_greeting_time: float = 0
 # TTS (Fish Audio)
 # ---------------------------------------------------------------------------
 
+def _tts_request(text: str, voice_id: str, speed: float, *, via_proxy: bool,
+                 latency: str, model: str) -> tuple[dict, dict]:
+    """Build the (payload, extra_headers) for a TTS call. Pure — no I/O, no env
+    reads — so the latency-tier wiring is unit-testable.
+
+    The proxy path puts `speed`/`model` in the body (the proxy converts `speed`
+    to Fish prosody and `model` to the Fish `model` header); the direct dev path
+    speaks to Fish natively, so `prosody` goes in the body and `model` is an HTTP
+    header. `latency` is a native Fish body field on both paths.
+    """
+    payload: dict = {"text": text, "reference_id": voice_id, "format": "mp3", "latency": latency}
+    headers: dict = {}
+    if via_proxy:
+        payload["speed"] = speed
+        if model:
+            payload["model"] = model  # proxy turns this into the Fish `model` header
+    else:
+        payload["prosody"] = {"speed": speed}
+        if model:
+            headers["model"] = model
+    return payload, headers
+
+
 async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio. Routes through the proxy's TTS endpoint when
     licensed (Fish Audio upstream); falls back to direct Fish in dev only."""
     voice_id = _active_voice_id()
     speed = _voice_speed()
+    latency = _fish_latency()
+    model = _fish_model()
     if LICENSE_KEY:
         url = f"{PROXY_BASE_URL}/api/proxy/tts"
-        headers = {"X-License-Key": LICENSE_KEY, "Content-Type": "application/json"}
-        payload = {"text": text, "reference_id": voice_id, "format": "mp3", "speed": speed}
+        payload, extra = _tts_request(text, voice_id, speed, via_proxy=True, latency=latency, model=model)
+        headers = {"X-License-Key": LICENSE_KEY, "Content-Type": "application/json", **extra}
     elif FISH_API_KEY:
         url = FISH_API_URL
-        headers = {"Authorization": f"Bearer {FISH_API_KEY}", "Content-Type": "application/json"}
-        payload = {"text": text, "reference_id": voice_id, "format": "mp3", "prosody": {"speed": speed}}
+        payload, extra = _tts_request(text, voice_id, speed, via_proxy=False, latency=latency, model=model)
+        headers = {"Authorization": f"Bearer {FISH_API_KEY}", "Content-Type": "application/json", **extra}
     else:
         log.warning("No LICENSE_KEY (or dev FISH_API_KEY) set, skipping TTS")
         return None
