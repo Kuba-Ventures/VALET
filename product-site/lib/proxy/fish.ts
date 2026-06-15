@@ -30,7 +30,10 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
     );
   }
 
-  let body: { text?: unknown; format?: unknown; reference_id?: unknown; speed?: unknown };
+  let body: {
+    text?: unknown; format?: unknown; reference_id?: unknown; speed?: unknown;
+    latency?: unknown; model?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -51,18 +54,28 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
     typeof body.speed === "number" && body.speed >= 0.5 && body.speed <= 2.0
       ? body.speed
       : 1.0;
+  // Latency tier (perceived-latency PR 3): Fish `latency` ∈ normal|balanced|low.
+  // Forwarded so the app controls the latency/quality trade-off; defaults to
+  // "normal" when absent/invalid, so older app builds behave exactly as before.
+  const latency =
+    body.latency === "balanced" || body.latency === "low" ? body.latency : "normal";
+  // Optional TTS engine override → Fish `model` HTTP header. Left unset by
+  // default so Fish picks its standard model for the cloned voice.
+  const model = body.model === "s1" || body.model === "s2-pro" ? body.model : "";
 
   const startTime = Date.now();
 
   let upstream: Response;
   try {
+    const fishHeaders: Record<string, string> = {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    };
+    if (model) fishHeaders.model = model;
     upstream = await fetch(FISH_API_URL, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ text, reference_id: referenceId, format, prosody: { speed } }),
+      headers: fishHeaders,
+      body: JSON.stringify({ text, reference_id: referenceId, format, prosody: { speed }, latency }),
     });
   } catch (err) {
     void captureProxyError("tts", err);
