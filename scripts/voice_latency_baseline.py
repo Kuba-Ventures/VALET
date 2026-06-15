@@ -78,6 +78,35 @@ async def time_model_call(client: anthropic.AsyncAnthropic) -> float:
     return (time.perf_counter() - t) * 1000
 
 
+async def time_to_first_sentence(client: anthropic.AsyncAnthropic) -> tuple[float, float]:
+    """Stream a reply that tends to run 2 sentences and return
+    (ms_to_first_sentence_boundary, ms_to_full_reply). The gap is the model-side
+    latency PR 1 removes from first-audio: TTS can begin at the first boundary
+    instead of waiting for the whole reply."""
+    import re
+    import time as _t
+    boundary = re.compile(r"[.!?]+\s")
+    prompt = "Briefly: what's the time and the weather? Two short sentences."
+    t = _t.perf_counter()
+    first_ms = None
+    acc = ""
+    async with client.messages.stream(
+        model=MODEL,
+        max_tokens=MAX_TOKENS,
+        system=[
+            {"type": "text", "text": STATIC_SYSTEM, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": DYNAMIC_SYSTEM},
+        ],
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        async for delta in stream.text_stream:
+            acc += delta
+            if first_ms is None and boundary.search(acc):
+                first_ms = (_t.perf_counter() - t) * 1000
+    full_ms = (_t.perf_counter() - t) * 1000
+    return (first_ms if first_ms is not None else full_ms), full_ms
+
+
 async def time_tts_call(http: httpx.AsyncClient, license_key: str, voice_id: str) -> float:
     url = f"{PROXY_BASE_URL}/api/proxy/tts"
     payload = {"text": TTS_SENTENCE, "reference_id": voice_id, "format": "mp3", "speed": 1.0}
@@ -103,6 +132,24 @@ async def main() -> int:
         return 1
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
+
+    # PR 1 comparison: streaming time-to-first-sentence vs full reply.
+    if "--stream" in sys.argv:
+        first_list: list[float] = []
+        full_list: list[float] = []
+        print("PR 1 — model time-to-first-sentence (streaming) vs full reply:\n")
+        for i in range(iterations):
+            first_ms, full_ms = await time_to_first_sentence(client)
+            first_list.append(first_ms)
+            full_list.append(full_ms)
+            print(f"  iter {i+1}: first_sentence={first_ms:7.1f}ms   full_reply={full_ms:7.1f}ms"
+                  f"   saved={full_ms - first_ms:7.1f}ms")
+        med_first = sorted(first_list)[len(first_list) // 2]
+        med_full = sorted(full_list)[len(full_list) // 2]
+        print(f"\nmedian first_sentence={med_first:.0f}ms  full_reply={med_full:.0f}ms")
+        print(f"model-side latency PR 1 removes from first-audio (median): ~{med_full - med_first:.0f}ms")
+        return 0
+
     model_ms: list[float] = []
     tts_ms: list[float] = []
 
