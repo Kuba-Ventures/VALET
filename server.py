@@ -117,7 +117,9 @@ from process_events import (
     emit_error,
     emit_task_queued,
     emit_tool_event,
+    emit_voice_timing,
 )
+from voice_timing import TurnTimer
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
 from work_mode import WorkSession, is_casual_question
@@ -859,12 +861,15 @@ async def _execute_new_project(target: str, ws):
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
-async def _speak_chunks(ws, tts_text: str, caption: str) -> bool:
+async def _speak_chunks(ws, tts_text: str, caption: str, timer=None) -> bool:
     """Sentence-chunked TTS. Synthesizes and sends each sentence as its own audio
     message so the FIRST sentence starts playing while later ones are still being
     synthesized (the frontend audio queue plays them in order). For a one-sentence
     reply this is a single chunk, identical to before. The caption is shown once,
-    on the first chunk. Returns True if any audio was sent."""
+    on the first chunk. Returns True if any audio was sent.
+
+    ``timer`` is an optional voice-turn TurnTimer; when supplied, the first chunk
+    actually dispatched marks ``first_audio`` (t3). No-op when None."""
     sentences = [s for s in _SENTENCE_SPLIT.split((tts_text or "").strip()) if s.strip()]
     if not sentences or not ws:
         return False
@@ -879,6 +884,8 @@ async def _speak_chunks(ws, tts_text: str, caption: str) -> bool:
                 "data": base64.b64encode(audio).decode(),
                 "text": caption if i == 0 else "",
             })
+            if not sent_any and timer is not None:
+                timer.mark("first_audio")  # t3: first audio chunk dispatched to client
             sent_any = True
         except Exception:
             return sent_any
@@ -2867,8 +2874,14 @@ async def generate_response(
     conversation_history: list[dict],
     last_response: str = "",
     session_summary: str = "",
+    timer: "TurnTimer | None" = None,
 ) -> str:
-    """Generate a VALET response using Anthropic API."""
+    """Generate a VALET response using Anthropic API.
+
+    ``timer`` is an optional voice-turn TurnTimer; when supplied, this marks
+    ``request_sent`` (t1) just before the model call and ``first_token`` (t2)
+    when the response is available. No-op when None (e.g. non-voice callers).
+    """
     # License gate: refuse to assist when the license isn't entitled (with a
     # 7-day offline grace window). No-op in dev fallback (no LICENSE_KEY).
     await _ensure_license()
@@ -2979,6 +2992,8 @@ async def generate_response(
         messages = messages + [{"role": "user", "content": text}]
 
     try:
+        if timer is not None:
+            timer.mark("request_sent")  # t1: request about to go to the proxy/model
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=250,  # Extra room for [ACTION:X] tags
@@ -2991,6 +3006,8 @@ async def generate_response(
             ],
             messages=messages,
         )
+        if timer is not None:
+            timer.mark("first_token")  # t2: model response available (non-streaming today)
         track_usage(response)
         return response.content[0].text
     except Exception as e:
@@ -5350,6 +5367,11 @@ async def voice_handler(ws: WebSocket):
             voice_state["last_user_time"] = time.time()
             log.info(f"User: {user_text}")
 
+            # t0: end-of-speech. Time the turn from here to first audible reply
+            # so later latency work can be measured, not guessed. Holds only
+            # mark names + timestamps — never transcript content.
+            turn_timer = TurnTimer()
+
             # ── Dictation mode capture/confirm intercept (chunk 21 Mode 2).
             # When ws is in a dictation phase, the user's utterance is the
             # prompt body (or a confirm/cancel) — NOT a routable command. We
@@ -5525,6 +5547,7 @@ async def voice_handler(ws: WebSocket):
                             cached_projects, history,
                             last_response=last_valet_response,
                             session_summary=session_summary,
+                            timer=turn_timer,
                         )
                     else:
                         # Send to claude -p (full power)
@@ -5761,6 +5784,7 @@ async def voice_handler(ws: WebSocket):
                                 cached_projects, history,
                                 last_response=last_valet_response,
                                 session_summary=session_summary,
+                                timer=turn_timer,
                             )
 
                             # Check for action tags embedded in LLM response
@@ -6041,11 +6065,26 @@ async def voice_handler(ws: WebSocket):
                     await ws.send_json({"type": "status", "state": "speaking"})
                     # Sentence-chunked so a multi-sentence reply starts speaking
                     # before the whole thing is synthesized.
-                    if not await _speak_chunks(ws, tts, response_text):
+                    if not await _speak_chunks(ws, tts, response_text, timer=turn_timer):
                         await ws.send_json({"type": "text", "text": response_text})
                         await ws.send_json({"type": "status", "state": "idle"})
                     log.info(f"VALET: {response_text}")
                     last_valet_response = response_text
+
+                    # Voice-turn latency (perceived-latency baseline). Always
+                    # logged; only mirrored to the Process Panel when the
+                    # VALET_VOICE_TIMING env flag is set, so default UX is
+                    # unchanged. Numbers only — no transcript content.
+                    log.info(f"[voice-timing] {turn_timer.summary()}")
+                    if os.getenv("VALET_VOICE_TIMING", "").lower() in ("1", "true", "yes"):
+                        try:
+                            await emit_voice_timing(
+                                turn_timer.summary(),
+                                turn_timer.segments_ms(),
+                                turn_timer.total_ms(),
+                            )
+                        except Exception:
+                            pass
                 else:
                     await ws.send_json({"type": "status", "state": "idle"})
 
