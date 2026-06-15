@@ -171,6 +171,9 @@ export interface AudioPlayer {
   stop(): void;
   getAnalyser(): AnalyserNode;
   onFinished(cb: () => void): void;
+  /** Mark end-of-speech for the next turn; the first chunk that actually
+   *  plays logs the speech→first-audible latency (perceived-latency baseline). */
+  markTurnStart(): void;
 }
 
 export function createAudioPlayer(): AudioPlayer {
@@ -184,6 +187,9 @@ export function createAudioPlayer(): AudioPlayer {
   let isPlaying = false;
   let currentSource: AudioBufferSourceNode | null = null;
   let finishedCallback: (() => void) | null = null;
+  // Perceived-latency instrumentation: timestamp of the last end-of-speech,
+  // consumed (and cleared) by the first chunk that actually plays this turn.
+  let turnStartAt: number | null = null;
 
   function playNext() {
     if (queue.length === 0) {
@@ -206,6 +212,11 @@ export function createAudioPlayer(): AudioPlayer {
       }
     };
 
+    if (turnStartAt !== null) {
+      const ms = Math.round(performance.now() - turnStartAt);
+      console.log(`[voice-timing] speech_final→first_audio_played: ${ms}ms`);
+      turnStartAt = null;
+    }
     source.start();
   }
 
@@ -251,6 +262,10 @@ export function createAudioPlayer(): AudioPlayer {
 
     onFinished(cb: () => void) {
       finishedCallback = cb;
+    },
+
+    markTurnStart() {
+      turnStartAt = performance.now();
     },
   };
 }
