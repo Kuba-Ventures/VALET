@@ -1,4 +1,4 @@
-import { getSupabaseAdmin, type LicenseRow } from "./supabase";
+import { getSupabaseAdmin, getSupabaseAnon, type LicenseRow } from "./supabase";
 import { getUsageStatus, type UsageStatus } from "./proxy/usage";
 
 /**
@@ -190,5 +190,79 @@ export async function getLatestAccountSync(
     connections: (data.connections as AccountSync["connections"]) ?? null,
     appVersion: (data.app_version as string | null) ?? null,
     updatedAt: data.updated_at as string,
+  };
+}
+
+/** The most-recently-synced profile for a license key (for the launch-time
+ *  pull at /api/proxy/profile). Null until the app has synced at least once. */
+export async function getProfileByLicenseKey(
+  licenseKey: string,
+): Promise<AccountSync["profile"]> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("account_sync")
+    .select("profile")
+    .eq("license_key", licenseKey)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error("getProfileByLicenseKey failed:", error.message);
+    return null;
+  }
+  return (data?.profile as AccountSync["profile"]) ?? null;
+}
+
+/** Result of an app login. `ok:true` may still carry `licenseKey:null` when the
+ *  account exists but owns no license yet (app prompts to purchase/claim). */
+export type AppLoginResult =
+  | {
+      ok: true;
+      licenseKey: string | null;
+      status: LicenseRow["status"] | null;
+      planLabel: string | null;
+      profile: AccountSync["profile"];
+    }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Verify account credentials and provision what the desktop app needs: the
+ * license key (preferring an entitled one) and the latest synced profile.
+ *
+ * The password is used ONLY for `signInWithPassword` here and is never stored
+ * or logged. Supabase Auth rate-limits sign-ins.
+ */
+export async function loginAndProvision(
+  email: string,
+  password: string,
+): Promise<AppLoginResult> {
+  const anon = getSupabaseAnon();
+  const { data: auth, error: authErr } = await anon.auth.signInWithPassword({
+    email,
+    password,
+  });
+  if (authErr || !auth?.user) {
+    const msg = authErr?.message ?? "";
+    if (/confirm/i.test(msg)) {
+      return { ok: false, status: 403, error: "Please confirm your email, then try again." };
+    }
+    return { ok: false, status: 401, error: "Incorrect email or password." };
+  }
+
+  const userId = auth.user.id;
+  // getAccountLicenses returns licenses newest-first; prefer an entitled one.
+  const licenses = await getAccountLicenses(userId);
+  const chosen =
+    licenses.find((l) => l.status === "active" || l.status === "trialing") ??
+    licenses[0] ??
+    null;
+  const profile = (await getLatestAccountSync(userId))?.profile ?? null;
+
+  return {
+    ok: true,
+    licenseKey: chosen?.licenseKey ?? null,
+    status: chosen?.status ?? null,
+    planLabel: chosen?.planLabel ?? null,
+    profile,
   };
 }
