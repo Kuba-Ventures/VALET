@@ -8,7 +8,7 @@
 import { createOrb, type OrbState } from "./orb";
 import { createAudioPlayer } from "./voice";
 import { createWakeWord } from "./wakeWord";
-import { isPushToTalkEnabled, pushToTalkCode, isEditableTarget } from "./pushToTalk";
+import { isPushToTalkEnabled, pushToTalkCode, pushToTalkKeyLabel, isEditableTarget } from "./pushToTalk";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { maybeShowOnboarding } from "./onboarding";
@@ -470,6 +470,18 @@ document.addEventListener("keyup", (e) => {
 }, { capture: true });
 // Releasing focus / switching apps while held must not strand the mic "open".
 window.addEventListener("blur", () => wake.endPushToTalk());
+
+// Show a "press <key> to talk" affordance under the status line whenever the
+// push-to-talk toggle is on. Reflects the configured key; updates live when the
+// Settings toggle flips (settings.ts dispatches "ptt-changed").
+const pttHintEl = document.getElementById("ptt-hint")!;
+function updatePttHint() {
+  const on = isPushToTalkEnabled();
+  pttHintEl.textContent = `press ${pushToTalkKeyLabel()} to talk`;
+  pttHintEl.classList.toggle("hidden", !on);
+}
+window.addEventListener("ptt-changed", updatePttHint);
+updatePttHint();
 
 function setDiagMic(_text: string) { /* mic device label removed from UI */ }
 
