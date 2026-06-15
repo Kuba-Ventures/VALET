@@ -42,6 +42,7 @@ interface PreferencesResponse {
   bio_summary: string;
   bio_summary_updated: string;
   bio_source_count: number;
+  account_email?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,16 +208,29 @@ function buildPanelHTML(): string {
         <!-- Account login — signs in and auto-fills the license key + profile -->
         <section class="settings-section" id="section-account-login">
           <h3>Account</h3>
-          <div class="settings-hint">Sign in with your VALET account to pull in your license and profile automatically.</div>
-          <div class="settings-field">
-            <input class="settings-input" id="login-email" type="email" placeholder="Email" autocomplete="username" />
+          <!-- Signed-in state (shown once an account email is on file) -->
+          <div id="account-signedin" style="display:none">
+            <div class="settings-hint">Signed in as <strong id="account-email-label"></strong><span id="account-plan-label"></span></div>
+            <div class="settings-actions">
+              <span class="settings-hint" id="login-status-in"></span>
+              <button class="settings-btn" id="btn-account-signout">Sign out</button>
+            </div>
           </div>
-          <div class="settings-field">
-            <input class="settings-input" id="login-password" type="password" placeholder="Password" autocomplete="current-password" />
-          </div>
-          <div class="settings-actions">
-            <span class="settings-hint" id="login-status"></span>
-            <button class="settings-btn primary" id="btn-account-login">Log in</button>
+          <!-- Sign-in form -->
+          <div id="account-form">
+            <div class="settings-hint">Sign in with your VALET account to pull in your license and profile automatically.</div>
+            <div class="settings-field">
+              <label>Email</label>
+              <input type="email" id="login-email" autocomplete="username" />
+            </div>
+            <div class="settings-field">
+              <label>Password</label>
+              <input type="password" id="login-password" autocomplete="current-password" />
+            </div>
+            <div class="settings-actions">
+              <span class="settings-hint" id="login-status"></span>
+              <button class="settings-btn primary" id="btn-account-login">Log in</button>
+            </div>
           </div>
         </section>
 
@@ -370,8 +384,28 @@ async function loadPreferences() {
     if (dobEl) dobEl.value = prefs.date_of_birth || "";
     if (locEl) locEl.value = prefs.hometown_city || prefs.address || "";
     applyBioSummary(prefs.bio_summary, prefs.bio_summary_updated, prefs.bio_source_count);
+    renderAccountState(prefs.account_email || null);
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
+  }
+}
+
+/** Toggle the Account section between the sign-in form and a compact
+ *  "Signed in as <email>" state, so the form and the populated profile aren't
+ *  shown at the same time. */
+function renderAccountState(email: string | null, plan?: string | null) {
+  const form = document.getElementById("account-form");
+  const signedIn = document.getElementById("account-signedin");
+  const emailLabel = document.getElementById("account-email-label");
+  const planLabel = document.getElementById("account-plan-label");
+  if (email) {
+    if (emailLabel) emailLabel.textContent = email;
+    if (planLabel) planLabel.textContent = plan ? ` · ${plan}` : "";
+    if (form) form.style.display = "none";
+    if (signedIn) signedIn.style.display = "";
+  } else {
+    if (form) form.style.display = "";
+    if (signedIn) signedIn.style.display = "none";
   }
 }
 
@@ -662,15 +696,27 @@ function wireEvents() {
       const pwEl = document.getElementById("login-password") as HTMLInputElement | null;
       if (pwEl) pwEl.value = "";
       await loadPreferences();   // pulls the freshly-written name/honorific/DOB/location
+      // Collapse to the signed-in state (hides the form so it isn't shown next
+      // to the now-populated profile).
+      renderAccountState(email, res.plan);
+      const note = document.getElementById("login-status-in");
       const parts: string[] = [];
-      parts.push(res.has_license ? `Signed in${res.plan ? ` — ${res.plan}` : ""}.` : "Signed in. No license on this account yet.");
+      if (!res.has_license) parts.push("No license on this account yet.");
       if (res.needs_relaunch) parts.push("Restart VALET to activate your license.");
-      setStatus(parts.join(" "), !res.has_license || !!res.needs_relaunch);
+      if (note) { note.textContent = parts.join(" "); note.className = parts.length ? "settings-hint warn" : "settings-hint"; }
     } catch {
       setStatus("Couldn't reach the account server.", true);
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = "Log in"; }
     }
+  });
+
+  // Sign out — clear the stored account email so the form reappears. Leaves the
+  // license + profile in place (you're still licensed); this just lets you
+  // switch accounts.
+  document.getElementById("btn-account-signout")?.addEventListener("click", async () => {
+    try { await apiPost("/api/settings/keys", { key_name: "ACCOUNT_EMAIL", key_value: "" }); } catch { /* best effort */ }
+    renderAccountState(null);
   });
 
   // Regenerate profile — VALET synthesizes a fresh summary from accumulated notes.
