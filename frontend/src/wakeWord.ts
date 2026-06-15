@@ -35,12 +35,22 @@ export interface WakeWordController {
   getName(): string;
   getWakePhrase(): string;
   isActive(): boolean;
+  // Push-to-talk (PR 2): an instant trigger alongside the wake word. While held,
+  // the mic is hot and wake-word matching is skipped; on release the captured
+  // utterance is dispatched as a command. Does NOT change the wake `active` flag.
+  beginPushToTalk(): void;
+  endPushToTalk(): void;
 }
 
 export interface WakeWordHandlers {
   onWake: () => void;
-  onCommand: (text: string) => void;
+  // `opts.fromPushToTalk` marks a deliberate push-to-talk dispatch so the caller
+  // can skip echo filtering (the user explicitly held the key).
+  onCommand: (text: string, opts?: { fromPushToTalk?: boolean }) => void;
   onError: (msg: string) => void;
+  // Called once a push-to-talk interaction fully finishes (after dispatch or an
+  // empty release), so the caller can restore mic state (e.g. re-pause if asleep).
+  onPushToTalkEnd?: () => void;
 }
 
 function escapeRegExp(s: string): string {
@@ -137,6 +147,25 @@ export function createWakeWord(
   // the actual command (the tail after the wake phrase).
   let wokeThisUtterance = false;
 
+  // ── Push-to-talk state (PR 2) ──
+  // `pttHeld`: the key is down. `pttFinalizing`: released, awaiting the FINAL
+  // that flushes the buffered audio. Final segments accumulate in `pttSegments`
+  // so a pause mid-hold (which the recognizer emits as its own FINAL) isn't lost.
+  let pttHeld = false;
+  let pttFinalizing = false;
+  let pttSegments: string[] = [];
+  let pttTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function dispatchPushToTalk() {
+    if (!pttFinalizing && !pttHeld) return;
+    pttFinalizing = false;
+    if (pttTimer !== undefined) { clearTimeout(pttTimer); pttTimer = undefined; }
+    const cmd = pttSegments.join(" ").replace(/\s+/g, " ").trim();
+    pttSegments = [];
+    if (cmd) handlers.onCommand(cmd, { fromPushToTalk: true });
+    handlers.onPushToTalkEnd?.();
+  }
+
   function goPassive() {
     active = false;
   }
@@ -151,6 +180,17 @@ export function createWakeWord(
     (text: string, isFinal: boolean) => {
       const trimmed = text.trim();
       if (!trimmed) return;
+
+      // Push-to-talk owns the transcript stream while held or finalizing —
+      // wake-word matching is skipped entirely. Accumulate FINAL segments;
+      // dispatch when the release-triggered FINAL arrives.
+      if (pttHeld || pttFinalizing) {
+        if (isFinal) {
+          pttSegments.push(trimmed);
+          if (pttFinalizing) dispatchPushToTalk();
+        }
+        return;
+      }
 
       const extractTail = (t: string): string => {
         const m = wakeRegex.exec(t);
@@ -221,5 +261,23 @@ export function createWakeWord(
     getName() { return assistantName; },
     getWakePhrase() { return `ok ${assistantName}`; },
     isActive() { return active; },
+    beginPushToTalk() {
+      if (pttHeld) return;
+      pttHeld = true;
+      pttFinalizing = false;
+      pttSegments = [];
+      if (pttTimer !== undefined) { clearTimeout(pttTimer); pttTimer = undefined; }
+      voiceInput.resume();   // ensure the mic is hot even if asleep/paused
+      handlers.onWake();     // visual cue: show we're listening (no change to `active`)
+    },
+    endPushToTalk() {
+      if (!pttHeld) return;
+      pttHeld = false;
+      pttFinalizing = true;
+      voiceInput.finalize();  // flush buffered audio → a FINAL arrives, then dispatch
+      // Fallback: if no FINAL lands promptly, dispatch whatever we captured.
+      if (pttTimer !== undefined) clearTimeout(pttTimer);
+      pttTimer = setTimeout(() => { if (pttFinalizing) dispatchPushToTalk(); }, 1200);
+    },
   };
 }
