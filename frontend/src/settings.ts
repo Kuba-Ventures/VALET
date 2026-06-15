@@ -204,6 +204,22 @@ function buildPanelHTML(): string {
         <!-- ─── USER SETTINGS TAB (primary / default-active) ────────── -->
         <div class="settings-tab-content active" data-tab="user" id="tab-content-user">
 
+        <!-- Account login — signs in and auto-fills the license key + profile -->
+        <section class="settings-section" id="section-account-login">
+          <h3>Account</h3>
+          <div class="settings-hint">Sign in with your VALET account to pull in your license and profile automatically.</div>
+          <div class="settings-field">
+            <input class="settings-input" id="login-email" type="email" placeholder="Email" autocomplete="username" />
+          </div>
+          <div class="settings-field">
+            <input class="settings-input" id="login-password" type="password" placeholder="Password" autocomplete="current-password" />
+          </div>
+          <div class="settings-actions">
+            <span class="settings-hint" id="login-status"></span>
+            <button class="settings-btn primary" id="btn-account-login">Log in</button>
+          </div>
+        </section>
+
         <!-- User Preferences -->
         <section class="settings-section" id="section-preferences">
           <h3>User Preferences</h3>
@@ -622,6 +638,40 @@ function wireEvents() {
   }
   document.getElementById("btn-save-prefs")?.addEventListener("click", saveAllPreferences);
   document.getElementById("btn-save-personalized")?.addEventListener("click", saveAllPreferences);
+
+  // Account login — provisions the license key + profile, then refreshes the
+  // fields below so they fill in immediately.
+  document.getElementById("btn-account-login")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-account-login") as HTMLButtonElement | null;
+    const status = document.getElementById("login-status");
+    const email = (document.getElementById("login-email") as HTMLInputElement | null)?.value.trim() || "";
+    const password = (document.getElementById("login-password") as HTMLInputElement | null)?.value || "";
+    const setStatus = (t: string, warn = false) => {
+      if (status) { status.textContent = t; status.className = warn ? "settings-hint warn" : "settings-hint"; }
+    };
+    if (!email || !password) { setStatus("Enter your email and password.", true); return; }
+    if (btn) { btn.disabled = true; btn.textContent = "Signing in…"; }
+    setStatus("Signing in…");
+    try {
+      const res = await apiPost<{
+        ok: boolean; error?: string; has_license?: boolean; plan?: string | null;
+        needs_relaunch?: boolean; profile_applied?: string[];
+      }>("/api/account/login", { email, password });
+      if (!res.ok) { setStatus(res.error || "Sign-in failed.", true); return; }
+      // Clear the password field; never keep it around.
+      const pwEl = document.getElementById("login-password") as HTMLInputElement | null;
+      if (pwEl) pwEl.value = "";
+      await loadPreferences();   // pulls the freshly-written name/honorific/DOB/location
+      const parts: string[] = [];
+      parts.push(res.has_license ? `Signed in${res.plan ? ` — ${res.plan}` : ""}.` : "Signed in. No license on this account yet.");
+      if (res.needs_relaunch) parts.push("Restart VALET to activate your license.");
+      setStatus(parts.join(" "), !res.has_license || !!res.needs_relaunch);
+    } catch {
+      setStatus("Couldn't reach the account server.", true);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Log in"; }
+    }
+  });
 
   // Regenerate profile — VALET synthesizes a fresh summary from accumulated notes.
   document.getElementById("btn-regenerate-bio")?.addEventListener("click", async () => {

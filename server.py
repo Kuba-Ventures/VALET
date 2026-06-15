@@ -3504,6 +3504,65 @@ async def _fetch_and_apply_device_settings():
         log.warning(f"device-settings apply failed: {e}")
 
 
+# Account profile (name/honorific/DOB/location/emails) → local .env keys. Single
+# source of the mapping, shared by the login endpoint and the launch-time pull.
+_PROFILE_ENV_MAP = {
+    "name": "USER_NAME",
+    "honorific": "HONORIFIC",
+    "date_of_birth": "DATE_OF_BIRTH",
+    "location": "HOMETOWN_CITY",
+    "work_email": "WORK_EMAIL",
+    "personal_email": "PERSONAL_EMAIL",
+}
+
+
+def _apply_profile_to_env(profile: dict, *, fill_empty_only: bool) -> list[str]:
+    """Write account-profile fields into .env. `fill_empty_only` (used at launch)
+    skips any field the user already has set locally, so a background pull never
+    clobbers a local edit; the login flow passes False (account is authoritative
+    the moment the user signs in). Returns the env keys actually written."""
+    if not isinstance(profile, dict):
+        return []
+    _, env = _read_env()
+    written: list[str] = []
+    for pkey, ekey in _PROFILE_ENV_MAP.items():
+        raw = profile.get(pkey)
+        val = raw.strip() if isinstance(raw, str) else ""
+        if not val:
+            continue
+        if fill_empty_only and env.get(ekey, "").strip():
+            continue
+        _write_env_key(ekey, val)
+        written.append(ekey)
+    return written
+
+
+async def _fetch_and_apply_profile():
+    """Pull the latest synced profile down by license key and fill any empty
+    profile fields locally (so a fresh install auto-populates from the account).
+    Best-effort, never fatal. Mirrors _fetch_and_apply_device_settings."""
+    if not LICENSE_KEY:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            r = await http.get(
+                f"{PROXY_BASE_URL}/api/proxy/profile",
+                headers={"X-License-Key": LICENSE_KEY},
+            )
+        if r.status_code >= 300:
+            return
+        profile = (r.json() or {}).get("profile")
+    except Exception as e:
+        log.warning(f"profile fetch failed: {e}")
+        return
+    try:
+        written = _apply_profile_to_env(profile or {}, fill_empty_only=True)
+        if written:
+            log.info(f"applied account profile (filled: {', '.join(written)})")
+    except Exception as e:
+        log.warning(f"profile apply failed: {e}")
+
+
 # Usage tracking — logs every call with timestamp, persists to disk
 _USAGE_FILE = Path(__file__).parent / "data" / "usage_log.jsonl"
 _session_start = time.time()
@@ -3810,6 +3869,9 @@ async def lifespan(application: FastAPI):
     # session. Fired as a task so it never blocks startup.
     if LICENSE_KEY:
         asyncio.create_task(_fetch_and_apply_device_settings())
+        # Same idea for the profile (name/honorific/DOB/location): pull the
+        # account's latest synced profile and fill any empty fields locally.
+        asyncio.create_task(_fetch_and_apply_profile())
 
     # Pre-warm the proxy/LLM connection (+ static prompt cache) so the first
     # turn of the session doesn't pay the TLS handshake / cold cache (PR 4).
@@ -6437,6 +6499,10 @@ class PreferencesUpdate(BaseModel):
     address: str = ""
     hometown_city: str = ""
 
+class AppLogin(BaseModel):
+    email: str = ""
+    password: str = ""
+
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     # The app holds NO vendor secrets — only its license key and the proxy URL.
@@ -6530,6 +6596,63 @@ async def api_save_preferences(body: PreferencesUpdate):
     _write_env_key("ADDRESS", body.address)
     _write_env_key("HOMETOWN_CITY", body.hometown_city)
     return {"success": True}
+
+
+@app.post("/api/account/login")
+async def api_account_login(body: AppLogin):
+    """Sign in with the account email + password and provision the app:
+    write the returned LICENSE_KEY and profile (name/honorific/DOB/location) to
+    .env. The password is forwarded to the proxy for verification and is NEVER
+    stored or logged here. Profile fields apply immediately (read fresh per
+    turn); a newly-provisioned license key needs a relaunch to fully activate
+    (the proxy client + license gate are bound at startup), signalled by
+    `needs_relaunch`."""
+    email = (body.email or "").strip()
+    password = body.password or ""
+    if not email or not password:
+        return JSONResponse({"ok": False, "error": "Email and password are required."}, status_code=400)
+    base = (os.getenv("PROXY_BASE_URL", "") or PROXY_BASE_URL).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.post(
+                f"{base}/api/account/app-login",
+                json={"email": email, "password": password},
+            )
+    except Exception as e:
+        log.error(f"account login transport error: {e}")  # no body logged (carries the password)
+        return JSONResponse({"ok": False, "error": "Couldn't reach the account server."}, status_code=502)
+
+    if r.status_code != 200:
+        try:
+            err = (r.json() or {}).get("error") or "Sign-in failed."
+        except Exception:
+            err = "Sign-in failed."
+        return JSONResponse({"ok": False, "error": err}, status_code=r.status_code if r.status_code < 500 else 502)
+
+    data = r.json() or {}
+    new_key = (data.get("license_key") or "").strip()
+    needs_relaunch = False
+    if new_key:
+        needs_relaunch = new_key != (LICENSE_KEY or "")
+        _write_env_key("LICENSE_KEY", new_key)
+        # Re-validate so the entitlement gate reflects the new key live (the LLM
+        # proxy client is still bound to the startup key — hence needs_relaunch).
+        try:
+            import licensing
+            await licensing.validate(new_key, base)
+        except Exception as e:
+            log.warning(f"post-login license validate failed: {e}")
+
+    applied = _apply_profile_to_env(data.get("profile") or {}, fill_empty_only=False)
+    log.info(f"account login ok (has_license={bool(new_key)}, profile_fields={len(applied)})")
+    return {
+        "ok": True,
+        "has_license": bool(data.get("has_license")),
+        "plan": data.get("plan"),
+        "status": data.get("status"),
+        "profile_applied": applied,
+        "needs_relaunch": needs_relaunch,
+    }
 
 @app.get("/api/google/status")
 async def api_google_status():
