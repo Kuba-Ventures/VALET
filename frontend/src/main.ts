@@ -8,6 +8,7 @@
 import { createOrb, type OrbState } from "./orb";
 import { createAudioPlayer } from "./voice";
 import { createWakeWord } from "./wakeWord";
+import { isPushToTalkEnabled, pushToTalkCode, isEditableTarget } from "./pushToTalk";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { maybeShowOnboarding } from "./onboarding";
@@ -190,12 +191,14 @@ const wake = createWakeWord(
     onWake: () => {
       transition("listening");
     },
-    onCommand: (text: string) => {
+    onCommand: (text: string, opts?: { fromPushToTalk?: boolean }) => {
       // UC5 barge-in: while Vee is mid-reply or mid-task the mic is live, so
       // filter echoes — only a real interruption cuts in, and it tells the
       // backend to cancel the in-flight reply/loop before the new command runs.
+      // A push-to-talk dispatch is deliberate (the user held a key), so it skips
+      // the echo filter but still cancels any in-flight reply.
       if (currentState === "speaking" || currentState === "thinking") {
-        if (!shouldBargeIn(text, currentSpokenText)) return; // echo / noise — ignore
+        if (!opts?.fromPushToTalk && !shouldBargeIn(text, currentSpokenText)) return; // echo / noise — ignore
         socket.send({ type: "barge_in" });
       }
       audioPlayer.stop();
@@ -208,6 +211,11 @@ const wake = createWakeWord(
         showError("Backend not connected. Reconnecting…");
         transition("idle");
       }
+    },
+    onPushToTalkEnd: () => {
+      // Push-to-talk finished — restore the normal mic state (re-pauses the mic
+      // if the assistant is asleep, so a PTT-while-asleep doesn't leave it hot).
+      reconcileWakeControl();
     },
     onError: (msg: string) => {
       showError(msg);
@@ -440,6 +448,28 @@ document.addEventListener("keydown", (e) => {
     diagPanel.classList.toggle("hidden");
   }
 });
+
+// ── Push-to-talk (PR 2): hold the configured key to talk instantly, skipping
+// the wake word. Opt-in via Settings (default off), so the wake-word path is
+// untouched when disabled. Guards: ignore auto-repeat, typing in fields, and
+// an open Settings panel; preventDefault stops Space scrolling / activating a
+// focused button while held.
+function pttSettingsOpen(): boolean {
+  return !!document.getElementById("settings-panel-inner")?.classList.contains("open");
+}
+document.addEventListener("keydown", (e) => {
+  if (!isPushToTalkEnabled() || e.code !== pushToTalkCode()) return;
+  if (e.repeat || isEditableTarget(e.target) || pttSettingsOpen()) return;
+  e.preventDefault();
+  wake.beginPushToTalk();
+}, { capture: true });
+document.addEventListener("keyup", (e) => {
+  if (!isPushToTalkEnabled() || e.code !== pushToTalkCode()) return;
+  e.preventDefault();
+  wake.endPushToTalk();  // no-op if no PTT session is active
+}, { capture: true });
+// Releasing focus / switching apps while held must not strand the mic "open".
+window.addEventListener("blur", () => wake.endPushToTalk());
 
 function setDiagMic(_text: string) { /* mic device label removed from UI */ }
 

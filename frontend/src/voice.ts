@@ -11,6 +11,9 @@ export interface VoiceInput {
   stop(): void;
   pause(): void;
   resume(): void;
+  /** Force the recognizer to emit a FINAL for buffered audio WITHOUT ending the
+   *  listen loop (onend restarts it). Used by push-to-talk on key release. */
+  finalize(): void;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -24,7 +27,7 @@ export function createVoiceInput(
   const SR = (window as any).SpeechRecognition || (typeof webkitSpeechRecognition !== "undefined" ? webkitSpeechRecognition : null);
   if (!SR) {
     onError("Speech recognition not supported in this browser");
-    return { start() {}, stop() {}, pause() {}, resume() {} };
+    return { start() {}, stop() {}, pause() {}, resume() {}, finalize() {} };
   }
 
   const recognition = new SR();
@@ -157,6 +160,16 @@ export function createVoiceInput(
         } catch (e) {
           console.warn("[voice] resume() start threw:", e);
         }
+      }
+    },
+    finalize() {
+      // Flush buffered audio as a FINAL result. shouldListen/paused are left
+      // untouched, so onend restarts the recognizer and listening continues.
+      console.log("[voice] finalize() called");
+      try {
+        recognition.stop();
+      } catch (e) {
+        console.warn("[voice] finalize() stop threw:", e);
       }
     },
   };

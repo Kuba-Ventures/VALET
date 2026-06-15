@@ -5,6 +5,8 @@
  * Slides in from the right with glass-morphism styling.
  */
 
+import { isPushToTalkEnabled, setPushToTalkEnabled, pushToTalkKeyLabel } from "./pushToTalk";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -117,6 +119,11 @@ function buildPanelHTML(): string {
               <button class="settings-btn voice-opt active" id="voice-male" data-voice="male" type="button">British Male</button>
               <button class="settings-btn voice-opt" id="voice-female" data-voice="female" type="button">British Female</button>
             </div>
+          </div>
+
+          <div class="settings-field setup-hide">
+            <label class="settings-check"><input type="checkbox" id="input-push-to-talk" /> Push-to-talk</label>
+            <div class="settings-hint">Hold <strong id="ptt-key-label">Space</strong> to talk instantly, skipping the wake word. Release to send. The wake word still works as usual.</div>
           </div>
 
           <div class="settings-field setup-hide">
@@ -557,6 +564,14 @@ function wireEvents() {
     const on = (e.target as HTMLInputElement).checked;
     await apiPost("/api/settings/keys", { key_name: "VALET_TELEMETRY", key_value: on ? "on" : "off" });
   });
+  // Push-to-talk (PR 2) — frontend-only preference in localStorage; default off.
+  const pttCheckbox = document.getElementById("input-push-to-talk") as HTMLInputElement | null;
+  if (pttCheckbox) {
+    pttCheckbox.checked = isPushToTalkEnabled();
+    pttCheckbox.addEventListener("change", () => setPushToTalkEnabled(pttCheckbox.checked));
+  }
+  const pttLabel = document.getElementById("ptt-key-label");
+  if (pttLabel) pttLabel.textContent = pushToTalkKeyLabel();
   void loadVoice();
 
   // Close

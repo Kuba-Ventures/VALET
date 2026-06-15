@@ -213,6 +213,7 @@ function doneBody(): string {
   return `
     <h2 class="ob-title">You're set.</h2>
     <p class="ob-sub">Say "Hey Vee" or just start talking. Ask for anything, from a quick question to a multi-step task across your apps.</p>
+    <p class="ob-fineprint">Prefer a key? Turn on push-to-talk in Settings to hold Space and talk instantly, skipping the wake word.</p>
     <div class="ob-done-orb"></div>`;
 }
 
