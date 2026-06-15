@@ -25,6 +25,25 @@ export function getSupabaseAdmin(): SupabaseClient {
   return cached;
 }
 
+/**
+ * Anon-key Supabase client for server-side password verification
+ * (`signInWithPassword`). The admin client above uses the service-role key and
+ * bypasses auth, so it cannot validate a password. Created fresh per call (not
+ * cached) so concurrent sign-ins never share in-memory session state.
+ */
+export function getSupabaseAnon(): SupabaseClient {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) {
+    throw new Error(
+      "Supabase anon is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.",
+    );
+  }
+  return createClient(url, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
 export type LicenseStatus =
   | "active"
   | "trialing"
