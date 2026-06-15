@@ -251,6 +251,25 @@ async def emit_task_queued(task_id: str, title: str, detail: str = "") -> None:
     ))
 
 
+async def emit_voice_timing(summary: str, segments_ms: dict[str, float],
+                            total_ms: float | None) -> None:
+    """Opt-in: surface a voice-turn latency summary as a one-shot panel row.
+
+    Reuses the generic STEP event so the existing Process Panel renderer
+    handles it with no frontend change. Carries only timing numbers (ms) and
+    mark names — never transcript content. Gated by the caller (VALET only
+    emits this when VALET_VOICE_TIMING is set), so default UX is unchanged.
+    """
+    await bus.emit(Event(
+        type=EventType.STEP.value,
+        task_id=str(uuid.uuid4())[:8],
+        title="voice latency",
+        detail=summary,
+        status=EventStatus.DONE.value,
+        payload={"segments_ms": segments_ms, "total_ms": total_ms},
+    ))
+
+
 async def emit_project_event(task_id: str, stage: str, title: str,
                              detail: str = "", status: str = "active",
                              payload: dict[str, Any] | None = None) -> None:

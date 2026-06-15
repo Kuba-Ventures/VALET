@@ -202,6 +202,7 @@ const wake = createWakeWord(
       currentSpokenText = "";
       const sent = socket.send({ type: "transcript", text, isFinal: true });
       if (sent) {
+        audioPlayer.markTurnStart(); // perceived-latency: time until first audible reply
         transition("thinking");
       } else {
         showError("Backend not connected. Reconnecting…");
