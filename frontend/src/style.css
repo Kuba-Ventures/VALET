@@ -475,6 +475,7 @@ body.wake-sleeping #orb-canvas {
 
 .settings-field input[type="text"],
 .settings-field input[type="password"],
+.settings-field input[type="email"],
 .settings-field input[type="date"],
 .settings-field select,
 .settings-field textarea {
@@ -496,6 +497,18 @@ body.wake-sleeping #orb-canvas {
 .settings-field select:focus,
 .settings-field textarea:focus {
   border-color: rgba(124, 104, 240, 0.3);
+}
+
+/* WebKit autofill forces a white/yellow background that overrides the dark
+   style above. Re-paint it dark via the inset-shadow trick and keep the text
+   light, so an autofilled email/password matches every other field. */
+.settings-field input:-webkit-autofill,
+.settings-field input:-webkit-autofill:hover,
+.settings-field input:-webkit-autofill:focus {
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.8);
+  -webkit-box-shadow: 0 0 0 1000px #14141c inset;
+  caret-color: rgba(255, 255, 255, 0.8);
+  transition: background-color 9999s ease-in-out 0s;
 }
 
 .settings-field select {
