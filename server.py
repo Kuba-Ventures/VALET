@@ -120,6 +120,7 @@ from process_events import (
     emit_voice_timing,
 )
 from voice_timing import TurnTimer
+from voice_stream import SpeakableStreamer
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
 from work_mode import WorkSession, is_casual_question
@@ -2865,30 +2866,21 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
 # LLM Response
 # ---------------------------------------------------------------------------
 
-@observability.observe(name="generate-response", capture_input=False, capture_output=True)
-async def generate_response(
+def _build_chat_request(
     text: str,
-    client: anthropic.AsyncAnthropic,
     task_mgr: ClaudeTaskManager,
     projects: list[dict],
     conversation_history: list[dict],
     last_response: str = "",
     session_summary: str = "",
-    timer: "TurnTimer | None" = None,
-) -> str:
-    """Generate a VALET response using Anthropic API.
+) -> tuple[list[dict], list[dict]]:
+    """Assemble (system_blocks, messages) for a VALET conversational turn.
 
-    ``timer`` is an optional voice-turn TurnTimer; when supplied, this marks
-    ``request_sent`` (t1) just before the model call and ``first_token`` (t2)
-    when the response is available. No-op when None (e.g. non-voice callers).
+    Shared by the non-streaming `generate_response` and the streaming
+    `generate_response_streamed` so both build a byte-identical request (same
+    cached static block, same dynamic context, same history window) — the
+    Anthropic prompt cache then behaves the same on either path.
     """
-    # License gate: refuse to assist when the license isn't entitled (with a
-    # 7-day offline grace window). No-op in dev fallback (no LICENSE_KEY).
-    await _ensure_license()
-    _blocked = assistant_blocked_message()
-    if _blocked:
-        return _blocked
-
     now = datetime.now()
     current_time = now.strftime("%A, %B %d, %Y at %I:%M %p")
 
@@ -2990,6 +2982,44 @@ async def generate_response(
     # If the last message isn't the current user text, add it
     if not messages or messages[-1].get("content") != text:
         messages = messages + [{"role": "user", "content": text}]
+    system_blocks = [
+        # Static block — cached for 5 minutes, ~6-8KB. Skips the Anthropic API
+        # re-encoding it on every turn -> much faster TTFT.
+        {"type": "text", "text": static_system, "cache_control": {"type": "ephemeral"}},
+        # Dynamic block — small live context that varies per request.
+        {"type": "text", "text": dynamic_system},
+    ]
+    return system_blocks, messages
+
+
+@observability.observe(name="generate-response", capture_input=False, capture_output=True)
+async def generate_response(
+    text: str,
+    client: anthropic.AsyncAnthropic,
+    task_mgr: ClaudeTaskManager,
+    projects: list[dict],
+    conversation_history: list[dict],
+    last_response: str = "",
+    session_summary: str = "",
+    timer: "TurnTimer | None" = None,
+) -> str:
+    """Generate a VALET response using Anthropic API.
+
+    ``timer`` is an optional voice-turn TurnTimer; when supplied, this marks
+    ``request_sent`` (t1) just before the model call and ``first_token`` (t2)
+    when the response is available. No-op when None (e.g. non-voice callers).
+    """
+    # License gate: refuse to assist when the license isn't entitled (with a
+    # 7-day offline grace window). No-op in dev fallback (no LICENSE_KEY).
+    await _ensure_license()
+    _blocked = assistant_blocked_message()
+    if _blocked:
+        return _blocked
+
+    system_blocks, messages = _build_chat_request(
+        text, task_mgr, projects, conversation_history,
+        last_response=last_response, session_summary=session_summary,
+    )
 
     try:
         if timer is not None:
@@ -2997,22 +3027,98 @@ async def generate_response(
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=250,  # Extra room for [ACTION:X] tags
-            system=[
-                # Static block — cached for 5 minutes, ~6-8KB. Skips the
-                # Anthropic API re-encoding it on every turn → much faster TTFT.
-                {"type": "text", "text": static_system, "cache_control": {"type": "ephemeral"}},
-                # Dynamic block — small live context that varies per request.
-                {"type": "text", "text": dynamic_system},
-            ],
+            system=system_blocks,
             messages=messages,
         )
         if timer is not None:
-            timer.mark("first_token")  # t2: model response available (non-streaming today)
+            timer.mark("first_token")  # t2: model response available (non-streaming)
         track_usage(response)
         return response.content[0].text
     except Exception as e:
         log.error(f"LLM error: {e}")
         return "Apologies, sir. I'm having trouble connecting to my language systems."
+
+
+async def generate_response_streamed(
+    text: str,
+    client: anthropic.AsyncAnthropic,
+    task_mgr: ClaudeTaskManager,
+    projects: list[dict],
+    conversation_history: list[dict],
+    last_response: str = "",
+    session_summary: str = "",
+    *,
+    ws,
+    timer: "TurnTimer | None" = None,
+    should_cancel=None,
+) -> tuple[str, str]:
+    """Streaming sibling of `generate_response`: streams the reply and speaks
+    each complete sentence (before any [ACTION tag) as it lands, so the first
+    sentence plays while the rest is still generating.
+
+    Returns (full_text, tail). `tail` is the speakable remainder NOT yet spoken
+    — the caller speaks it (or a canned line) after handling any embedded
+    action, so the spoken text is never duplicated. Builds a byte-identical
+    request to `generate_response` (shared `_build_chat_request`).
+
+    `should_cancel()` is polled between sentences (barge-in seam). On a license
+    block or stream error before any text, returns the message as (msg, msg) so
+    the caller speaks it via the normal tail path. Marks t1/t2/t3 on `timer`.
+    """
+    await _ensure_license()
+    _blocked = assistant_blocked_message()
+    if _blocked:
+        return _blocked, _blocked
+    system_blocks, messages = _build_chat_request(
+        text, task_mgr, projects, conversation_history,
+        last_response=last_response, session_summary=session_summary,
+    )
+    streamer = SpeakableStreamer()
+    any_audio = False
+    if timer is not None:
+        timer.mark("request_sent")  # t1: request about to go to the proxy/model
+    try:
+        async with client.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=250,  # Extra room for [ACTION:X] tags
+            system=system_blocks,
+            messages=messages,
+        ) as stream:
+            async for delta in stream.text_stream:
+                if should_cancel is not None and should_cancel():
+                    break  # barge-in / superseded turn — stop synthesizing
+                if not streamer.full and timer is not None:
+                    timer.mark("first_token")  # t2: first streamed token
+                for sentence in streamer.feed(delta):
+                    caption = strip_em_dashes(sentence).strip()
+                    if not caption:
+                        continue
+                    if not any_audio:
+                        await ws.send_json({"type": "status", "state": "speaking"})
+                    audio = await synthesize_speech(strip_markdown_for_tts(caption))
+                    if not audio:
+                        continue
+                    try:
+                        await ws.send_json({
+                            "type": "audio",
+                            "data": base64.b64encode(audio).decode(),
+                            "text": caption,
+                        })
+                    except Exception:
+                        break
+                    if not any_audio and timer is not None:
+                        timer.mark("first_audio")  # t3: first audio chunk dispatched
+                    any_audio = True
+            try:
+                track_usage(stream.get_final_message())
+            except Exception:
+                pass
+    except Exception as e:
+        log.error(f"LLM stream error: {e}")
+        if not streamer.full:
+            msg = "Apologies, sir. I'm having trouble connecting to my language systems."
+            return msg, msg
+    return streamer.full, streamer.tail()
 
 
 # ---------------------------------------------------------------------------
@@ -5372,6 +5478,14 @@ async def voice_handler(ws: WebSocket):
             # mark names + timestamps — never transcript content.
             turn_timer = TurnTimer()
 
+            # PR 1 — streaming first-sentence TTS. The chat path streams the
+            # reply and speaks complete sentences as they land; `streamed` then
+            # tells the shared speak block (below) that audio was already sent so
+            # it only voices `pending_speech` (the unspoken tail / canned line),
+            # never the whole reply again.
+            streamed = False
+            pending_speech = ""
+
             # ── Dictation mode capture/confirm intercept (chunk 21 Mode 2).
             # When ws is in a dictation phase, the user's utterance is the
             # prompt body (or a confirm/cancel) — NOT a routable command. We
@@ -5779,18 +5893,33 @@ async def voice_handler(ws: WebSocket):
                         elif not anthropic_client:
                             response_text = "API key not configured."
                         else:
-                            response_text = await generate_response(
+                            # PR 1: stream the reply and speak each complete
+                            # sentence (before any [ACTION tag) as it lands, so
+                            # the first sentence plays while the rest generates.
+                            # `tail` is the unspoken speakable remainder; the
+                            # shared speak block voices it (or a canned line)
+                            # after we handle any embedded action — the streamed
+                            # prefix is never re-spoken.
+                            response_text, tail = await generate_response_streamed(
                                 user_text, anthropic_client, task_manager,
                                 cached_projects, history,
                                 last_response=last_valet_response,
                                 session_summary=session_summary,
+                                ws=ws,
                                 timer=turn_timer,
+                                should_cancel=lambda: (
+                                    my_response_id != _current_response_id
+                                    or _cancel_response
+                                ),
                             )
+                            streamed = True
+                            pending_speech = tail  # default: voice the unspoken tail
 
                             # Check for action tags embedded in LLM response
                             clean_response, embedded_action = extract_action(response_text)
                             if embedded_action:
                                 log.info(f"LLM embedded action: {embedded_action}")
+                                clean_was_empty = not clean_response.strip()
                                 response_text = clean_response
                                 # Ensure there's always something to speak
                                 if not response_text.strip():
@@ -5806,6 +5935,13 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _handle_screen shows the panel + speaks
                                     else:
                                         response_text = "Right away, sir."
+
+                                # When the reply was a pure action (no spoken
+                                # prefix streamed), the canned line above is the
+                                # whole utterance — voice it. Otherwise the prefix
+                                # was already streamed and only `tail` remains.
+                                if clean_was_empty:
+                                    pending_speech = response_text
 
                                 # Phase H: global kill switch halts ALL actions;
                                 # Tier 1 actions outside the gated executor confirm here.
@@ -6061,13 +6197,26 @@ async def voice_handler(ws: WebSocket):
                 # transcript.
                 if response_text:
                     response_text = strip_em_dashes(response_text)
-                    tts = strip_markdown_for_tts(response_text)
-                    await ws.send_json({"type": "status", "state": "speaking"})
-                    # Sentence-chunked so a multi-sentence reply starts speaking
-                    # before the whole thing is synthesized.
-                    if not await _speak_chunks(ws, tts, response_text, timer=turn_timer):
-                        await ws.send_json({"type": "text", "text": response_text})
-                        await ws.send_json({"type": "status", "state": "idle"})
+                    if streamed:
+                        # PR 1: the streaming path already voiced the leading
+                        # sentences. Speak only the unspoken remainder — the
+                        # `tail`, or a canned line for a pure action. The full
+                        # reply is still used for history/log/memory above/below.
+                        remainder = strip_em_dashes(pending_speech).strip()
+                        if remainder:
+                            tts = strip_markdown_for_tts(remainder)
+                            await ws.send_json({"type": "status", "state": "speaking"})
+                            if not await _speak_chunks(ws, tts, remainder, timer=turn_timer):
+                                await ws.send_json({"type": "text", "text": remainder})
+                                await ws.send_json({"type": "status", "state": "idle"})
+                    else:
+                        tts = strip_markdown_for_tts(response_text)
+                        await ws.send_json({"type": "status", "state": "speaking"})
+                        # Sentence-chunked so a multi-sentence reply starts speaking
+                        # before the whole thing is synthesized.
+                        if not await _speak_chunks(ws, tts, response_text, timer=turn_timer):
+                            await ws.send_json({"type": "text", "text": response_text})
+                            await ws.send_json({"type": "status", "state": "idle"})
                     log.info(f"VALET: {response_text}")
                     last_valet_response = response_text
 
