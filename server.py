@@ -235,6 +235,59 @@ def _fish_model() -> str:
     v = (os.getenv("FISH_MODEL", "") or "").strip().lower()
     return v if v in _VALID_FISH_MODEL else ""
 
+
+# Shared keep-alive HTTP client for proxy calls (perceived-latency PR 4). The
+# old code created a fresh httpx.AsyncClient per TTS call, so EVERY call paid a
+# new TLS handshake to the proxy. A single pooled client keeps the connection
+# warm across the whole session — the handshake is paid once (and pre-warmed at
+# startup), not per turn. Created lazily; closed in the lifespan shutdown.
+_http_client: "Optional[httpx.AsyncClient]" = None
+
+
+def _get_http_client() -> "httpx.AsyncClient":
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=5.0),
+            limits=httpx.Limits(max_keepalive_connections=8, keepalive_expiry=90.0),
+        )
+    return _http_client
+
+
+async def _close_http_client() -> None:
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        try:
+            await _http_client.aclose()
+        except Exception:
+            pass
+    _http_client = None
+
+
+async def _prewarm(client) -> None:
+    """Best-effort startup warm so the FIRST turn of a session doesn't pay the
+    cold cost. Warms (1) the shared httpx pool's TLS connection to the proxy
+    (licensed path) and (2) the Anthropic SDK→proxy connection plus the cached
+    static prompt block (one tiny max_tokens=1 request). Never blocks startup,
+    never fatal. Disable the LLM warm with VALET_PREWARM=0."""
+    if LICENSE_KEY:
+        try:
+            await _get_http_client().get(PROXY_BASE_URL, timeout=5.0)
+        except Exception as e:
+            log.debug(f"proxy connection prewarm skipped: {e}")
+    if client is not None and os.getenv("VALET_PREWARM", "1").lower() not in ("0", "false", "no"):
+        try:
+            await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1,
+                system=[{"type": "text", "text": _static_system(),
+                         "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": "warm"}],
+            )
+            log.info("prewarm: LLM connection + static prompt cache warmed")
+        except Exception as e:
+            log.debug(f"LLM prewarm skipped: {e}")
+
 # Stage E: two selectable British voices. The persona (VALET, the butler) is
 # unchanged — only the Fish TTS model swaps. The active voice's reference_id is
 # sent on every TTS call (the proxy forwards it). VALET_VOICE = "male" | "female".
@@ -2897,15 +2950,16 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            response = await http.post(url, headers=headers, json=payload)
-            if response.status_code == 200:
-                _session_tokens["tts_calls"] += 1
-                _append_usage_entry(0, 0, "tts")
-                return response.content
-            else:
-                log.error(f"TTS error: {response.status_code}")
-                return None
+        # Shared keep-alive client — no per-call TLS handshake to the proxy.
+        http = _get_http_client()
+        response = await http.post(url, headers=headers, json=payload, timeout=15.0)
+        if response.status_code == 200:
+            _session_tokens["tts_calls"] += 1
+            _append_usage_entry(0, 0, "tts")
+            return response.content
+        else:
+            log.error(f"TTS error: {response.status_code}")
+            return None
     except Exception as e:
         log.error(f"TTS error: {e}")
         return None
@@ -2914,6 +2968,43 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
 # ---------------------------------------------------------------------------
 # LLM Response
 # ---------------------------------------------------------------------------
+
+def _static_system() -> str:
+    """The cached static system block: identity, behaviour rules, full action
+    descriptions. Reads `.env` fresh so identity edits apply without a restart.
+    Shared by `_build_chat_request` and the startup prompt-cache pre-warm so both
+    produce a byte-identical cacheable prefix (a warm then hits the same cache)."""
+    _, _env_dict = _read_env()
+    _dob = _env_dict.get("DATE_OF_BIRTH", "").strip()
+    _addr = _env_dict.get("ADDRESS", "").strip()
+    _work_email = _env_dict.get("WORK_EMAIL", "").strip() or WORK_EMAIL
+    _personal_email = _env_dict.get("PERSONAL_EMAIL", "").strip() or PERSONAL_EMAIL
+    _personal_lines = []
+    if _dob: _personal_lines.append(f"- Date of birth: {_dob}")
+    if _addr: _personal_lines.append(f"- Lives at: {_addr}")
+    if _work_email:
+        _personal_lines.append(
+            f"- Work email: {_work_email} — for [ACTION:BROWSE], use "
+            f"https://mail.google.com/mail/?authuser={_work_email}"
+        )
+    if _personal_email:
+        _personal_lines.append(
+            f"- Personal email: {_personal_email} — for [ACTION:BROWSE], use "
+            f"https://mail.google.com/mail/?authuser={_personal_email}"
+        )
+    if _work_email and _personal_email:
+        _personal_lines.append(
+            '- When user says "my email" with no qualifier, default to the work email. '
+            'When they say "work email" use the work URL above; "personal email" or '
+            '"my Gmail" → personal URL above. Always use [ACTION:BROWSE] with the exact URL.'
+        )
+    personal_context = ("\nPERSONAL CONTEXT:\n" + "\n".join(_personal_lines) + "\n") if _personal_lines else ""
+    return VALET_SYSTEM_PROMPT.format(
+        user_name=USER_NAME,
+        project_dir=PROJECT_DIR,
+        personal_context=personal_context,
+    )
+
 
 def _build_chat_request(
     text: str,
@@ -2950,43 +3041,10 @@ def _build_chat_request(
     # Check if any lookups are in progress
     lookup_status = get_lookup_status()
 
-    # Build the personal-context block from .env-stored identity fields.
-    # Reads .env fresh so edits in the settings panel take effect on the next
-    # request without restarting the backend.
-    _, _env_dict = _read_env()
-    _dob = _env_dict.get("DATE_OF_BIRTH", "").strip()
-    _addr = _env_dict.get("ADDRESS", "").strip()
-    _work_email = _env_dict.get("WORK_EMAIL", "").strip() or WORK_EMAIL
-    _personal_email = _env_dict.get("PERSONAL_EMAIL", "").strip() or PERSONAL_EMAIL
-    _personal_lines = []
-    if _dob: _personal_lines.append(f"- Date of birth: {_dob}")
-    if _addr: _personal_lines.append(f"- Lives at: {_addr}")
-    if _work_email:
-        _personal_lines.append(
-            f"- Work email: {_work_email} — for [ACTION:BROWSE], use "
-            f"https://mail.google.com/mail/?authuser={_work_email}"
-        )
-    if _personal_email:
-        _personal_lines.append(
-            f"- Personal email: {_personal_email} — for [ACTION:BROWSE], use "
-            f"https://mail.google.com/mail/?authuser={_personal_email}"
-        )
-    if _work_email and _personal_email:
-        _personal_lines.append(
-            '- When user says "my email" with no qualifier, default to the work email. '
-            'When they say "work email" use the work URL above; "personal email" or '
-            '"my Gmail" → personal URL above. Always use [ACTION:BROWSE] with the exact URL.'
-        )
-    personal_context = ("\nPERSONAL CONTEXT:\n" + "\n".join(_personal_lines) + "\n") if _personal_lines else ""
-
-    # Static block — identity, behavior rules, full action descriptions. This
-    # only changes when USER_NAME/PROJECT_DIR/personal .env values change, so
-    # Anthropic's prompt cache hits it on virtually every request.
-    static_system = VALET_SYSTEM_PROMPT.format(
-        user_name=USER_NAME,
-        project_dir=PROJECT_DIR,
-        personal_context=personal_context,
-    )
+    # Static block — identity, behavior rules, full action descriptions. Cached
+    # by Anthropic; extracted so the startup pre-warm (PR 4) builds the same
+    # bytes and warms the right cache prefix.
+    static_system = _static_system()
 
     # Dynamic block — live context that varies request-to-request. Not cached.
     dynamic_system = VALET_DYNAMIC_CONTEXT.format(
@@ -3753,6 +3811,10 @@ async def lifespan(application: FastAPI):
     if LICENSE_KEY:
         asyncio.create_task(_fetch_and_apply_device_settings())
 
+    # Pre-warm the proxy/LLM connection (+ static prompt cache) so the first
+    # turn of the session doesn't pay the TLS handshake / cold cache (PR 4).
+    asyncio.create_task(_prewarm(anthropic_client))
+
     cached_projects = []
 
     # Start context refresh in a separate thread (never touches event loop)
@@ -3778,6 +3840,8 @@ async def lifespan(application: FastAPI):
 
     if _sync_task:
         _sync_task.cancel()
+    # Close the shared keep-alive HTTP client (PR 4).
+    await _close_http_client()
     # Flush any buffered traces so nothing is lost on shutdown.
     observability.shutdown_observability()
 
