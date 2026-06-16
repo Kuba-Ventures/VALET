@@ -107,6 +107,7 @@ function licenseBody(): string {
     <div class="ob-field">
       <label class="ob-label">Password</label>
       <input id="ob-login-password" class="ob-input" type="password" autocomplete="current-password" />
+      <label class="ob-show"><input type="checkbox" id="ob-login-showpw" /> Show password</label>
     </div>
     <div class="ob-inline">
       <button class="ob-btn primary" id="ob-login">Log in</button>
@@ -216,7 +217,6 @@ function connectionsBody(): string {
     <div class="ob-rows">
       ${conn("Google Calendar", "Read your events by voice, merged with Apple Calendar.", "settings")}
       ${conn("Gmail", "Triage and draft mail.", "settings")}
-      ${conn("MCP servers", "Connect tools that speak the Model Context Protocol.", "soon")}
       ${conn("Other apps", "Spotify, Notes, the browser, and more work out of the box.", "ready")}
     </div>
     <p class="ob-fineprint">Connect Google Calendar and Gmail anytime under Settings &rsaquo; Console Settings &rsaquo; Accounts. Everything else is ready the moment you finish setup.</p>`;
@@ -240,6 +240,10 @@ function wireStep(state: State, root: HTMLElement): void {
     // backend writes them to .env, so the later "About you" step pre-fills.
     const loginBtn = root.querySelector<HTMLButtonElement>("#ob-login");
     const loginStatus = root.querySelector<HTMLElement>("#ob-login-status");
+    root.querySelector<HTMLInputElement>("#ob-login-showpw")?.addEventListener("change", (e) => {
+      const pw = root.querySelector<HTMLInputElement>("#ob-login-password");
+      if (pw) pw.type = (e.target as HTMLInputElement).checked ? "text" : "password";
+    });
     loginBtn?.addEventListener("click", async () => {
       const email = root.querySelector<HTMLInputElement>("#ob-login-email")?.value.trim() || "";
       const pwEl = root.querySelector<HTMLInputElement>("#ob-login-password");
@@ -248,13 +252,18 @@ function wireStep(state: State, root: HTMLElement): void {
       if (!email || !password) { set("Enter your email and password.", "warn"); return; }
       loginBtn.disabled = true; loginBtn.textContent = "Signing in…"; set("Signing in…", "");
       try {
-        const res = await postJSON<{ ok: boolean; error?: string; has_license?: boolean; plan?: string | null }>(
+        const res = await postJSON<{ ok: boolean; error?: string; has_license?: boolean; plan?: string | null; name?: string; license_key?: string }>(
           "/api/account/login", { email, password },
         );
         if (pwEl) pwEl.value = "";
         if (res?.ok) {
-          if (res.has_license) set(`Signed in${res.plan ? ` — ${res.plan}` : ""}. You're good to go.`, "ok");
-          else set("Signed in, but no license on this account yet.", "warn");
+          if (res.has_license) {
+            const who = (res.name && res.name.trim()) || email;
+            const key = res.license_key ? ` · ${res.license_key}` : "";
+            set(`Signed in as ${who} — ${res.plan || "active"}${key}. You're good to go.`, "ok");
+          } else {
+            set("Signed in, but no license on this account yet.", "warn");
+          }
         } else {
           set(res?.error || "Sign-in failed.", "warn");
         }
