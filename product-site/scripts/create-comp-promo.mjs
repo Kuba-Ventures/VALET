@@ -13,11 +13,11 @@
  *   node scripts/create-comp-promo.mjs
  *
  * Optional env:
- *   COMP_COUPON_NAME      label for the coupon (default "VALET VIP — comp Ultra")
+ *   COMP_COUPON_NAME      label for the coupon (default "VALET VIP comp Ultra")
  *   COMP_MAX_REDEMPTIONS  cap total redemptions of the code (default: unlimited)
  *
  * It prints the promotion code (store + share with insiders) and the
- * STRIPE_COMP_COUPON_ID line to paste into Vercel — that flips /vip into a
+ * STRIPE_COMP_COUPON_ID line to paste into Vercel, which flips /vip into a
  * one-click, no-typing, no-card flow. Safe to re-run: an existing coupon (same
  * name) and code are reused, not duplicated.
  */
@@ -26,7 +26,7 @@ import Stripe from "stripe";
 const secret = process.env.STRIPE_SECRET_KEY;
 const ultraPrice = process.env.STRIPE_PRICE_ID_ULTRA;
 const code = (process.env.COMP_CODE || "VALETVIP").toUpperCase();
-const couponName = process.env.COMP_COUPON_NAME || "VALET VIP — comp Ultra";
+const couponName = process.env.COMP_COUPON_NAME || "VALET VIP comp Ultra";
 const maxRedemptions = process.env.COMP_MAX_REDEMPTIONS
   ? Number(process.env.COMP_MAX_REDEMPTIONS)
   : undefined;
@@ -41,7 +41,8 @@ if (!ultraPrice) {
 }
 
 const stripe = new Stripe(secret);
-const mode = secret.startsWith("sk_live_") ? "LIVE" : "TEST";
+// Both standard (sk_) and restricted (rk_) keys carry the _live_/_test_ infix.
+const mode = secret.includes("_live_") ? "LIVE" : "TEST";
 
 async function main() {
   console.log(`Stripe mode: ${mode}`);
