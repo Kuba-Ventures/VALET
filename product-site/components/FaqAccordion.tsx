@@ -10,6 +10,10 @@ const FAQS: Qa[] = [
     a: "VALET is built for macOS. You download the app, sign in, and grant it permission to work across your apps and files.",
   },
   {
+    q: "Which apps can it work with?",
+    a: "Anything on your Mac. Beyond Calendar, Mail, and Notes, VALET can see and operate any app on screen through macOS accessibility — your browser, editor, chat apps, and more — so you're not limited to a built-in few.",
+  },
+  {
     q: "What does the free trial include?",
     a: "The full Pro plan for 7 days. Unlimited voice control across your apps, fast and deep work, all of it. No charge until the trial ends, and you can cancel before then.",
   },

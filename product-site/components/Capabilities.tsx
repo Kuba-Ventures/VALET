@@ -14,8 +14,8 @@ const CARDS = [
     ),
   },
   {
-    title: "Real actions",
-    body: "It opens the app, finds the file, writes the reply, books the time. Outcomes, not instructions for you to follow.",
+    title: "Real actions, any app",
+    body: "It opens the app, finds the file, writes the reply, books the time — across any app on your Mac, not just a built-in few. Outcomes, not instructions for you to follow.",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" className={ICON} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 12h13M12 5l7 7-7 7" />
