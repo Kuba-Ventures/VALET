@@ -3,17 +3,20 @@
 import { useState } from "react";
 
 /**
- * Starts subscription checkout for a given paid plan: creates a session
- * server-side via /api/checkout (passing the plan), then sends the browser to
- * the returned Stripe URL.
+ * Starts subscription checkout: creates a session server-side via /api/checkout
+ * (passing the plan, or the comp flag for VIP), then sends the browser to the
+ * returned Stripe URL. With `comp`, the plan is forced to Ultra server-side and
+ * the session is the no-card complimentary flow.
  */
 export default function CheckoutButton({
   plan = "pro",
+  comp = false,
   label = "Start 7 day free trial",
   variant = "primary",
   className = "",
 }: {
   plan?: "pro" | "ultra";
+  comp?: boolean;
   label?: string;
   variant?: "primary" | "ghost";
   className?: string;
@@ -27,16 +30,16 @@ export default function CheckoutButton({
     // GTM analytics: intent to start a trial. Configure as a tag in GTM.
     window.dataLayer = window.dataLayer || [];
     window.dataLayer.push({
-      event: "begin_checkout",
-      plan,
-      value: plan === "ultra" ? 50 : 20,
+      event: comp ? "begin_comp" : "begin_checkout",
+      plan: comp ? "ultra" : plan,
+      value: comp ? 0 : plan === "ultra" ? 50 : 20,
       currency: "USD",
     });
     try {
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan }),
+        body: JSON.stringify(comp ? { comp: true } : { plan }),
       });
       const data = await res.json();
       if (!res.ok || !data.url) {
