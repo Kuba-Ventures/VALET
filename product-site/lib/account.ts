@@ -1,5 +1,7 @@
 import { getSupabaseAdmin, getSupabaseAnon, type LicenseRow } from "./supabase";
 import { getUsageStatus, type UsageStatus } from "./proxy/usage";
+import { stripe } from "./stripe";
+import { isEntitled, subscriptionIsComp } from "./license";
 
 /**
  * Account data layer. Everything here runs server-side with the service-role
@@ -14,7 +16,30 @@ export interface AccountLicense {
   currentPeriodEnd: string | null;
   trialEndsAt: string | null;
   hasBilling: boolean;
+  /** Free-for-life VIP grant (100%-off-forever coupon). */
+  comp: boolean;
   usage: UsageStatus;
+}
+
+/**
+ * Is this subscription a comp (VIP, free-for-life) grant? Looked up live from
+ * Stripe with the discount expanded; we don't persist a flag on the license
+ * row. Best-effort: any error resolves to false so the card just renders as a
+ * normal license.
+ */
+async function isCompSubscription(
+  subscriptionId: string | null,
+): Promise<boolean> {
+  if (!subscriptionId) return false;
+  try {
+    const sub = await stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ["discounts"],
+    });
+    return subscriptionIsComp(sub);
+  } catch (err) {
+    console.error("isCompSubscription failed:", err);
+    return false;
+  }
 }
 
 /** Map a stored Stripe price id onto a human plan label. */
@@ -107,7 +132,7 @@ export async function getAccountLicenses(
   const { data, error } = await supabase
     .from("licenses")
     .select(
-      "license_key, status, plan, current_period_end, trial_ends_at, stripe_customer_id",
+      "license_key, status, plan, current_period_end, trial_ends_at, stripe_customer_id, stripe_subscription_id",
     )
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
@@ -119,18 +144,29 @@ export async function getAccountLicenses(
 
   const rows = data ?? [];
   return Promise.all(
-    rows.map(async (row) => ({
-      licenseKey: row.license_key as string,
-      status: row.status as LicenseRow["status"],
-      planLabel: planLabel((row.plan as string | null) ?? null),
-      currentPeriodEnd: (row.current_period_end as string | null) ?? null,
-      trialEndsAt: (row.trial_ends_at as string | null) ?? null,
-      hasBilling: Boolean(row.stripe_customer_id),
-      usage: await getUsageStatus(
-        row.license_key as string,
-        (row.plan as string | null) ?? null,
-      ),
-    })),
+    rows.map(async (row) => {
+      const status = row.status as LicenseRow["status"];
+      const subscriptionId =
+        (row.stripe_subscription_id as string | null) ?? null;
+      // Only probe Stripe for live licenses; a canceled/invalid row can't be a
+      // current comp grant, and we skip the call.
+      const comp = isEntitled(status)
+        ? await isCompSubscription(subscriptionId)
+        : false;
+      return {
+        licenseKey: row.license_key as string,
+        status,
+        planLabel: planLabel((row.plan as string | null) ?? null),
+        currentPeriodEnd: (row.current_period_end as string | null) ?? null,
+        trialEndsAt: (row.trial_ends_at as string | null) ?? null,
+        hasBilling: Boolean(row.stripe_customer_id),
+        comp,
+        usage: await getUsageStatus(
+          row.license_key as string,
+          (row.plan as string | null) ?? null,
+        ),
+      };
+    }),
   );
 }
 
