@@ -306,7 +306,12 @@ export default async function AccountPage() {
 
   // Lazy auto-claim: attach any license bought with this email.
   await linkLicensesByEmail(user.id, user.email);
-  const licenses = await getAccountLicenses(user.id);
+  // Show only live licenses. Canceled/invalid rows (e.g. superseded duplicate
+  // subscriptions) are kept in the data layer but hidden here so the account
+  // reflects current access, not billing history.
+  const licenses = (await getAccountLicenses(user.id)).filter(
+    (l) => l.status !== "canceled" && l.status !== "invalid",
+  );
   const sync = licenses.length ? await getLatestAccountSync(user.id) : null;
 
   return (
