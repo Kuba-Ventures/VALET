@@ -169,17 +169,7 @@ function buildPanelHTML(): string {
           </div>
         </section>
 
-        <!-- Contacts (Computer) -->
-        <section class="settings-section" id="section-contacts">
-          <h3>Contacts</h3>
-          <div class="account-hint">Save names → emails so "email Nick" knows the address. VALET checks these first, then your Mac's Contacts.</div>
-          <div class="contacts-list" id="contacts-list"><div class="account-hint">Loading…</div></div>
-          <div class="settings-input-row" style="margin-top:8px; gap:6px">
-            <input class="settings-input" id="contact-name" type="text" placeholder="Name (e.g. Nick)" style="flex:1" />
-            <input class="settings-input" id="contact-email" type="email" placeholder="email@example.com" style="flex:2" />
-            <button class="settings-btn" id="btn-contact-add">Add</button>
-          </div>
-        </section>
+        <!-- Contacts are managed on the web account dashboard (not in-app). -->
 
         <!-- Connection Status (Computer) -->
         <section class="settings-section" id="section-status">
@@ -221,6 +211,7 @@ function buildPanelHTML(): string {
               <div><span class="account-meta-k">Plan</span><span id="account-plan-label">—</span></div>
               <div><span class="account-meta-k">License</span><span id="account-license-label" class="account-license">—</span></div>
             </div>
+            <div class="settings-hint" style="margin-top:8px"><a href="https://valetvoice.vercel.app/account" target="_blank" rel="noreferrer">Manage account &amp; contacts in your browser ↗</a></div>
             <div class="settings-actions">
               <span class="settings-hint" id="login-status-in"></span>
               <button class="settings-btn" id="btn-account-signout">Sign out</button>
@@ -356,7 +347,6 @@ async function loadStatus() {
     setDotStatus("status-notes", status.notes_accessible ? "green" : "red");
     setDotStatus("status-server", "green");
     applyGoogleStatus(status.google_connected, status.google_email, status.google_credentials_present);
-    void loadContacts();
 
     const serverDetail = document.getElementById("status-server-detail");
     if (serverDetail) serverDetail.textContent = `port ${status.server_port} | up ${formatUptime(status.uptime_seconds)}`;
