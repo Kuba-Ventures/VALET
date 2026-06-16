@@ -6601,15 +6601,36 @@ async def api_save_preferences(body: PreferencesUpdate):
     return {"success": True}
 
 
+def _reinit_after_license(new_key: str) -> None:
+    """Activate a runtime-provisioned license (from account login) in the RUNNING
+    session — no relaunch. Rebuilds the proxy LLM client and updates the
+    LICENSE_KEY global so generate_response (LLM) and synthesize_speech (TTS,
+    which reads the LICENSE_KEY global for its X-License-Key header) both work
+    immediately. Mirrors the lifespan startup build."""
+    global LICENSE_KEY, anthropic_client
+    LICENSE_KEY = new_key
+    if not new_key:
+        return
+    try:
+        anthropic_client = anthropic.AsyncAnthropic(
+            api_key="license-proxy",
+            base_url=f"{PROXY_BASE_URL}/api/proxy",
+            default_headers={"X-License-Key": new_key},
+            max_retries=1,
+            timeout=20.0,
+        )
+        log.info("re-initialized LLM proxy client after account login (no relaunch needed)")
+    except Exception as e:
+        log.warning(f"post-login client re-init failed: {e}")
+
+
 @app.post("/api/account/login")
 async def api_account_login(body: AppLogin):
     """Sign in with the account email + password and provision the app:
     write the returned LICENSE_KEY and profile (name/honorific/DOB/location) to
-    .env. The password is forwarded to the proxy for verification and is NEVER
-    stored or logged here. Profile fields apply immediately (read fresh per
-    turn); a newly-provisioned license key needs a relaunch to fully activate
-    (the proxy client + license gate are bound at startup), signalled by
-    `needs_relaunch`."""
+    .env, then re-initialize the LLM/TTS clients so the session works
+    immediately (no relaunch). The password is forwarded to the proxy for
+    verification and is NEVER stored or logged here."""
     email = (body.email or "").strip()
     password = body.password or ""
     if not email or not password:
@@ -6634,17 +6655,18 @@ async def api_account_login(body: AppLogin):
 
     data = r.json() or {}
     new_key = (data.get("license_key") or "").strip()
-    needs_relaunch = False
     if new_key:
-        needs_relaunch = new_key != (LICENSE_KEY or "")
         _write_env_key("LICENSE_KEY", new_key)
-        # Re-validate so the entitlement gate reflects the new key live (the LLM
-        # proxy client is still bound to the startup key — hence needs_relaunch).
+        # Re-validate so the entitlement gate reflects the new key live, then
+        # rebuild the LLM/TTS clients so the running session works without a
+        # relaunch (fixes "API key not configured" + no audio right after login).
         try:
             import licensing
             await licensing.validate(new_key, base)
         except Exception as e:
             log.warning(f"post-login license validate failed: {e}")
+        _reinit_after_license(new_key)
+    needs_relaunch = False  # re-init above activates the session in place
 
     applied = _apply_profile_to_env(data.get("profile") or {}, fill_empty_only=False)
     # Remember the account email + plan so the panel can show a "Signed in as…"
