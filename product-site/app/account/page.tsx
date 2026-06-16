@@ -54,6 +54,15 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+/** Marks a free-for-life VIP (comp) license. */
+function VipBadge() {
+  return (
+    <span className="label-mono rounded-full border border-accent/40 bg-accent/10 px-3 py-1 text-accent">
+      VIP · Lifetime
+    </span>
+  );
+}
+
 function UsagePanel({ usage }: { usage: AccountLicense["usage"] }) {
   const pct = Math.max(
     0,
@@ -234,7 +243,11 @@ function LicenseCard({ license }: { license: AccountLicense }) {
           <span className="text-lg font-bold tracking-tight">
             {license.planLabel}
           </span>
-          <StatusBadge status={license.status} />
+          {license.comp ? (
+            <VipBadge />
+          ) : (
+            <StatusBadge status={license.status} />
+          )}
         </div>
         {license.hasBilling && <ManageBillingButton />}
       </div>
@@ -252,14 +265,20 @@ function LicenseCard({ license }: { license: AccountLicense }) {
       <div className="mt-5 grid grid-cols-2 gap-4 text-sm">
         <div>
           <div className="label-mono mb-1">
-            {license.status === "trialing" ? "Trial ends" : "Renews"}
+            {license.comp
+              ? "Access"
+              : license.status === "trialing"
+                ? "Trial ends"
+                : "Renews"}
           </div>
           <div className="text-ink">
-            {formatDate(
-              license.status === "trialing"
-                ? license.trialEndsAt
-                : license.currentPeriodEnd,
-            )}
+            {license.comp
+              ? "Lifetime · no renewal"
+              : formatDate(
+                  license.status === "trialing"
+                    ? license.trialEndsAt
+                    : license.currentPeriodEnd,
+                )}
           </div>
         </div>
         <div>

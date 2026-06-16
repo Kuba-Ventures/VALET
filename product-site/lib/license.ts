@@ -73,6 +73,28 @@ export function isEntitled(status: LicenseStatus): boolean {
   return status === "active" || status === "trialing";
 }
 
+/**
+ * A comp (VIP) grant is a 100%-off-forever coupon: free for life, no card. We
+ * derive it from the subscription's discount rather than a stored flag, so
+ * "lifetime free" surfaces consistently wherever we render the subscription.
+ * The subscription must be retrieved with `expand: ["discounts"]` for the
+ * coupon to be present.
+ */
+export function subscriptionIsComp(sub: Stripe.Subscription): boolean {
+  const coupons: Stripe.Coupon[] = [];
+  for (const d of sub.discounts ?? []) {
+    if (d && typeof d === "object" && d.coupon) coupons.push(d.coupon);
+  }
+  // Legacy single-discount field, in case an older subscription predates the
+  // `discounts` array.
+  const legacy = (sub as unknown as { discount?: Stripe.Discount | null })
+    .discount;
+  if (legacy?.coupon) coupons.push(legacy.coupon);
+  return coupons.some(
+    (c) => c.percent_off === 100 && c.duration === "forever",
+  );
+}
+
 function toIso(unixSeconds: number | null | undefined): string | null {
   if (!unixSeconds) return null;
   return new Date(unixSeconds * 1000).toISOString();
