@@ -28,12 +28,16 @@ import Stripe from "stripe";
 const secret = process.env.STRIPE_SECRET_KEY;
 const email = process.env.TARGET_EMAIL;
 const apply = process.env.APPLY === "1";
+// Sweep mode ignores the email and scans every comp subscription on the
+// account. Catches "orphan" comps whose Stripe customer has no email set, so
+// the email lookup can't reach them.
+const sweep = process.env.SWEEP === "1";
 
 if (!secret) {
   console.error("ERROR: set STRIPE_SECRET_KEY.");
   process.exit(1);
 }
-if (!email) {
+if (!email && !sweep) {
   console.error("ERROR: set TARGET_EMAIL (the account to clean up).");
   process.exit(1);
 }
@@ -52,7 +56,55 @@ function isComp(sub) {
 
 const ENTITLED = new Set(["active", "trialing"]);
 
+// Print a KEEP/CANCEL plan, then cancel the toCancel set (or dry-run).
+async function applyPlan(keeper, toCancel, label) {
+  if (!toCancel.length) {
+    console.log(`Already down to a single ${label}. Done.`);
+    return;
+  }
+  if (!apply) {
+    console.log("\nDRY-RUN. Re-run with APPLY=1 to cancel the above.");
+    return;
+  }
+  for (const s of toCancel) {
+    await stripe.subscriptions.cancel(s.id);
+    console.log(`Canceled ${s.id}`);
+  }
+  console.log(`\nDone. Kept ${keeper.id}, canceled ${toCancel.length}.`);
+}
+
+async function sweepComps() {
+  console.log(`Stripe mode: ${mode}`);
+  console.log("SWEEP mode: scanning ALL comp subscriptions on this account.");
+  const all = await stripe.subscriptions
+    .list({ status: "all", limit: 100, expand: ["data.discounts"] })
+    .autoPagingToArray({ limit: 1000 });
+  const comps = all
+    .filter((sub) => ENTITLED.has(sub.status) && isComp(sub))
+    .map((sub) => ({ id: sub.id, status: sub.status, created: sub.created }))
+    .sort((a, b) => b.created - a.created); // newest first
+
+  if (!comps.length) {
+    console.log("No entitled comp subscriptions found. Nothing to do.");
+    return;
+  }
+  const keeper = comps[0];
+  const toCancel = comps.slice(1);
+
+  console.log(`\nEntitled comp subscriptions (${comps.length}):`);
+  for (const s of comps) {
+    const tag = s.id === keeper.id ? "KEEP" : "CANCEL";
+    console.log(`  [${tag.padEnd(6)}] ${s.id}  ${s.status}`);
+  }
+  console.log(
+    `\nPlan: keep ${keeper.id}, cancel ${toCancel.length} duplicate comp(s). ` +
+      `Non-comp (paid) subscriptions are left untouched.`,
+  );
+  await applyPlan(keeper, toCancel, "comp subscription");
+}
+
 async function main() {
+  if (sweep) return sweepComps();
   console.log(`Stripe mode: ${mode}`);
   console.log(`Target email: ${email}`);
 
