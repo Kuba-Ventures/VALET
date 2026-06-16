@@ -1,7 +1,12 @@
-import { getSupabaseAdmin, getSupabaseAnon, type LicenseRow } from "./supabase";
+import {
+  getSupabaseAdmin,
+  getSupabaseAnon,
+  type LicenseRow,
+  type LicenseStatus,
+} from "./supabase";
 import { getUsageStatus, type UsageStatus } from "./proxy/usage";
 import { stripe } from "./stripe";
-import { isEntitled, subscriptionIsComp } from "./license";
+import { isEntitled, mapStripeStatus, subscriptionIsComp } from "./license";
 
 /**
  * Account data layer. Everything here runs server-side with the service-role
@@ -22,23 +27,24 @@ export interface AccountLicense {
 }
 
 /**
- * Is this subscription a comp (VIP, free-for-life) grant? Looked up live from
- * Stripe with the discount expanded; we don't persist a flag on the license
- * row. Best-effort: any error resolves to false so the card just renders as a
- * normal license.
+ * Live snapshot of a subscription from Stripe: its current entitlement status
+ * and whether it's a comp (VIP, free-for-life) grant. We read this live rather
+ * than trusting the stored license row, so a row left stale by a missed webhook
+ * (e.g. a canceled subscription still marked "active") self-corrects on load.
+ * Best-effort: any error returns nulls so the caller falls back to the row.
  */
-async function isCompSubscription(
+async function describeSubscription(
   subscriptionId: string | null,
-): Promise<boolean> {
-  if (!subscriptionId) return false;
+): Promise<{ status: LicenseStatus | null; comp: boolean }> {
+  if (!subscriptionId) return { status: null, comp: false };
   try {
     const sub = await stripe.subscriptions.retrieve(subscriptionId, {
       expand: ["discounts"],
     });
-    return subscriptionIsComp(sub);
+    return { status: mapStripeStatus(sub.status), comp: subscriptionIsComp(sub) };
   } catch (err) {
-    console.error("isCompSubscription failed:", err);
-    return false;
+    console.error("describeSubscription failed:", err);
+    return { status: null, comp: false };
   }
 }
 
@@ -143,24 +149,25 @@ export async function getAccountLicenses(
   }
 
   const rows = data ?? [];
-  return Promise.all(
+  const licenses = await Promise.all(
     rows.map(async (row) => {
-      const status = row.status as LicenseRow["status"];
       const subscriptionId =
         (row.stripe_subscription_id as string | null) ?? null;
-      // Only probe Stripe for live licenses; a canceled/invalid row can't be a
-      // current comp grant, and we skip the call.
-      const comp = isEntitled(status)
-        ? await isCompSubscription(subscriptionId)
-        : false;
+      // Reconcile against Stripe: the live subscription status wins over the
+      // stored one (which a missed webhook can leave stale), and tells us if
+      // it's a comp grant. Comp only counts while the subscription is entitled.
+      const { status: liveStatus, comp: liveComp } =
+        await describeSubscription(subscriptionId);
+      const status = liveStatus ?? (row.status as LicenseRow["status"]);
       return {
+        subscriptionId,
         licenseKey: row.license_key as string,
         status,
         planLabel: planLabel((row.plan as string | null) ?? null),
         currentPeriodEnd: (row.current_period_end as string | null) ?? null,
         trialEndsAt: (row.trial_ends_at as string | null) ?? null,
         hasBilling: Boolean(row.stripe_customer_id),
-        comp,
+        comp: liveComp && isEntitled(status),
         usage: await getUsageStatus(
           row.license_key as string,
           (row.plan as string | null) ?? null,
@@ -168,6 +175,18 @@ export async function getAccountLicenses(
       };
     }),
   );
+
+  // Collapse rows that point at the same Stripe subscription (duplicate license
+  // rows from a webhook/redirect race), keeping the first (newest by created).
+  const seen = new Set<string>();
+  return licenses
+    .filter((l) => {
+      if (!l.subscriptionId) return true;
+      if (seen.has(l.subscriptionId)) return false;
+      seen.add(l.subscriptionId);
+      return true;
+    })
+    .map(({ subscriptionId: _subscriptionId, ...license }) => license);
 }
 
 /** Snapshot the desktop app pushes to /api/proxy/sync (see migration_sync.sql). */
