@@ -1,6 +1,6 @@
 import CheckoutButton from "@/components/CheckoutButton";
 
-// VIP grant link — possession of the URL (and/or the promotion code) is the
+// VIP grant link: possession of the URL (and/or the promotion code) is the
 // gate, so keep it out of search indexes.
 export const metadata = {
   title: "VALET: VIP access",
@@ -16,7 +16,7 @@ export default function VipPage() {
           Ultra, on the house.
         </h1>
         <p className="mt-6 text-lg leading-relaxed text-ink-dim">
-          You&apos;ve been given complimentary Ultra access — every capability,
+          You&apos;ve been given complimentary Ultra access. Every capability,
           no charge and no card. Activate it below, then download VALET and sign
           in to the app with this account.
         </p>
