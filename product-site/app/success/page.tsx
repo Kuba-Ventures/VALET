@@ -1,7 +1,10 @@
 import Link from "next/link";
 import Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
-import { upsertLicenseFromSubscription } from "@/lib/license";
+import {
+  upsertLicenseFromSubscription,
+  subscriptionIsComp,
+} from "@/lib/license";
 import CopyButton from "@/components/CopyButton";
 import DataLayerEvent from "@/components/DataLayerEvent";
 
@@ -25,25 +28,26 @@ function planFromPriceId(priceId: string | undefined): Plan {
  */
 async function resolveCheckout(
   sessionId: string | undefined,
-): Promise<{ licenseKey: string | null; plan: Plan }> {
-  if (!sessionId) return { licenseKey: null, plan: null };
+): Promise<{ licenseKey: string | null; plan: Plan; comp: boolean }> {
+  if (!sessionId) return { licenseKey: null, plan: null, comp: false };
   try {
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["subscription"],
     });
     const raw = session.subscription;
-    const sub: Stripe.Subscription | null = !raw
-      ? null
-      : typeof raw === "string"
-        ? await stripe.subscriptions.retrieve(raw)
-        : raw;
-    if (!sub) return { licenseKey: null, plan: null };
+    const subId = typeof raw === "string" ? raw : raw?.id;
+    if (!subId) return { licenseKey: null, plan: null, comp: false };
+    // Re-retrieve with the discount expanded so we can tell a comp (VIP)
+    // grant apart from a normal paid trial.
+    const sub = await stripe.subscriptions.retrieve(subId, {
+      expand: ["discounts"],
+    });
     const licenseKey = await upsertLicenseFromSubscription(sub);
     const plan = planFromPriceId(sub.items?.data?.[0]?.price?.id);
-    return { licenseKey, plan };
+    return { licenseKey, plan, comp: subscriptionIsComp(sub) };
   } catch (err) {
     console.error("success resolve error:", err);
-    return { licenseKey: null, plan: null };
+    return { licenseKey: null, plan: null, comp: false };
   }
 }
 
@@ -53,7 +57,7 @@ export default async function SuccessPage({
   searchParams: Promise<{ session_id?: string }>;
 }) {
   const { session_id } = await searchParams;
-  const { licenseKey, plan } = await resolveCheckout(session_id);
+  const { licenseKey, plan, comp } = await resolveCheckout(session_id);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-shell flex-col items-center justify-center px-6 py-20">
@@ -61,15 +65,19 @@ export default async function SuccessPage({
         <DataLayerEvent
           event="trial_started"
           plan={plan}
-          value={plan === "ultra" ? 50 : 20}
+          // Comp grants carry no revenue, so report 0 for them.
+          value={comp ? 0 : plan === "ultra" ? 50 : 20}
         />
       )}
       <div className="panel w-full max-w-xl p-8 shadow-glow-lg">
-        <div className="label-mono mb-3 text-accent/80">Trial started</div>
+        <div className="label-mono mb-3 text-accent/80">
+          {comp ? "VIP · Lifetime access" : "Trial started"}
+        </div>
         <h1 className="text-3xl font-bold tracking-tight">You are all set.</h1>
         <p className="mt-3 leading-relaxed text-ink-dim">
-          Your 7 day free trial is live. Below is your license key. You will
-          paste it into the app&apos;s Settings to unlock it.
+          {comp
+            ? "Your lifetime free Ultra access is live, no card and no charge. Below is your license key. You will paste it into the app's Settings to unlock it."
+            : "Your 7 day free trial is live. Below is your license key. You will paste it into the app's Settings to unlock it."}
         </p>
 
         <div className="mt-8">
@@ -102,8 +110,8 @@ export default async function SuccessPage({
               Download VALET
             </button>
           )}
-          <Link href="/" className="btn-ghost">
-            Back to home
+          <Link href="/account" className="btn-ghost">
+            Go to your account
           </Link>
         </div>
 
