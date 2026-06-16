@@ -99,7 +99,20 @@ function welcomeBody(): string {
 function licenseBody(): string {
   return `
     <h2 class="ob-title">Activate VALET.</h2>
-    <p class="ob-sub">Paste the license key from your purchase email. It unlocks everything, no API keys of your own required.</p>
+    <p class="ob-sub">Sign in with your VALET account — it pulls in your license and profile automatically. No API keys of your own required.</p>
+    <div class="ob-field">
+      <label class="ob-label">Email</label>
+      <input id="ob-login-email" class="ob-input" type="email" autocomplete="username" spellcheck="false" />
+    </div>
+    <div class="ob-field">
+      <label class="ob-label">Password</label>
+      <input id="ob-login-password" class="ob-input" type="password" autocomplete="current-password" />
+    </div>
+    <div class="ob-inline">
+      <button class="ob-btn primary" id="ob-login">Log in</button>
+      <span id="ob-login-status" class="ob-status"></span>
+    </div>
+    <p class="ob-sub" style="margin-top:22px">Or paste the license key from your purchase email:</p>
     <div class="ob-field">
       <label class="ob-label">License key</label>
       <input id="ob-license" class="ob-input" type="text" placeholder="PRODUCT-XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" />
@@ -223,6 +236,35 @@ function wireStep(state: State, root: HTMLElement): void {
   const step = state.step;
 
   if (step === 1) {
+    // Account login — provisions the license key + profile in one step. The
+    // backend writes them to .env, so the later "About you" step pre-fills.
+    const loginBtn = root.querySelector<HTMLButtonElement>("#ob-login");
+    const loginStatus = root.querySelector<HTMLElement>("#ob-login-status");
+    loginBtn?.addEventListener("click", async () => {
+      const email = root.querySelector<HTMLInputElement>("#ob-login-email")?.value.trim() || "";
+      const pwEl = root.querySelector<HTMLInputElement>("#ob-login-password");
+      const password = pwEl?.value || "";
+      const set = (t: string, cls: string) => { if (loginStatus) { loginStatus.textContent = t; loginStatus.className = `ob-status ${cls}`; } };
+      if (!email || !password) { set("Enter your email and password.", "warn"); return; }
+      loginBtn.disabled = true; loginBtn.textContent = "Signing in…"; set("Signing in…", "");
+      try {
+        const res = await postJSON<{ ok: boolean; error?: string; has_license?: boolean; plan?: string | null }>(
+          "/api/account/login", { email, password },
+        );
+        if (pwEl) pwEl.value = "";
+        if (res?.ok) {
+          if (res.has_license) set(`Signed in${res.plan ? ` — ${res.plan}` : ""}. You're good to go.`, "ok");
+          else set("Signed in, but no license on this account yet.", "warn");
+        } else {
+          set(res?.error || "Sign-in failed.", "warn");
+        }
+      } catch {
+        set("Couldn't reach the account server.", "warn");
+      } finally {
+        loginBtn.disabled = false; loginBtn.textContent = "Log in";
+      }
+    });
+
     const input = root.querySelector<HTMLInputElement>("#ob-license");
     const statusEl = root.querySelector<HTMLElement>("#ob-license-status");
     root.querySelector("#ob-license-test")?.addEventListener("click", async () => {
