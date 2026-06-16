@@ -85,7 +85,7 @@ interface State {
   voice: "male" | "female";
 }
 
-const STEP_TITLES = ["Welcome", "License", "Permissions", "Voice", "About you", "Connections", "Done"];
+const STEP_TITLES = ["Welcome", "License", "Permissions", "Voice", "About you", "Done"];
 
 // ---- per-step body renderers ----------------------------------------------
 
@@ -207,36 +207,6 @@ function profileBody(): string {
     <div class="ob-field"><label class="ob-label">Name</label><input id="ob-name" class="ob-input" type="text" placeholder="What should Vee call you?" /></div>
     <div class="ob-field"><label class="ob-label">Date of birth</label><input id="ob-dob" class="ob-input" type="date" /></div>
     <div class="ob-field"><label class="ob-label">Location</label><input id="ob-loc" class="ob-input" type="text" placeholder="City you live in" /></div>`;
-}
-
-function connectionsBody(): string {
-  // `state`: "soon" = not built yet; "settings" = available, connect in Settings
-  // (the OAuth consent flow lives there); "ready" = works with no setup.
-  const conn = (label: string, desc: string, state: "soon" | "settings" | "ready") => {
-    const pill =
-      state === "soon"
-        ? `<span class="ob-pill muted">Coming soon</span>`
-        : state === "settings"
-          ? `<span class="ob-pill">In Settings</span>`
-          : `<span class="ob-pill muted">Ready</span>`;
-    return `
-    <div class="ob-row">
-      <div class="ob-row-main">
-        <div class="ob-row-label">${label}</div>
-        <div class="ob-row-why">${desc}</div>
-      </div>
-      <div class="ob-row-side">${pill}</div>
-    </div>`;
-  };
-  return `
-    <h2 class="ob-title">Connections.</h2>
-    <p class="ob-sub">Link the apps Vee can reach into. You can add these now or later in Settings.</p>
-    <div class="ob-rows">
-      ${conn("Google Calendar", "Read your events by voice, merged with Apple Calendar.", "settings")}
-      ${conn("Gmail", "Triage and draft mail.", "settings")}
-      ${conn("Other apps", "Spotify, Notes, the browser, and more work out of the box.", "ready")}
-    </div>
-    <p class="ob-fineprint">Connect Google Calendar and Gmail anytime under Settings &rsaquo; Console Settings &rsaquo; Accounts. Everything else is ready the moment you finish setup.</p>`;
 }
 
 function doneBody(): string {
@@ -478,7 +448,6 @@ function bodyFor(state: State): string {
     case 2: return permsBody(state.perms);
     case 3: return voiceBody(state.voice);
     case 4: return profileBody();
-    case 5: return connectionsBody();
     default: return doneBody();
   }
 }
