@@ -230,14 +230,42 @@
 }
 @keyframes ob-pulse { 0%, 100% { transform: scale(1); opacity: 0.9; } 50% { transform: scale(1.06); opacity: 1; } }
 
-/* Show-password toggle under the onboarding login password field. */
-#valet-onboarding .ob-show {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
+/* Password field with an inline show/hide eye toggle. */
+#valet-onboarding .ob-pw-field { position: relative; }
+#valet-onboarding .ob-pw-field .ob-input { padding-right: 42px; }
+#valet-onboarding .ob-pw-toggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  background: none;
+  border: none;
+  padding: 4px;
   cursor: pointer;
+  color: rgba(255, 255, 255, 0.4);
 }
-#valet-onboarding .ob-show input { accent-color: #6e5cff; }
+#valet-onboarding .ob-pw-toggle:hover { color: rgba(255, 255, 255, 0.8); }
+#valet-onboarding .ob-pw-toggle svg { width: 19px; height: 19px; }
+
+/* Signed-in summary shown after a successful onboarding login. */
+#valet-onboarding .ob-acct-meta {
+  margin: 14px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+}
+#valet-onboarding .ob-acct-meta > div { display: flex; gap: 12px; align-items: baseline; }
+#valet-onboarding .ob-acct-k {
+  min-width: 64px;
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+#valet-onboarding .ob-acct-lic {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}

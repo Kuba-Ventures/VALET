@@ -7,6 +7,10 @@
 
 import { isPushToTalkEnabled, setPushToTalkEnabled, pushToTalkKeyLabel } from "./pushToTalk";
 
+// Eye icons for the password show/hide toggle (open = will reveal, slashed = will hide).
+const EYE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -231,8 +235,10 @@ function buildPanelHTML(): string {
             </div>
             <div class="settings-field">
               <label>Password</label>
-              <input type="password" id="login-password" autocomplete="current-password" />
-              <label class="settings-check" style="margin-top:6px"><input type="checkbox" id="login-showpw" /> Show password</label>
+              <div class="pw-field">
+                <input type="password" id="login-password" autocomplete="current-password" />
+                <button type="button" class="pw-toggle" id="login-eye" aria-label="Show password" title="Show password">${EYE_SVG}</button>
+              </div>
             </div>
             <div class="settings-actions">
               <span class="settings-hint" id="login-status"></span>
@@ -711,7 +717,9 @@ function wireEvents() {
       if (pwEl) pwEl.value = "";
       await loadPreferences();   // pulls the freshly-written name/honorific/DOB/location
       // Collapse to the signed-in state (hides the form so it isn't shown next
-      // to the now-populated profile).
+      // to the now-populated profile), and leave first-run setup mode if we
+      // were in it (e.g. logged in from the setup-mode account form).
+      exitSetupMode();
       renderAccountState(email, { name: res.name, plan: res.plan, licenseKey: res.license_key });
       const note = document.getElementById("login-status-in");
       const parts: string[] = [];
@@ -732,10 +740,15 @@ function wireEvents() {
     try { await apiPost("/api/settings/keys", { key_name: "ACCOUNT_EMAIL", key_value: "" }); } catch { /* best effort */ }
     renderAccountState(null);
   });
-  // Show/hide the password while typing it.
-  document.getElementById("login-showpw")?.addEventListener("change", (e) => {
+  // Show/hide the password via the eye toggle inside the field.
+  document.getElementById("login-eye")?.addEventListener("click", () => {
     const pw = document.getElementById("login-password") as HTMLInputElement | null;
-    if (pw) pw.type = (e.target as HTMLInputElement).checked ? "text" : "password";
+    const eye = document.getElementById("login-eye");
+    if (!pw || !eye) return;
+    const reveal = pw.type === "password";
+    pw.type = reveal ? "text" : "password";
+    eye.innerHTML = reveal ? EYE_OFF_SVG : EYE_SVG;
+    eye.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
   });
 
   // Regenerate profile — VALET synthesizes a fresh summary from accumulated notes.

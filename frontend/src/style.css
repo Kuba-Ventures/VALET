@@ -53,6 +53,24 @@ html, body {
 }
 #ptt-hint.hidden { display: none; }
 
+/* Password field with an inline show/hide eye toggle. */
+.pw-field { position: relative; }
+.pw-field input { width: 100%; padding-right: 40px; }
+.pw-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.4);
+}
+.pw-toggle:hover { color: rgba(255, 255, 255, 0.75); }
+.pw-toggle svg { width: 18px; height: 18px; }
+
 /* Signed-in account summary (name · plan · license) */
 .account-meta {
   margin: 10px 0 4px;
