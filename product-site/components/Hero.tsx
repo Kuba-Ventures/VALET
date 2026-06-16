@@ -20,7 +20,7 @@ export default function Hero() {
           </h1>
 
           <p className="mt-7 max-w-lg text-lg leading-relaxed text-ink-dim">
-            Say what you want in plain words. VALET reaches into the apps you
+            Say what you want in plain words. VALET reaches into any app you
             already use and gets it done. Not a list of links, the thing itself.
           </p>
 

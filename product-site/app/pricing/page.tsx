@@ -39,7 +39,7 @@ const TIERS: Tier[] = [
     features: [
       "Unlimited voice control across your apps",
       "Fast answers and deep background work",
-      "Acts across calendar, mail, notes, browser, files",
+      "Acts across any app — calendar, mail, notes, browser, and beyond",
       "All intelligence included",
       "Email support",
     ],
