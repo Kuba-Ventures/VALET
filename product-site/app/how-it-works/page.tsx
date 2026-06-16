@@ -13,7 +13,7 @@ const STEPS: Step[] = [
   {
     index: "01",
     title: "Install and sign in",
-    body: "Download VALET, drop in your license key, and grant the permissions it needs to act on your Mac.",
+    body: "Download VALET, sign in with your account, and grant the permissions it needs to act on your Mac. Your subscription activates on the spot.",
   },
   {
     index: "02",
