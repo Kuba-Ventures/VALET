@@ -6506,7 +6506,7 @@ class AppLogin(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     # The app holds NO vendor secrets — only its license key and the proxy URL.
-    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "VALET_VOICE", "VALET_VOICE_MALE_ID", "VALET_VOICE_FEMALE_ID", "VALET_TELEMETRY", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL", "ACCOUNT_EMAIL"}
+    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "VALET_VOICE", "VALET_VOICE_MALE_ID", "VALET_VOICE_FEMALE_ID", "VALET_TELEMETRY", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL", "ACCOUNT_EMAIL", "ACCOUNT_PLAN"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
@@ -6586,6 +6586,8 @@ async def api_get_preferences():
         "bio_summary_updated": bio["updated"],
         "bio_source_count": len(sources),
         "account_email": env_dict.get("ACCOUNT_EMAIL", ""),
+        "account_plan": env_dict.get("ACCOUNT_PLAN", ""),
+        "license_key": env_dict.get("LICENSE_KEY", ""),
     }
 
 @app.post("/api/settings/preferences")
@@ -6645,14 +6647,20 @@ async def api_account_login(body: AppLogin):
             log.warning(f"post-login license validate failed: {e}")
 
     applied = _apply_profile_to_env(data.get("profile") or {}, fill_empty_only=False)
-    # Remember the account email so the panel can show a "Signed in as…" state
-    # (and collapse the login form) on reopen. Not a secret; sits beside the
-    # other identity fields in .env.
+    # Remember the account email + plan so the panel can show a "Signed in as…"
+    # state (name · tier · license) on reopen. Not secrets; sit beside the other
+    # identity fields in .env.
     _write_env_key("ACCOUNT_EMAIL", email)
+    plan = data.get("plan") or ""
+    if plan:
+        _write_env_key("ACCOUNT_PLAN", plan)
+    profile = data.get("profile") or {}
     log.info(f"account login ok (has_license={bool(new_key)}, profile_fields={len(applied)})")
     return {
         "ok": True,
         "email": email,
+        "name": (profile.get("name") or "").strip(),
+        "license_key": new_key or (LICENSE_KEY or ""),
         "has_license": bool(data.get("has_license")),
         "plan": data.get("plan"),
         "status": data.get("status"),
