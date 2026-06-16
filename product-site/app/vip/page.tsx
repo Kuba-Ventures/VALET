@@ -1,6 +1,6 @@
 import CheckoutButton from "@/components/CheckoutButton";
 
-// VIP grant link — possession of the URL (and/or the promotion code) is the
+// VIP grant link: possession of the URL (and/or the promotion code) is the
 // gate, so keep it out of search indexes.
 export const metadata = {
   title: "VALET: VIP access",
