@@ -12,6 +12,10 @@ import "./onboarding.css";
 
 const SEEN_KEY = "valet_onboarded_build";
 
+// Eye icons for the password show/hide toggle.
+const EYE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
 // ---- backend helpers -------------------------------------------------------
 
 async function getJSON<T>(url: string): Promise<T | null> {
@@ -99,27 +103,41 @@ function welcomeBody(): string {
 function licenseBody(): string {
   return `
     <h2 class="ob-title">Activate VALET.</h2>
-    <p class="ob-sub">Sign in with your VALET account — it pulls in your license and profile automatically. No API keys of your own required.</p>
-    <div class="ob-field">
-      <label class="ob-label">Email</label>
-      <input id="ob-login-email" class="ob-input" type="email" autocomplete="username" spellcheck="false" />
+    <!-- Signed-in summary — replaces the whole form once login succeeds. -->
+    <div id="ob-activated" style="display:none">
+      <p class="ob-sub">Signed in as <strong id="ob-acct-name"></strong>. You're good to go — press Continue.</p>
+      <div class="ob-acct-meta">
+        <div><span class="ob-acct-k">Plan</span><span id="ob-acct-plan">—</span></div>
+        <div><span class="ob-acct-k">License</span><span id="ob-acct-license" class="ob-acct-lic">—</span></div>
+      </div>
     </div>
-    <div class="ob-field">
-      <label class="ob-label">Password</label>
-      <input id="ob-login-password" class="ob-input" type="password" autocomplete="current-password" />
-    </div>
-    <div class="ob-inline">
-      <button class="ob-btn primary" id="ob-login">Log in</button>
-      <span id="ob-login-status" class="ob-status"></span>
-    </div>
-    <p class="ob-sub" style="margin-top:22px">Or paste the license key from your purchase email:</p>
-    <div class="ob-field">
-      <label class="ob-label">License key</label>
-      <input id="ob-license" class="ob-input" type="text" placeholder="PRODUCT-XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" />
-    </div>
-    <div class="ob-inline">
-      <button class="ob-btn ghost" id="ob-license-test">Activate</button>
-      <span id="ob-license-status" class="ob-status"></span>
+    <!-- Activate form (login or license key) -->
+    <div id="ob-activate-form">
+      <p class="ob-sub">Sign in with your VALET account — it pulls in your license and profile automatically. No API keys of your own required.</p>
+      <div class="ob-field">
+        <label class="ob-label">Email</label>
+        <input id="ob-login-email" class="ob-input" type="email" autocomplete="username" spellcheck="false" />
+      </div>
+      <div class="ob-field">
+        <label class="ob-label">Password</label>
+        <div class="ob-pw-field">
+          <input id="ob-login-password" class="ob-input" type="password" autocomplete="current-password" />
+          <button type="button" class="ob-pw-toggle" id="ob-login-eye" aria-label="Show password">${EYE_SVG}</button>
+        </div>
+      </div>
+      <div class="ob-inline">
+        <button class="ob-btn primary" id="ob-login">Log in</button>
+        <span id="ob-login-status" class="ob-status"></span>
+      </div>
+      <p class="ob-sub" style="margin-top:22px">Or paste the license key from your purchase email:</p>
+      <div class="ob-field">
+        <label class="ob-label">License key</label>
+        <input id="ob-license" class="ob-input" type="text" placeholder="PRODUCT-XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="ob-inline">
+        <button class="ob-btn ghost" id="ob-license-test">Activate</button>
+        <span id="ob-license-status" class="ob-status"></span>
+      </div>
     </div>`;
 }
 
@@ -216,7 +234,6 @@ function connectionsBody(): string {
     <div class="ob-rows">
       ${conn("Google Calendar", "Read your events by voice, merged with Apple Calendar.", "settings")}
       ${conn("Gmail", "Triage and draft mail.", "settings")}
-      ${conn("MCP servers", "Connect tools that speak the Model Context Protocol.", "soon")}
       ${conn("Other apps", "Spotify, Notes, the browser, and more work out of the box.", "ready")}
     </div>
     <p class="ob-fineprint">Connect Google Calendar and Gmail anytime under Settings &rsaquo; Console Settings &rsaquo; Accounts. Everything else is ready the moment you finish setup.</p>`;
@@ -240,6 +257,15 @@ function wireStep(state: State, root: HTMLElement): void {
     // backend writes them to .env, so the later "About you" step pre-fills.
     const loginBtn = root.querySelector<HTMLButtonElement>("#ob-login");
     const loginStatus = root.querySelector<HTMLElement>("#ob-login-status");
+    const eye = root.querySelector<HTMLButtonElement>("#ob-login-eye");
+    eye?.addEventListener("click", () => {
+      const pw = root.querySelector<HTMLInputElement>("#ob-login-password");
+      if (!pw) return;
+      const reveal = pw.type === "password";
+      pw.type = reveal ? "text" : "password";
+      eye.innerHTML = reveal ? EYE_OFF_SVG : EYE_SVG;
+      eye.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
+    });
     loginBtn?.addEventListener("click", async () => {
       const email = root.querySelector<HTMLInputElement>("#ob-login-email")?.value.trim() || "";
       const pwEl = root.querySelector<HTMLInputElement>("#ob-login-password");
@@ -248,13 +274,24 @@ function wireStep(state: State, root: HTMLElement): void {
       if (!email || !password) { set("Enter your email and password.", "warn"); return; }
       loginBtn.disabled = true; loginBtn.textContent = "Signing in…"; set("Signing in…", "");
       try {
-        const res = await postJSON<{ ok: boolean; error?: string; has_license?: boolean; plan?: string | null }>(
+        const res = await postJSON<{ ok: boolean; error?: string; has_license?: boolean; plan?: string | null; name?: string; license_key?: string }>(
           "/api/account/login", { email, password },
         );
         if (pwEl) pwEl.value = "";
-        if (res?.ok) {
-          if (res.has_license) set(`Signed in${res.plan ? ` — ${res.plan}` : ""}. You're good to go.`, "ok");
-          else set("Signed in, but no license on this account yet.", "warn");
+        if (res?.ok && res.has_license) {
+          // Replace the entire form with a clean signed-in summary.
+          const nameEl = root.querySelector<HTMLElement>("#ob-acct-name");
+          const planEl = root.querySelector<HTMLElement>("#ob-acct-plan");
+          const licEl = root.querySelector<HTMLElement>("#ob-acct-license");
+          if (nameEl) nameEl.textContent = (res.name && res.name.trim()) || email;
+          if (planEl) planEl.textContent = res.plan || "Active";
+          if (licEl) licEl.textContent = res.license_key || "—";
+          const form = root.querySelector<HTMLElement>("#ob-activate-form");
+          const done = root.querySelector<HTMLElement>("#ob-activated");
+          if (form) form.style.display = "none";
+          if (done) done.style.display = "";
+        } else if (res?.ok) {
+          set("Signed in, but no license on this account yet.", "warn");
         } else {
           set(res?.error || "Sign-in failed.", "warn");
         }
@@ -491,11 +528,13 @@ function render(state: State, root: HTMLElement): void {
   wireStep(state, root);
 }
 
-/** Show the wizard on the first open of each new build. No-op once finished. */
-export async function maybeShowOnboarding(): Promise<void> {
+/** Show the wizard on the first open of each new build. No-op once finished.
+ *  Returns true if the wizard was shown — the caller skips the Settings
+ *  setup-mode auto-open in that case, so the two first-run flows don't stack. */
+export async function maybeShowOnboarding(): Promise<boolean> {
   const cfg = await getJSON<{ build_id?: string; voice?: string }>("/api/config");
   const buildId = cfg?.build_id || "dev";
-  if (localStorage.getItem(SEEN_KEY) === buildId) return; // already onboarded this build
+  if (localStorage.getItem(SEEN_KEY) === buildId) return false; // already onboarded this build
   // If the license is already activated, the user has been through setup before
   // (e.g. they quit mid-onboarding to grant a permission, then relaunched) — don't
   // make them redo it. Mark this build seen and stay out of the way; everything is
@@ -503,7 +542,7 @@ export async function maybeShowOnboarding(): Promise<void> {
   const status = await getJSON<{ env_keys_set?: { license?: boolean } }>("/api/settings/status");
   if (status?.env_keys_set?.license) {
     localStorage.setItem(SEEN_KEY, buildId);
-    return;
+    return false;
   }
   const perms = await loadPerms();
   const state: State = {
@@ -516,4 +555,5 @@ export async function maybeShowOnboarding(): Promise<void> {
   root.id = "valet-onboarding";
   document.body.appendChild(root);
   render(state, root);
+  return true;
 }

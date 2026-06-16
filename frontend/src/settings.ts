@@ -7,6 +7,10 @@
 
 import { isPushToTalkEnabled, setPushToTalkEnabled, pushToTalkKeyLabel } from "./pushToTalk";
 
+// Eye icons for the password show/hide toggle (open = will reveal, slashed = will hide).
+const EYE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -43,6 +47,8 @@ interface PreferencesResponse {
   bio_summary_updated: string;
   bio_source_count: number;
   account_email?: string;
+  account_plan?: string;
+  license_key?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +216,11 @@ function buildPanelHTML(): string {
           <h3>Account</h3>
           <!-- Signed-in state (shown once an account email is on file) -->
           <div id="account-signedin" style="display:none">
-            <div class="settings-hint">Signed in as <strong id="account-email-label"></strong><span id="account-plan-label"></span></div>
+            <div class="settings-hint">Signed in as <strong id="account-name-label"></strong></div>
+            <div class="account-meta">
+              <div><span class="account-meta-k">Plan</span><span id="account-plan-label">—</span></div>
+              <div><span class="account-meta-k">License</span><span id="account-license-label" class="account-license">—</span></div>
+            </div>
             <div class="settings-actions">
               <span class="settings-hint" id="login-status-in"></span>
               <button class="settings-btn" id="btn-account-signout">Sign out</button>
@@ -225,7 +235,10 @@ function buildPanelHTML(): string {
             </div>
             <div class="settings-field">
               <label>Password</label>
-              <input type="password" id="login-password" autocomplete="current-password" />
+              <div class="pw-field">
+                <input type="password" id="login-password" autocomplete="current-password" />
+                <button type="button" class="pw-toggle" id="login-eye" aria-label="Show password" title="Show password">${EYE_SVG}</button>
+              </div>
             </div>
             <div class="settings-actions">
               <span class="settings-hint" id="login-status"></span>
@@ -384,23 +397,30 @@ async function loadPreferences() {
     if (dobEl) dobEl.value = prefs.date_of_birth || "";
     if (locEl) locEl.value = prefs.hometown_city || prefs.address || "";
     applyBioSummary(prefs.bio_summary, prefs.bio_summary_updated, prefs.bio_source_count);
-    renderAccountState(prefs.account_email || null);
+    renderAccountState(prefs.account_email || null, {
+      name: prefs.user_name, plan: prefs.account_plan, licenseKey: prefs.license_key,
+    });
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
   }
 }
 
-/** Toggle the Account section between the sign-in form and a compact
- *  "Signed in as <email>" state, so the form and the populated profile aren't
- *  shown at the same time. */
-function renderAccountState(email: string | null, plan?: string | null) {
+/** Toggle the Account section between the sign-in form and a compact signed-in
+ *  state (name · tier · license), so the form and the populated profile aren't
+ *  shown at the same time. `id` is the name to display, falling back to email. */
+function renderAccountState(
+  email: string | null,
+  opts: { name?: string | null; plan?: string | null; licenseKey?: string | null } = {},
+) {
   const form = document.getElementById("account-form");
   const signedIn = document.getElementById("account-signedin");
-  const emailLabel = document.getElementById("account-email-label");
-  const planLabel = document.getElementById("account-plan-label");
   if (email) {
-    if (emailLabel) emailLabel.textContent = email;
-    if (planLabel) planLabel.textContent = plan ? ` · ${plan}` : "";
+    const nameLabel = document.getElementById("account-name-label");
+    const planLabel = document.getElementById("account-plan-label");
+    const licLabel = document.getElementById("account-license-label");
+    if (nameLabel) nameLabel.textContent = (opts.name && opts.name.trim()) || email;
+    if (planLabel) planLabel.textContent = opts.plan || "—";
+    if (licLabel) licLabel.textContent = opts.licenseKey || "—";
     if (form) form.style.display = "none";
     if (signedIn) signedIn.style.display = "";
   } else {
@@ -689,7 +709,7 @@ function wireEvents() {
     try {
       const res = await apiPost<{
         ok: boolean; error?: string; has_license?: boolean; plan?: string | null;
-        needs_relaunch?: boolean; profile_applied?: string[];
+        needs_relaunch?: boolean; profile_applied?: string[]; name?: string; license_key?: string;
       }>("/api/account/login", { email, password });
       if (!res.ok) { setStatus(res.error || "Sign-in failed.", true); return; }
       // Clear the password field; never keep it around.
@@ -697,8 +717,10 @@ function wireEvents() {
       if (pwEl) pwEl.value = "";
       await loadPreferences();   // pulls the freshly-written name/honorific/DOB/location
       // Collapse to the signed-in state (hides the form so it isn't shown next
-      // to the now-populated profile).
-      renderAccountState(email, res.plan);
+      // to the now-populated profile), and leave first-run setup mode if we
+      // were in it (e.g. logged in from the setup-mode account form).
+      exitSetupMode();
+      renderAccountState(email, { name: res.name, plan: res.plan, licenseKey: res.license_key });
       const note = document.getElementById("login-status-in");
       const parts: string[] = [];
       if (!res.has_license) parts.push("No license on this account yet.");
@@ -717,6 +739,16 @@ function wireEvents() {
   document.getElementById("btn-account-signout")?.addEventListener("click", async () => {
     try { await apiPost("/api/settings/keys", { key_name: "ACCOUNT_EMAIL", key_value: "" }); } catch { /* best effort */ }
     renderAccountState(null);
+  });
+  // Show/hide the password via the eye toggle inside the field.
+  document.getElementById("login-eye")?.addEventListener("click", () => {
+    const pw = document.getElementById("login-password") as HTMLInputElement | null;
+    const eye = document.getElementById("login-eye");
+    if (!pw || !eye) return;
+    const reveal = pw.type === "password";
+    pw.type = reveal ? "text" : "password";
+    eye.innerHTML = reveal ? EYE_OFF_SVG : EYE_SVG;
+    eye.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
   });
 
   // Regenerate profile — VALET synthesizes a fresh summary from accumulated notes.
@@ -902,29 +934,34 @@ function showSetupStep(step: number) {
   }
 }
 
+/**
+ * Leave first-run setup mode and restore normal tabbed settings. Idempotent —
+ * safe to call when not in setup mode. Called both when the setup wizard
+ * finishes AND whenever a licensed user opens Settings, so a session that
+ * entered setup mode while unlicensed doesn't stay stuck there after login.
+ */
+function exitSetupMode() {
+  isFirstTimeSetup = false;
+  const panel = document.getElementById("settings-panel-inner");
+  if (panel) panel.classList.remove("first-run");
+  const welcome = document.getElementById("settings-welcome");
+  if (welcome) welcome.style.display = "none";
+  const nav = document.getElementById("setup-nav");
+  if (nav) nav.style.display = "none";
+  ["section-api-keys", "section-status", "section-accounts", "section-preferences", "section-personalized", "section-sysinfo", "section-permissions"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = "";
+  });
+  const tabs = document.getElementById("settings-tabs");
+  if (tabs) tabs.style.display = "";
+  activateTab("user");
+}
+
 async function advanceSetup() {
   setupStep++;
   if (setupStep >= 3) {
-    // Done — save everything and close
-    isFirstTimeSetup = false;
-    const panel = document.getElementById("settings-panel-inner");
-    if (panel) panel.classList.remove("first-run");
-    const welcome = document.getElementById("settings-welcome");
-    if (welcome) welcome.style.display = "none";
-    const nav = document.getElementById("setup-nav");
-    if (nav) nav.style.display = "none";
-
-    // Show all sections
-    ["section-api-keys", "section-status", "section-accounts", "section-preferences", "section-personalized", "section-sysinfo", "section-permissions"].forEach((id) => {
-      const el = document.getElementById(id);
-      if (el) el.style.display = "";
-    });
-
-    // Restore the tab nav and default back to User Settings (primary tab).
-    const tabs = document.getElementById("settings-tabs");
-    if (tabs) tabs.style.display = "";
-    activateTab("user");
-
+    // Done — restore normal settings and close.
+    exitSetupMode();
     closeSettings();
     return;
   }
@@ -956,9 +993,13 @@ export async function openSettings() {
   await loadPreferences();
   void loadSettingsPermissions();
 
-  // Check for first-time setup
+  // First-run setup only while unlicensed; once licensed, always restore normal
+  // settings (so a session that entered setup mode before login doesn't stay
+  // stuck there with the welcome banner + login form).
   if (status && !status.env_keys_set.license) {
     enterSetupMode();
+  } else {
+    exitSetupMode();
   }
 }
 

@@ -622,8 +622,11 @@ btnMenu.addEventListener("click", (e) => {
   openSettings();
 });
 
-// First-time setup detection — check after a short delay for server readiness
-setTimeout(() => {
-  checkFirstTimeSetup();
-  void maybeShowOnboarding(); // first-run permissions walkthrough (once)
+// First-time setup detection — check after a short delay for server readiness.
+// Onboarding is the first-run flow; only fall back to the Settings setup-mode
+// auto-open when the wizard is NOT showing, so the two don't stack (which left
+// a stale setup-mode Settings panel behind the wizard).
+setTimeout(async () => {
+  const onboarding = await maybeShowOnboarding();
+  if (!onboarding) checkFirstTimeSetup();
 }, 2000);
