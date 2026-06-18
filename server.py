@@ -109,6 +109,7 @@ from process_events import (
     bus as process_bus,
     Event as ProcessEvent,
     emit_step,
+    emit_pointer,
     emit_browser_action,
     emit_screenshot,
     emit_app_launch,
@@ -4541,6 +4542,14 @@ _UI_CLICK_RE = re.compile(
 _UI_TYPE_RE = re.compile(
     r'^type\s+(?P<text>.+?)\s+(?:in|into)\s+(?:the\s+)?(?P<field>.+?)(?:\s+(?:field|box|bar))?\s*[.?!]*$',
     re.IGNORECASE)
+# Point-and-teach (voice-first): "where is the send button" / "show me the
+# reply button" / "point at the search bar". VALET LOCATES and describes the
+# target aloud (and highlights it in-app) — it never clicks. Distinct from the
+# click verbs above so "show me" can never trigger an action.
+_UI_POINT_RE = re.compile(
+    r'^(?:where(?:\'s|\s+is|\s+are)?|show\s+me(?:\s+where)?|point\s+(?:to|at)|'
+    r'find\s+me)\s+(?:the\s+)?(?P<target>.+?)(?:\s+button|\s+is|\s+are)?\s*[.?!]*$',
+    re.IGNORECASE)
 
 # UC6 skills. "run npm install" (only when the command starts with a known tool —
 # so "run the tests" stays conversation), "open <file> at line <n> in cursor",
@@ -4631,6 +4640,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         typed = _tm.group("text").strip()
         if field and typed:
             return {"action": "ui_act", "ui_action": "type", "target": field, "text": typed}
+    # Point-and-teach is checked BEFORE click so "show me the X" / "where is X"
+    # locate-and-describe rather than getting mis-read as a click.
+    _pm = _UI_POINT_RE.match(text.strip())
+    if _pm:
+        tgt = _pm.group("target").strip(" .?!")
+        if tgt and len(tgt.split()) <= 6:
+            return {"action": "ui_act", "ui_action": "point", "target": tgt}
     _cm = _UI_CLICK_RE.match(text.strip())
     if _cm:
         tgt = _cm.group("target").strip(" .?!")
@@ -7225,6 +7241,75 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
             "label": res.label, "message": r.message, "target": res.to_dict()}
 
 
+def _spatial_phrase(cx: float, cy: float, win_frame: Optional[list]) -> str:
+    """Coarse 'near the top-right' / 'right in the centre' descriptor of a screen
+    point within its window. Deterministic and instant — no model call — so the
+    butler can answer the moment the target resolves."""
+    if not win_frame or len(win_frame) != 4 or win_frame[2] <= 0 or win_frame[3] <= 0:
+        return "on screen"
+    relx = (cx - win_frame[0]) / win_frame[2]
+    rely = (cy - win_frame[1]) / win_frame[3]
+    h = "left" if relx < 0.34 else "right" if relx > 0.66 else "centre"
+    v = "top" if rely < 0.34 else "bottom" if rely > 0.66 else "middle"
+    if h == "centre" and v == "middle":
+        return "right in the centre"
+    if h == "centre":
+        return f"along the {v}"
+    if v == "middle":
+        return f"over on the {h}"
+    return f"near the {v}-{h}"
+
+
+async def _resolve_and_point(target: str, app: Optional[str] = None, *,
+                             task_id: Optional[str] = None) -> dict:
+    """Point-and-teach (UC3, locate-only). Resolve a natural-language target
+    against a fresh observation, then describe WHERE it is aloud and highlight it
+    in-app. This path is structurally distinct from `_resolve_and_act`: it NEVER
+    calls click_element / focus_element / send_keystroke — no synthetic input ever
+    leaves this function. Ambiguous → ask; miss → honest fail."""
+    import perception
+    import target_resolver
+    if not target:
+        return {"ok": False, "status": "miss", "message": "What should I look for, sir?"}
+
+    obs = await perception.build_observation(executor, app=app)
+    res = await target_resolver.resolve(obs, target, anthropic_client, intent="point at")
+    # Same "X in <app>" retry the act path uses: "in <app>" is usually context.
+    if res.status == "miss" and " in " in target:
+        short = target.rsplit(" in ", 1)[0].strip()
+        if short and short != target:
+            retry = await target_resolver.resolve(obs, short, anthropic_client, intent="point at")
+            if retry.status != "miss":
+                res, target = retry, short
+
+    if res.status == "ambiguous":
+        return {"ok": False, "status": "ambiguous", "message": res.message,
+                "alternatives": res.alternatives}
+    if res.status == "miss":
+        return {"ok": False, "status": "miss",
+                "message": res.message or f"I can't see a '{target}' on screen, sir."}
+
+    # Center point: AX resolution carries a frame (preferred); a vision point has
+    # only an (x, y) and no box — the frontend reticle handles the missing frame.
+    if res.frame and len(res.frame) == 4:
+        cx = res.frame[0] + res.frame[2] / 2
+        cy = res.frame[1] + res.frame[3] / 2
+    elif res.point:
+        cx, cy = res.point
+    else:
+        # Resolved but no usable geometry — name it without a highlight.
+        return {"ok": True, "status": res.status, "via": res.via, "label": res.label,
+                "message": f"That would be the {res.label}, sir."}
+
+    label = res.label or target
+    where = _spatial_phrase(cx, cy, obs.get("window_frame"))
+    if task_id:
+        await emit_pointer(task_id, cx, cy, label=label, frame=res.frame)
+    return {"ok": True, "status": res.status, "via": res.via, "label": label,
+            "point": [cx, cy], "frame": res.frame,
+            "message": f"You'll find {label} {where}, sir."}
+
+
 def _track_uc(ws, coro):
     """Spawn a UC3/UC4 background task and remember it on the WS as the current
     interruptible turn, so a barge-in (UC5) — or a fresh command — can cancel it.
@@ -7248,6 +7333,20 @@ async def _handle_ui_act(action: dict, ws) -> None:
     ui_action = action.get("ui_action", "click")
     target = action.get("target", "")
     text = action.get("text", "")
+
+    # Point-and-teach: locate + describe + highlight, never act. Routed through the
+    # same _track_uc slot as the act path, so a barge-in cancels it cleanly.
+    if ui_action == "point":
+        try:
+            async with process_bus.task_context(f"Locate {target}") as task_id:
+                result = await _resolve_and_point(target, None, task_id=task_id)
+        except Exception as e:
+            log.error(f"ui_point error: {e}")
+            await _speak(ws, "I couldn't find that, sir.")
+            return
+        await _speak(ws, result.get("message") or "I couldn't find that on screen, sir.")
+        return
+
     label = f"{'Type into' if ui_action == 'type' else 'Click'} {target}"
     try:
         async with process_bus.task_context(label) as task_id:
@@ -7271,6 +7370,17 @@ async def api_ui_act(request: Request):
         body.get("text") or "",
         body.get("app") or None,
     )
+
+
+@app.post("/api/ui/point")
+async def api_ui_point(request: Request):
+    """Point-and-teach — locate + describe a natural-language target WITHOUT
+    acting. Body: {target, app?}. Never clicks; returns the spoken locating
+    sentence plus the resolved point/frame for the in-app highlight."""
+    body = (await request.json() if await request.body() else {}) or {}
+    async with process_bus.task_context(f"Locate {body.get('target') or ''}") as task_id:
+        return await _resolve_and_point(
+            body.get("target") or "", body.get("app") or None, task_id=task_id)
 
 
 async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
