@@ -37,6 +37,7 @@ class Resolution:
     status: str                       # "ref" | "point" | "ambiguous" | "miss"
     ref: Optional[str] = None
     point: Optional[tuple] = None      # absolute screen (x, y)
+    frame: Optional[list] = None       # [x, y, w, h] global screen rect (ref path only)
     label: str = ""
     alternatives: list = field(default_factory=list)  # [{ref,label}] when ambiguous
     via: str = ""                      # "ax" | "vision"
@@ -45,8 +46,9 @@ class Resolution:
     def to_dict(self) -> dict:
         return {
             "status": self.status, "ref": self.ref, "point": self.point,
-            "label": self.label, "alternatives": self.alternatives,
-            "via": self.via, "message": self.message,
+            "frame": self.frame, "label": self.label,
+            "alternatives": self.alternatives, "via": self.via,
+            "message": self.message,
         }
 
 
@@ -112,7 +114,7 @@ async def _ax_pick(elements: list, description: str, client, intent: str) -> Res
     ref = data.get("ref")
     if ref in valid:
         e = valid[ref]
-        return Resolution(status="ref", ref=ref, via="ax",
+        return Resolution(status="ref", ref=ref, via="ax", frame=e.get("frame"),
                           label=(e.get("title") or e.get("value") or e.get("role") or ref))
     return Resolution(status="miss", via="ax")
 
