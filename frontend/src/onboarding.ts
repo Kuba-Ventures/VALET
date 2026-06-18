@@ -504,12 +504,19 @@ export async function maybeShowOnboarding(): Promise<boolean> {
   const cfg = await getJSON<{ build_id?: string; voice?: string }>("/api/config");
   const buildId = cfg?.build_id || "dev";
   if (localStorage.getItem(SEEN_KEY) === buildId) return false; // already onboarded this build
-  // If the license is already activated, the user has been through setup before
+  // If the license is already ENTITLED, the user has been through setup before
   // (e.g. they quit mid-onboarding to grant a permission, then relaunched) — don't
   // make them redo it. Mark this build seen and stay out of the way; everything is
   // editable in Settings.
-  const status = await getJSON<{ env_keys_set?: { license?: boolean } }>("/api/settings/status");
-  if (status?.env_keys_set?.license) {
+  //
+  // We gate on entitlement, NOT mere key presence: a stale, canceled, or wrong
+  // key is present but not entitled, and in that case we WANT onboarding to run
+  // so the user has a path to enter a working key — otherwise the assistant just
+  // dead-ends on the licence gate with no way back into setup.
+  const status = await getJSON<{ env_keys_set?: { license_entitled?: boolean } }>(
+    "/api/settings/status",
+  );
+  if (status?.env_keys_set?.license_entitled) {
     localStorage.setItem(SEEN_KEY, buildId);
     return false;
   }
