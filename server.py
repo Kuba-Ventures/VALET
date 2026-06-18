@@ -3783,6 +3783,20 @@ def _license_status_label() -> str:
         return "unknown"
 
 
+def _license_entitled() -> bool:
+    """Whether the license currently grants access. Keyless (dev) counts as
+    entitled — there is no gate without a key. Distinct from mere key *presence*:
+    a canceled/invalid key is present but NOT entitled, and onboarding keys off
+    this so a stale key reopens the setup flow instead of dead-ending."""
+    if not LICENSE_KEY:
+        return True
+    try:
+        import licensing
+        return licensing.is_entitled()
+    except Exception:
+        return False
+
+
 async def _ensure_license() -> None:
     """Lazily revalidate the license at most every ~15 minutes."""
     global _last_license_check
@@ -3806,7 +3820,7 @@ def assistant_blocked_message() -> Optional[str]:
         return None
     return (
         "Apologies, sir — my licence requires attention before I can assist. "
-        "Do review your subscription."
+        "Do review your subscription, or update the licence key in Settings."
     )
 
 
@@ -6563,6 +6577,7 @@ async def api_settings_status():
         "uptime_seconds": int(time.time() - _session_start),
         "env_keys_set": {
             "license": bool(env_dict.get("LICENSE_KEY", "").strip()),
+            "license_entitled": _license_entitled(),
             "proxy_base_url": (env_dict.get("PROXY_BASE_URL", "").strip() or PROXY_BASE_URL),
             "license_status": _license_status_label(),
             "fish_voice_id": bool(env_dict.get("FISH_VOICE_ID", "").strip()),
