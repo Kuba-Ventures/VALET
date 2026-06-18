@@ -64,6 +64,22 @@ def test_ax_single_match():
     assert r.status == "ref" and r.ref == "e1" and r.via == "ax" and r.label == "Submit"
 
 
+def test_ax_match_carries_frame():
+    # Point-and-teach needs the resolved element's on-screen rect. The AX pick must
+    # forward UIElement.frame onto the Resolution (it carried only ref/label before).
+    c = FakeClient(ax_json='{"ref": "e1"}')
+    r = run(tr.resolve(obs(), "Submit", c))
+    assert r.frame == [10, 20, 80, 24]
+    assert r.to_dict()["frame"] == [10, 20, 80, 24]
+
+
+def test_vision_point_has_no_frame():
+    # The vision fallback yields a bare point, not a box — frame stays None.
+    c = FakeClient(ax_json='{"found": false}', vision_json='{"found": true, "x": 200, "y": 150}')
+    r = run(tr.resolve(obs(image=IMG, frame=[0, 0, 400, 300]), "Submit", c))
+    assert r.status == "point" and r.frame is None
+
+
 def test_ax_ambiguous_asks():
     c = FakeClient(ax_json='{"ambiguous": ["e1", "e4"]}')
     r = run(tr.resolve(obs(), "the button", c))

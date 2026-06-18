@@ -37,6 +37,7 @@ class EventType(str, Enum):
     TEXT_WRITE = "text_write"
     CODE_TASK = "code_task"
     TASK_QUEUED = "task_queued"
+    POINTER_HIGHLIGHT = "pointer_highlight"
     ERROR = "error"
 
 
@@ -186,6 +187,21 @@ async def emit_browser_action(task_id: str, action: str, url: str = "",
         title=action,
         detail=detail,
         payload={"url": url},
+    ))
+
+
+async def emit_pointer(task_id: str, x: float, y: float, label: str = "",
+                       frame: list | None = None) -> None:
+    """Point-and-teach: tell the frontend where the located element sits on the
+    real screen. `x,y` is the absolute screen center; `frame` is the element's
+    [x,y,w,h] global rect when known (AX path), else None (vision path — the
+    panel falls back to a fixed reticle). No synthetic input is ever sent — this
+    only renders an in-app confirmation of what VALET is describing aloud."""
+    await bus.emit(Event(
+        type=EventType.POINTER_HIGHLIGHT.value,
+        task_id=task_id,
+        title=label or "Here",
+        payload={"x": x, "y": y, "frame": frame, "label": label},
     ))
 
 
