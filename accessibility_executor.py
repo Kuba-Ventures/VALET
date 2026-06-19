@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from action_executor import ActionExecutor, ActionResult, Capability, UIElement
@@ -305,6 +306,72 @@ def _mouse_click(x: float, y: float) -> None:
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
 
+# --------------------------------------------------------------------------- #
+# Stage 2 — visible cursor glide (point-and-teach's act sibling).
+#
+# CGEvent mouse coords are GLOBAL DISPLAY POINTS (top-left origin) — the same
+# space as UIElement.frame — so no Retina/pixel conversion and multi-monitor
+# works for free. The glide is SYNCHRONOUS and meant to run on a worker thread
+# (see AccessibilityExecutor.glide_to_target) so a busy asyncio loop can't jank
+# the motion. clock/sleep/read_pos/post_move are injectable so the tween is
+# unit-tested deterministically with no real mouse.
+# --------------------------------------------------------------------------- #
+def _cursor_location() -> tuple:
+    """Current global cursor position in points."""
+    loc = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+    return (float(loc.x), float(loc.y))
+
+
+def _post_mouse_moved(x: float, y: float) -> None:
+    pt = Quartz.CGPointMake(x, y)
+    ev = Quartz.CGEventCreateMouseEvent(
+        None, Quartz.kCGEventMouseMoved, pt, Quartz.kCGMouseButtonLeft)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+
+
+def move_cursor(x: float, y: float, *, duration: float = 0.45, fps: int = 60,
+                divergence: float = 8.0, clock=time.perf_counter, sleep=time.sleep,
+                read_pos=_cursor_location, post_move=_post_mouse_moved) -> dict:
+    """Glide the real cursor to (x, y) over `duration`, eased (smoothstep). Aborts
+    if the user grabs the physical mouse (actual position diverges from the point
+    we last commanded) or the per-move budget is blown.
+
+    Returns {'arrived': bool, 'aborted': None|'user_moved'|'timeout', 'pos': (x,y)}.
+    """
+    sx, sy = read_pos()
+    steps = max(1, int(duration * fps))
+    frame = duration / steps
+    last_cmd = (sx, sy)
+    deadline = clock() + duration + 0.5
+    for i in range(1, steps + 1):
+        # Physical-mouse grab: the cursor isn't where we last put it → yield.
+        ax, ay = read_pos()
+        if abs(ax - last_cmd[0]) > divergence or abs(ay - last_cmd[1]) > divergence:
+            return {"arrived": False, "aborted": "user_moved", "pos": (ax, ay)}
+        if clock() > deadline:
+            return {"arrived": False, "aborted": "timeout", "pos": (ax, ay)}
+        t = i / steps
+        e = t * t * (3.0 - 2.0 * t)                  # smoothstep easing
+        cx = sx + (x - sx) * e
+        cy = sy + (y - sy) * e
+        post_move(cx, cy)
+        last_cmd = (cx, cy)
+        sleep(frame)
+    return {"arrived": True, "aborted": None, "pos": (float(x), float(y))}
+
+
+def _element_at(x: float, y: float):
+    """AXUIElement under a global screen point, or None."""
+    try:
+        sysw = _AX.AXUIElementCreateSystemWide()
+        err, el = _AX.AXUIElementCopyElementAtPosition(sysw, float(x), float(y), None)
+        if err == 0:
+            return el
+    except Exception:
+        pass
+    return None
+
+
 def _post_text(text: str) -> None:
     """Post each character as a keyboard event to the focused app."""
     for ch in text:
@@ -501,6 +568,44 @@ class AccessibilityExecutor(ActionExecutor):
             return ActionResult.failure(Capability.CLICK_ELEMENT, error=how, message=msg)
         return ActionResult.success(Capability.CLICK_ELEMENT, message="Clicked, sir.",
                                     backend=self.name, method=how)
+
+    # --- visible cursor glide (Stage 2) ----------------------------------
+    def _verify_under(self, ref: str, x: float, y: float) -> bool:
+        """True if the AX element under (x, y) still matches the resolved ref
+        (role + title/value), so a UI shift during the glide can't cause a wrong
+        click. Conservative: any uncertainty (no element, role mismatch) → False."""
+        want = self._ref_map.get(ref)
+        if want is None:
+            return False
+        got = _element_at(x, y)
+        if got is None:
+            return False
+        if _str_attr(want, "AXRole") != _str_attr(got, "AXRole"):
+            return False
+        wt = _str_attr(want, "AXTitle") or _str_attr(want, "AXValue")
+        gt = _str_attr(got, "AXTitle") or _str_attr(got, "AXValue")
+        if wt and gt and wt != gt:
+            return False
+        return True
+
+    async def glide_to_target(self, x: float, y: float, *, ref: Optional[str] = None,
+                              duration: float = 0.45) -> dict:
+        """Visibly glide the real cursor to (x, y) on a worker thread (so the
+        async voice loop can't jank it), then — when `ref` is given — AX hit-test
+        that the element under the cursor still matches. Does NOT click; the
+        caller's existing gated click_element fires the actual click, so the
+        safety gate (confirm card / kill switch) is preserved.
+
+        Returns {'ok': bool, 'reason': None|'user_moved'|'timeout'|'moved_target'
+        |'unavailable'}."""
+        if not _PYOBJC or not is_trusted():
+            return {"ok": False, "reason": "unavailable"}
+        res = await asyncio.to_thread(move_cursor, float(x), float(y), duration=duration)
+        if res.get("aborted"):
+            return {"ok": False, "reason": res["aborted"]}
+        if ref is not None and not await asyncio.to_thread(self._verify_under, ref, x, y):
+            return {"ok": False, "reason": "moved_target"}
+        return {"ok": True, "reason": None}
 
     # --- key combo (Tier 1) ----------------------------------------------
     async def key_combo(self, combo: str, *, app: Optional[str] = None,
