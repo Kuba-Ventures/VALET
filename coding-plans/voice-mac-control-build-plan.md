@@ -9,6 +9,61 @@ Targets (locked): console launch < ~800ms (speech-end → app visible); voice→
 
 ---
 
+## STATUS (2026-06-19) — shipped vs remaining
+
+### ✅ Shipped to main
+- **Stage 0 — latency harness** (#114): per-turn timing + `GET /api/latency/last`.
+- **Stage 1 — voice console** (#116): "open X" launches installed apps with no LLM round-trip;
+  fuzzy match incl. nested `.app` bundles + space-insensitive ("da vinci" → DaVinci Resolve).
+- **Stage 2 — visible cursor glide + hit-test-guarded click** (#117): cursor glides to the target,
+  AX hit-test verifies before clicking, aborts on mouse-grab; in-app takeover banner (#119).
+- **Point-and-teach (voice-only)** (#113): "where is X" speaks the on-screen location.
+- **Safety/UX:** Escape hard-stop kills voice + sleeps (#118); no confirm panel + faster miss,
+  ~5s→~1-2s (#120); echo-loop fix — Vee stops hearing itself (#121).
+- **PTT-primary** (#122): hold ⌥ to talk (default), toggle for always-listening — kills wake latency.
+
+### 🔭 Remaining roadmap (build-ready, ordered)
+
+**CLICKY track (visual Mac control)**
+- **Stage 3 — Native cursor follower** (the on-desktop blue custom dot, the real Clicky look).
+  - *Build:* a native transparent, always-on-top, **click-through** overlay that tracks the real
+    cursor and draws a custom shape/color dot. Option: Tauri frameless window, OR a small Swift
+    sidecar launched by `src-tauri`. Poll `CGEventGetLocation` (or hook) for position; draw at it.
+  - *Why it's gated:* VALET's webview can't draw over other apps — this is THE native-overlay spike.
+    macOS-version-fragile. **`/plan-eng-review` first** (Tauri-window vs Swift-sidecar).
+  - *Bonus:* the same overlay powers point-and-teach's on-desktop pointing (3b below).
+  - *Bundles with:* Global hold-⌥ PTT (same native layer — one investment, two features).
+  - *Effort:* native spike (~3-5 days). *Demo:* the blue dot flying to a Gmail button.
+- **Stage 3b — point-and-teach visual** (once the overlay exists): `_resolve_and_point` draws the
+  dot + a label at the located element, instead of voice-only. Reuses `emit_pointer` (already built).
+- **Stage 3c — parallel narration polish:** butler narrates WHILE the cursor glides so latency hides
+  behind motion (the old "Approach C" perceived-speed idea). Cheap once 3 lands.
+
+**RAYCAST track (fast voice console)**
+- **Stage 4 — Console v2** (expand beyond installed apps). Each is a fast-path in `detect_action_fast`
+  + a handler, all timed via Stage 0:
+  - Deep links / URLs ("open github.com"), system actions (lock, sleep, volume, brightness, dnd),
+    snippets / text expansion, inline calculator ("what's 15% of 80"), clipboard history,
+    window management ("snap left"), quick file search.
+  - *Effort:* incremental, low-risk; pick the 3-4 highest-value first (system actions + calculator
+    + deep links likely). MVP was installed-apps-only on purpose.
+
+**WISPR / native track (activation)**
+- **Stage 5 — Global hold-⌥ PTT** (works when VALET ISN'T focused — true Wispr). Native global
+  shortcut: Tauri `globalShortcut` registering ⌥, or the Swift sidecar. **Bundles with Stage 3**
+  (same native layer). `/plan-eng-review` together. Today's PTT is window-focused only.
+
+**CROSS-CUTTING / must-not-forget**
+- **DMG rebuild + release:** all merged work is **dev-server-only** until a signed/notarized build
+  ships. The `/Applications` app (and customers) get none of it until then. Wire/verify the release
+  pipeline before the Jacques demo "ships."
+- **Branch protection:** enable "require branches up to date before merging" — TWO squash-merges
+  silently dropped commits this session (#114 dropped #113's server code; #116's nested-bundle fix
+  dropped). The factory's frontend `npm run build` gate already catches TS errors; this closes the
+  stale-branch hole.
+
+---
+
 ## Stage 0 — Latency harness ("extremely fast" becomes a number)
 **Why first:** every later stage is graded against this. Also directly answers Jacques's mandate and
 produces the baseline clip. Lowest risk.
