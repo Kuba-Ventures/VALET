@@ -124,6 +124,24 @@ def test_no_match_anywhere_is_miss():
     assert r.status == "miss"
 
 
+def test_vision_runs_once_on_thin_ax_miss():
+    # Speed: a thin-AX miss used to call the vision model TWICE (thin path +
+    # fallback). It must run at most once now.
+    thin = [{"ref": "e0", "role": "AXGroup", "title": "", "value": "", "enabled": True, "frame": [0, 0, 400, 300]}]
+    c = FakeClient(ax_json='{"found": false}', vision_json='{"found": false}')
+    r = run(tr.resolve(obs(elements=thin, image=IMG, frame=[0, 0, 400, 300]), "Login", c))
+    assert r.status == "miss"
+    assert c.calls.count("vision") == 1
+
+
+def test_vision_false_skips_vision_entirely():
+    # The "X in app" retry passes vision=False — no vision call at all, even on a miss.
+    c = FakeClient(ax_json='{"found": false}', vision_json='{"found": true, "x": 1, "y": 1}')
+    r = run(tr.resolve(obs(image=IMG, frame=[0, 0, 400, 300]), "Submit", c, vision=False))
+    assert r.status == "miss"
+    assert "vision" not in c.calls
+
+
 def test_parse_json_tolerates_fences():
     assert tr._parse_json('```json\n{"ref": "e1"}\n```') == {"ref": "e1"}
     assert tr._parse_json('here: {"found": false} ok') == {"found": False}

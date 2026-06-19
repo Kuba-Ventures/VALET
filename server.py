@@ -7249,7 +7249,11 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
     if res.status == "miss" and " in " in target:
         short = target.rsplit(" in ", 1)[0].strip()
         if short and short != target:
-            retry = await target_resolver.resolve(obs, short, anthropic_client, intent=intent)
+            # AX-only retry (vision=False): vision already failed on this same
+            # screenshot for the full target, so a second vision pass just adds
+            # ~1-2s for nothing. This is most of the "5s to fail" the user saw.
+            retry = await target_resolver.resolve(obs, short, anthropic_client,
+                                                  intent=intent, vision=False)
             if retry.status in ("ref", "point", "ambiguous"):
                 res, target = retry, short
 
@@ -7298,10 +7302,17 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
                         "moved_target": "That moved, sir — let me look again."}[glide["reason"]]
                 return {"ok": False, "status": "aborted", "via": res.via,
                         "label": res.label, "message": _msg}
+        # No confirm card for a voice "click X": the explicit voice command + the
+        # visible glide + the AX hit-test ARE the confirmation. Use the raw AX
+        # executor (skips the Tier-1 confirm) but keep the kill switch honored —
+        # Escape / STOP still blocks it.
+        if kill_switch.is_engaged():
+            return {"ok": False, "status": "blocked", "via": res.via,
+                    "label": res.label, "message": "I'm stopped, sir."}
         if res.status == "ref":
-            r = await executor.click_element(ref=res.ref, app=app, task_id=task_id)
+            r = await _ax_executor.click_element(ref=res.ref, app=app, task_id=task_id)
         else:
-            r = await executor.click_element(point=res.point, app=app, task_id=task_id)
+            r = await _ax_executor.click_element(point=res.point, app=app, task_id=task_id)
 
     return {"ok": r.ok, "status": res.status, "via": res.via,
             "label": res.label, "message": r.message, "target": res.to_dict()}
