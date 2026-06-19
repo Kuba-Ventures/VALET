@@ -4551,6 +4551,13 @@ _UI_POINT_RE = re.compile(
     r'^(?:where(?:\'s|\s+is|\s+are)?|show\s+me(?:\s+where)?|point\s+(?:to|at)|'
     r'find\s+me)\s+(?:the\s+)?(?P<target>.+?)(?:\s+button|\s+is|\s+are)?\s*[.?!]*$',
     re.IGNORECASE)
+# Voice console (Stage 1): "open/launch/fire up X" → launch an installed app with
+# NO model round-trip. The verb anchors it; the installed-app fuzzy match gates
+# it, so "open a new tab" / "open the pod bay doors" find no app and fall through
+# to the LLM. "open X at line N in cursor" is matched earlier, so it wins first.
+_OPEN_APP_RE = re.compile(
+    r'^(?:open|launch|fire\s+up|pull\s+up|bring\s+up|boot\s+up)\s+(?P<target>.+?)\s*[.?!]*$',
+    re.IGNORECASE)
 
 # UC6 skills. "run npm install" (only when the command starts with a known tool —
 # so "run the tests" stays conversation), "open <file> at line <n> in cursor",
@@ -4666,6 +4673,17 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     _rm = _RUN_CMD_RE.match(text.strip())
     if _rm:
         return {"action": "run_command", "target": _rm.group("cmd").strip()}
+
+    # ── (2e) Voice console: "open/launch X" → installed app, no LLM round-trip.
+    # Cursor/command patterns above win first. A confident installed-app match is
+    # the gate — a non-app "open X" returns None here and falls through.
+    _om = _OPEN_APP_RE.match(text.strip())
+    if _om:
+        import app_index
+        app = app_index.match_app(_om.group("target").strip(" .?!"),
+                                  app_index.installed_apps())
+        if app:
+            return {"action": "open_app", "target": app}
 
     # ── (3) Word-count gate for everything else.
     if len(words) > 12:
@@ -5940,7 +5958,15 @@ async def voice_handler(ws: WebSocket):
 
                     if action:
                         _track_usage(action.get("action") or "")
-                        if action["action"] == "open_terminal":
+                        if action["action"] == "open_app":
+                            # Voice console — launch an installed app with no LLM
+                            # round-trip. Timed via Stage 0 so launch latency is
+                            # measured against the budget.
+                            _app = action.get("target", "")
+                            response_text = f"Opening {_app}, sir."
+                            _track_uc(ws, _timed_action(
+                                turn_timer, "open_app", _execute_open_app(_app)))
+                        elif action["action"] == "open_terminal":
                             response_text = await handle_open_terminal()
                         elif action["action"] == "show_recent":
                             response_text = await handle_show_recent()
