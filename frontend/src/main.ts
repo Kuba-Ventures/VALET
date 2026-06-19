@@ -29,6 +29,15 @@ let currentState: State = "idle";
 // TTS) can tell a real interruption from hearing Vee's own voice (echo).
 let currentSpokenText = "";
 
+// Echo cooldown: the recognizer can emit Vee's LAST words a beat after the audio
+// ends, when state is already idle and the live echo filter no longer applies.
+// Keep the last spoken text briefly so that tail echo is still recognized and
+// dropped — without this Vee hears itself and loops ("Do you have an actual
+// question?" → mic hears "actual question" → replies again → …).
+let lastSpokenText = "";
+let lastSpokeAt = 0;
+const ECHO_COOLDOWN_MS = 1500;
+
 // Wake-word listening toggle. Persisted across reloads via localStorage so the
 // user's preference survives a refresh. Controls only the frontend's wake-word
 // listening — the backend service is unaffected.
@@ -220,6 +229,11 @@ const wake = createWakeWord(
       if (currentState === "speaking" || currentState === "thinking") {
         if (!opts?.fromPushToTalk && !shouldBargeIn(text, currentSpokenText)) return; // echo / noise — ignore
         socket.send({ type: "barge_in" });
+      } else if (!opts?.fromPushToTalk && lastSpokenText && Date.now() - lastSpokeAt < ECHO_COOLDOWN_MS) {
+        // Just-after-speech: filter the tail echo against what Vee just said. A
+        // real new command (low overlap / interrupt keyword) still passes; an
+        // echo of Vee's own words is dropped, breaking the self-loop.
+        if (!shouldBargeIn(text, lastSpokenText)) return;
       }
       audioPlayer.stop();
       currentSpokenText = "";
@@ -270,7 +284,9 @@ fetch("/api/config")
 // ---------------------------------------------------------------------------
 
 audioPlayer.onFinished(() => {
-  currentSpokenText = ""; // Vee finished speaking — nothing to echo-filter now
+  lastSpokenText = currentSpokenText;  // remember for the post-speech echo cooldown
+  lastSpokeAt = Date.now();
+  currentSpokenText = ""; // live echo filter no longer applies; cooldown takes over
   // In active conversation, stay visually in "listening" between turns so the
   // user can tell the assistant is still hot. Drops back to "idle" only when
   // the wake module has been put back to passive (e.g. via Sleeping toggle).
