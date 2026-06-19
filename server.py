@@ -7260,6 +7260,24 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
             await executor.click_element(point=res.point, app=app)  # gated focus-click
         r = await executor.send_keystroke(app or "", text, task_id=task_id)
     else:
+        # Stage 2: visibly glide the real cursor to the target FIRST (so the user
+        # watches it happen), then let the existing gated click_element fire — the
+        # glide aborts (no click) on a physical-mouse grab, a timeout, or an AX
+        # hit-test mismatch (UI shifted during the glide). The cursor center comes
+        # from the resolved frame (ref) or the vision point.
+        if res.frame and len(res.frame) == 4:
+            _gx = res.frame[0] + res.frame[2] / 2.0
+            _gy = res.frame[1] + res.frame[3] / 2.0
+        else:
+            _gx, _gy = (res.point or (None, None))
+        if _gx is not None:
+            glide = await _ax_executor.glide_to_target(_gx, _gy, ref=res.ref)
+            if not glide["ok"] and glide["reason"] in ("user_moved", "timeout", "moved_target"):
+                _msg = {"user_moved": "As you were, sir.",
+                        "timeout": "That took too long, sir.",
+                        "moved_target": "That moved, sir — let me look again."}[glide["reason"]]
+                return {"ok": False, "status": "aborted", "via": res.via,
+                        "label": res.label, "message": _msg}
         if res.status == "ref":
             r = await executor.click_element(ref=res.ref, app=app, task_id=task_id)
         else:
