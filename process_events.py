@@ -38,6 +38,7 @@ class EventType(str, Enum):
     CODE_TASK = "code_task"
     TASK_QUEUED = "task_queued"
     POINTER_HIGHLIGHT = "pointer_highlight"
+    CURSOR_CONTROL = "cursor_control"
     ERROR = "error"
 
 
@@ -202,6 +203,19 @@ async def emit_pointer(task_id: str, x: float, y: float, label: str = "",
         task_id=task_id,
         title=label or "Here",
         payload={"x": x, "y": y, "frame": frame, "label": label},
+    ))
+
+
+async def emit_cursor_control(task_id: str, active: bool, label: str = "") -> None:
+    """Signal that Vee is (active) or is no longer (not active) steering the real
+    macOS cursor, so the frontend can show a prominent takeover indicator while a
+    glide-and-click is happening."""
+    await bus.emit(Event(
+        type=EventType.CURSOR_CONTROL.value,
+        task_id=task_id,
+        title=f"Steering cursor{f' → {label}' if label else ''}" if active else "Released cursor",
+        status="active" if active else "done",
+        payload={"active": active, "label": label},
     ))
 
 

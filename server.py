@@ -110,6 +110,7 @@ from process_events import (
     Event as ProcessEvent,
     emit_step,
     emit_pointer,
+    emit_cursor_control,
     emit_browser_action,
     emit_screenshot,
     emit_app_launch,
@@ -7271,7 +7272,15 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
         else:
             _gx, _gy = (res.point or (None, None))
         if _gx is not None:
-            glide = await _ax_executor.glide_to_target(_gx, _gy, ref=res.ref)
+            # Tell the UI Vee is taking the cursor (in-app takeover indicator),
+            # then release it whatever the outcome.
+            if task_id:
+                await emit_cursor_control(task_id, True, res.label or target)
+            try:
+                glide = await _ax_executor.glide_to_target(_gx, _gy, ref=res.ref)
+            finally:
+                if task_id:
+                    await emit_cursor_control(task_id, False)
             if not glide["ok"] and glide["reason"] in ("user_moved", "timeout", "moved_target"):
                 _msg = {"user_moved": "As you were, sir.",
                         "timeout": "That took too long, sir.",
