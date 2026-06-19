@@ -42,7 +42,11 @@ const ECHO_COOLDOWN_MS = 1500;
 // user's preference survives a refresh. Controls only the frontend's wake-word
 // listening — the backend service is unaffected.
 const WAKE_STATE_KEY = "valet.wakeListening";
-let isSleeping = localStorage.getItem(WAKE_STATE_KEY) === "sleeping";
+// Push-to-talk is now the PRIMARY mode: by default the always-on wake mic is OFF
+// (no wake-word latency, no self-echo) and you hold ⌥ to talk. The toggle flips
+// to "Always listening" (wake-word). Default to PTT mode unless the user has
+// explicitly chosen "active".
+let isSleeping = localStorage.getItem(WAKE_STATE_KEY) !== "active";
 
 const statusEl = document.getElementById("status-text")!;
 const errorEl = document.getElementById("error-text")!;
@@ -622,9 +626,17 @@ const wakeLabelEl = btnWakeToggle.querySelector(".wake-label")!;
 const btnMenu = document.getElementById("btn-menu")!;
 
 function applyWakeVisuals() {
-  btnWakeToggle.classList.toggle("sleeping", isSleeping);
-  wakeLabelEl.textContent = isSleeping ? "Sleeping" : "Active";
-  document.body.classList.toggle("wake-sleeping", isSleeping);
+  const ptt = isPushToTalkEnabled();
+  const pttMode = isSleeping && ptt;       // wake mic off, but hold-⌥ ready
+  const trulyAsleep = isSleeping && !ptt;  // no wake, no PTT → fully off
+  btnWakeToggle.classList.toggle("sleeping", trulyAsleep);
+  btnWakeToggle.classList.toggle("ptt-mode", pttMode);
+  wakeLabelEl.textContent = !isSleeping
+    ? "Always listening"
+    : (ptt ? "Push-to-talk" : "Sleeping");
+  // Only the truly-off state dims the orb — PTT mode is READY, not asleep.
+  document.body.classList.toggle("wake-sleeping", trulyAsleep);
+  updatePttHint();
   updateStatus(currentState);
 }
 
