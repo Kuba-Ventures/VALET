@@ -109,6 +109,7 @@ from process_events import (
     bus as process_bus,
     Event as ProcessEvent,
     emit_step,
+    emit_pointer,
     emit_browser_action,
     emit_screenshot,
     emit_app_launch,
@@ -4542,6 +4543,14 @@ _UI_CLICK_RE = re.compile(
 _UI_TYPE_RE = re.compile(
     r'^type\s+(?P<text>.+?)\s+(?:in|into)\s+(?:the\s+)?(?P<field>.+?)(?:\s+(?:field|box|bar))?\s*[.?!]*$',
     re.IGNORECASE)
+# Point-and-teach (voice-first): "where is the send button" / "show me the
+# reply button" / "point at the search bar". VALET LOCATES and describes the
+# target aloud (and highlights it in-app) — it never clicks. Distinct from the
+# click verbs above so "show me" can never trigger an action.
+_UI_POINT_RE = re.compile(
+    r'^(?:where(?:\'s|\s+is|\s+are)?|show\s+me(?:\s+where)?|point\s+(?:to|at)|'
+    r'find\s+me)\s+(?:the\s+)?(?P<target>.+?)(?:\s+button|\s+is|\s+are)?\s*[.?!]*$',
+    re.IGNORECASE)
 
 # UC6 skills. "run npm install" (only when the command starts with a known tool —
 # so "run the tests" stays conversation), "open <file> at line <n> in cursor",
@@ -4632,6 +4641,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         typed = _tm.group("text").strip()
         if field and typed:
             return {"action": "ui_act", "ui_action": "type", "target": field, "text": typed}
+    # Point-and-teach is checked BEFORE click so "show me the X" / "where is X"
+    # locate-and-describe rather than getting mis-read as a click.
+    _pm = _UI_POINT_RE.match(text.strip())
+    if _pm:
+        tgt = _pm.group("target").strip(" .?!")
+        if tgt and len(tgt.split()) <= 6:
+            return {"action": "ui_act", "ui_action": "point", "target": tgt}
     _cm = _UI_CLICK_RE.match(text.strip())
     if _cm:
         tgt = _cm.group("target").strip(" .?!")
@@ -7268,6 +7284,20 @@ async def _handle_ui_act(action: dict, ws) -> None:
     ui_action = action.get("ui_action", "click")
     target = action.get("target", "")
     text = action.get("text", "")
+
+    # Point-and-teach: locate + describe + highlight, never act. Routed through the
+    # same _track_uc slot as the act path, so a barge-in cancels it cleanly.
+    if ui_action == "point":
+        try:
+            async with process_bus.task_context(f"Locate {target}") as task_id:
+                result = await _resolve_and_point(target, None, task_id=task_id)
+        except Exception as e:
+            log.error(f"ui_point error: {e}")
+            await _speak(ws, "I couldn't find that, sir.")
+            return
+        await _speak(ws, result.get("message") or "I couldn't find that on screen, sir.")
+        return
+
     label = f"{'Type into' if ui_action == 'type' else 'Click'} {target}"
     try:
         async with process_bus.task_context(label) as task_id:
