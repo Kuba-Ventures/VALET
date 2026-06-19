@@ -7243,6 +7243,75 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
             "label": res.label, "message": r.message, "target": res.to_dict()}
 
 
+def _spatial_phrase(cx: float, cy: float, win_frame: Optional[list]) -> str:
+    """Coarse 'near the top-right' / 'right in the centre' descriptor of a screen
+    point within its window. Deterministic and instant — no model call — so the
+    butler can answer the moment the target resolves."""
+    if not win_frame or len(win_frame) != 4 or win_frame[2] <= 0 or win_frame[3] <= 0:
+        return "on screen"
+    relx = (cx - win_frame[0]) / win_frame[2]
+    rely = (cy - win_frame[1]) / win_frame[3]
+    h = "left" if relx < 0.34 else "right" if relx > 0.66 else "centre"
+    v = "top" if rely < 0.34 else "bottom" if rely > 0.66 else "middle"
+    if h == "centre" and v == "middle":
+        return "right in the centre"
+    if h == "centre":
+        return f"along the {v}"
+    if v == "middle":
+        return f"over on the {h}"
+    return f"near the {v}-{h}"
+
+
+async def _resolve_and_point(target: str, app: Optional[str] = None, *,
+                             task_id: Optional[str] = None) -> dict:
+    """Point-and-teach (UC3, locate-only). Resolve a natural-language target
+    against a fresh observation, then describe WHERE it is aloud and highlight it
+    in-app. This path is structurally distinct from `_resolve_and_act`: it NEVER
+    calls click_element / focus_element / send_keystroke — no synthetic input ever
+    leaves this function. Ambiguous → ask; miss → honest fail."""
+    import perception
+    import target_resolver
+    if not target:
+        return {"ok": False, "status": "miss", "message": "What should I look for, sir?"}
+
+    obs = await perception.build_observation(executor, app=app)
+    res = await target_resolver.resolve(obs, target, anthropic_client, intent="point at")
+    # Same "X in <app>" retry the act path uses: "in <app>" is usually context.
+    if res.status == "miss" and " in " in target:
+        short = target.rsplit(" in ", 1)[0].strip()
+        if short and short != target:
+            retry = await target_resolver.resolve(obs, short, anthropic_client, intent="point at")
+            if retry.status != "miss":
+                res, target = retry, short
+
+    if res.status == "ambiguous":
+        return {"ok": False, "status": "ambiguous", "message": res.message,
+                "alternatives": res.alternatives}
+    if res.status == "miss":
+        return {"ok": False, "status": "miss",
+                "message": res.message or f"I can't see a '{target}' on screen, sir."}
+
+    # Center point: AX resolution carries a frame (preferred); a vision point has
+    # only an (x, y) and no box — the frontend reticle handles the missing frame.
+    if res.frame and len(res.frame) == 4:
+        cx = res.frame[0] + res.frame[2] / 2
+        cy = res.frame[1] + res.frame[3] / 2
+    elif res.point:
+        cx, cy = res.point
+    else:
+        # Resolved but no usable geometry — name it without a highlight.
+        return {"ok": True, "status": res.status, "via": res.via, "label": res.label,
+                "message": f"That would be the {res.label}, sir."}
+
+    label = res.label or target
+    where = _spatial_phrase(cx, cy, obs.get("window_frame"))
+    if task_id:
+        await emit_pointer(task_id, cx, cy, label=label, frame=res.frame)
+    return {"ok": True, "status": res.status, "via": res.via, "label": label,
+            "point": [cx, cy], "frame": res.frame,
+            "message": f"You'll find {label} {where}, sir."}
+
+
 async def _timed_action(timer, kind: str, coro):
     """Run a Mac-control action coroutine, then stamp ``action_done`` on the turn
     timer and record the turn's end-to-end latency. Mac-control turns speak their
@@ -7321,6 +7390,17 @@ async def api_ui_act(request: Request):
         body.get("text") or "",
         body.get("app") or None,
     )
+
+
+@app.post("/api/ui/point")
+async def api_ui_point(request: Request):
+    """Point-and-teach — locate + describe a natural-language target WITHOUT
+    acting. Body: {target, app?}. Never clicks; returns the spoken locating
+    sentence plus the resolved point/frame for the in-app highlight."""
+    body = (await request.json() if await request.body() else {}) or {}
+    async with process_bus.task_context(f"Locate {body.get('target') or ''}") as task_id:
+        return await _resolve_and_point(
+            body.get("target") or "", body.get("app") or None, task_id=task_id)
 
 
 @app.get("/api/latency/last")
