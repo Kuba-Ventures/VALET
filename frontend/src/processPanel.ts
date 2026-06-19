@@ -28,6 +28,8 @@ export type EventType =
   | "text_write"
   | "code_task"
   | "task_queued"
+  | "pointer_highlight"
+  | "cursor_control"
   | "error"
   // Claude Code structured tool calls (from work_mode stream-json parser)
   | "tool.file_read"

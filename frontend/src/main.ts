@@ -127,6 +127,26 @@ killBtn.addEventListener("click", async () => {
   try { await fetch(url, { method: "POST" }); } catch { /* ignore */ }
 });
 
+// Cursor-takeover indicator — a prominent banner shown whenever Vee is steering
+// the real macOS cursor (a glide-and-click). The in-app half of the cursor
+// follower; the on-desktop custom dot is the native-overlay follow-up.
+const cursorBanner = document.createElement("div");
+cursorBanner.className = "cursor-takeover hidden";
+cursorBanner.innerHTML = `<span class="ct-dot"></span><span class="ct-label">Vee is steering your cursor</span>`;
+document.body.appendChild(cursorBanner);
+const ctLabel = cursorBanner.querySelector(".ct-label") as HTMLElement;
+let ctHideTimer: number | null = null;
+function showCursorTakeover(active: boolean, label?: string) {
+  if (ctHideTimer) { clearTimeout(ctHideTimer); ctHideTimer = null; }
+  if (active) {
+    ctLabel.textContent = label ? `Vee is steering your cursor → ${label}` : "Vee is steering your cursor";
+    cursorBanner.classList.remove("hidden");
+  } else {
+    // Linger briefly so a fast glide (~0.5s) still registers visually.
+    ctHideTimer = window.setTimeout(() => cursorBanner.classList.add("hidden"), 700);
+  }
+}
+
 // Ship/Scrap button handlers → synthesize a fake transcript so the existing
 // fast-action path runs (single source of truth for the ship/scrap pipeline).
 designPanel.onShipClick(() => {
@@ -346,6 +366,10 @@ socket.onMessage((msg) => {
   } else if (type === "process_event") {
     // ProcessEventBus broadcasts — drive the live activity panel.
     const event = msg.event as ProcessEvent | undefined;
+    if (event?.type === "cursor_control") {
+      const p = (event as { payload?: { active?: boolean; label?: string } }).payload;
+      showCursorTakeover(!!p?.active, p?.label);
+    }
     if (event) processPanel.handleEvent(event);
   } else if (type === "close_panel") {
     // Server-side voice intent ("close it", "dismiss", etc.) closes the panel.
