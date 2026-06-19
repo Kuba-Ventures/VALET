@@ -51,15 +51,27 @@ _cache_at: float = -1e9
 
 
 def scan_apps(dirs: tuple[str, ...] | None = None) -> list[str]:
-    """Display names (without `.app`) of bundles in the standard locations."""
+    """Display names (without `.app`) of bundles in the standard locations,
+    including one level deep — many apps ship inside a vendor/app subfolder
+    (e.g. /Applications/DaVinci Resolve/DaVinci Resolve.app)."""
     names: set[str] = set()
     for d in dirs or _APP_DIRS:
         try:
-            for entry in os.listdir(d):
-                if entry.endswith(".app"):
-                    names.add(entry[:-4])
+            entries = os.listdir(d)
         except OSError:
             continue
+        for entry in entries:
+            if entry.endswith(".app"):
+                names.add(entry[:-4])
+                continue
+            sub = os.path.join(d, entry)
+            if os.path.isdir(sub):
+                try:
+                    for nested in os.listdir(sub):
+                        if nested.endswith(".app"):
+                            names.add(nested[:-4])
+                except OSError:
+                    continue
     return sorted(names)
 
 
@@ -92,6 +104,11 @@ def match_app(spoken: str, apps: list[str]) -> str | None:
     subs = [a for a in apps if s in a.lower()]
     if subs:                                         # substring
         return min(subs, key=len)
+    sn = s.replace(" ", "")                          # space-insensitive: STT splits
+    if sn != s:                                      # "da vinci" → "davinci…"
+        despaced = [a for a in apps if sn in a.lower().replace(" ", "")]
+        if despaced:
+            return min(despaced, key=len)
     close = difflib.get_close_matches(s, list(lower.keys()), n=1, cutoff=0.82)
     if close:                                        # fuzzy (STT slips)
         return lower[close[0]]

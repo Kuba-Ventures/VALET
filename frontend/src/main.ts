@@ -614,6 +614,33 @@ btnWakeToggle.addEventListener("click", (e) => {
 // kicks in (see setTimeout below).
 applyWakeVisuals();
 
+// ── Hard stop (Escape) ──────────────────────────────────────────────────────
+// A GUARANTEED manual interrupt that does not depend on voice/barge-in
+// detection: kill the TTS instantly, cancel any in-flight reply or UC task
+// (incl. a cursor glide — the backend barge_in handler calls _uc_task.cancel()),
+// and put VALET to sleep so it stops listening until you wake it. Important now
+// that VALET can move the real cursor: one key always takes back control.
+function hardStop() {
+  audioPlayer.stop();                               // 1. kill TTS now (client-side)
+  try { socket.send({ type: "barge_in" }); } catch { /* ignore */ }  // 2. cancel reply + UC task
+  if (!isSleeping) {                                 // 3. sleep: mic off, won't act until woken
+    isSleeping = true;
+    localStorage.setItem(WAKE_STATE_KEY, "sleeping");
+    applyWakeVisuals();
+    reconcileWakeControl();
+  }
+}
+// Make it reachable on the existing kill-switch button too: a long-press / the
+// button stays the safety affordance, but Escape is the always-on hotkey.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  // Let an open confirm card keep Escape (it cancels the pending action), and
+  // never steal it from a focused text field.
+  if (confirmCard.isOpen() || isEditableTarget(e.target)) return;
+  e.preventDefault();
+  hardStop();
+}, { capture: true });
+
 // The three-dot button opens Settings directly. The old dropdown's other items
 // (Restart Server, Fix Yourself) were dev-only and have been removed from the
 // user-facing UI.
