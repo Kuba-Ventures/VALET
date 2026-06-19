@@ -151,16 +151,24 @@ async def _vision_point(observation: dict, description: str, client) -> Optional
     return Resolution(status="point", point=(sx, sy), via="vision", label=description)
 
 
-async def resolve(observation: dict, description: str, client, *, intent: str = "click") -> Resolution:
+async def resolve(observation: dict, description: str, client, *, intent: str = "click",
+                  vision: bool = True) -> Resolution:
     """Resolve `description` to a concrete target against `observation`.
 
     AX pick first; vision point as a fallback when AX is thin or misses; an
-    honest miss when neither finds it."""
+    honest miss when neither finds it. The slow vision-model call runs AT MOST
+    ONCE per resolve (it used to run twice on a thin-AX miss). `vision=False`
+    skips it entirely — used by the caller's "X in <app>" retry, which already
+    failed vision on the same screenshot, so a second vision pass only adds
+    latency for nothing."""
     elements = observation.get("elements") or []
     has_image = bool(observation.get("image"))
+    can_vision = bool(vision and has_image and client)
+    tried_vision = False
 
     # Thin AX tree (Electron/canvas): go straight to vision when we have an image.
-    if has_image and len(elements) < _THIN_AX and client:
+    if can_vision and len(elements) < _THIN_AX:
+        tried_vision = True
         v = await _vision_point(observation, description, client)
         if v:
             return v
@@ -169,8 +177,8 @@ async def resolve(observation: dict, description: str, client, *, intent: str = 
         pick = await _ax_pick(elements, description, client, intent)
         if pick.status in ("ref", "ambiguous"):
             return pick
-        # AX missed — fall back to vision before giving up.
-        if has_image:
+        # AX missed — vision fallback, but only if we didn't already try it above.
+        if can_vision and not tried_vision:
             v = await _vision_point(observation, description, client)
             if v:
                 return v
@@ -178,7 +186,7 @@ async def resolve(observation: dict, description: str, client, *, intent: str = 
                           message=f"I don't see a '{description}' to {intent}, sir.")
 
     # No AX list — vision only.
-    if has_image and client:
+    if can_vision and not tried_vision:
         v = await _vision_point(observation, description, client)
         if v:
             return v
