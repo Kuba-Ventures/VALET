@@ -318,6 +318,10 @@ socket.onMessage((msg) => {
   // open after the work goes quiet. See refreshPanelAutoClose below.
 
   if (type === "audio") {
+    // Hard stop / sleep: never play audio while asleep. Drops any TTS frames the
+    // backend sent in the window before its barge_in cancel took effect, so
+    // Escape silences Vee instantly regardless of backend timing.
+    if (isSleeping) return;
     const audioData = msg.data as string;
     console.log("[audio] received", audioData ? `${audioData.length} chars` : "EMPTY", "state:", currentState);
     if (audioData) {

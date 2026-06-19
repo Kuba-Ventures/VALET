@@ -956,9 +956,16 @@ async def _speak_chunks(ws, tts_text: str, caption: str, timer=None) -> bool:
         return False
     sent_any = False
     for i, sentence in enumerate(sentences):
+        # Hard stop / barge-in: stop mid-utterance instead of speaking the rest.
+        # Checked before AND after synth (synthesis can take a beat, during which
+        # the user may hit Escape).
+        if getattr(ws, "_speak_cancel", False):
+            return sent_any
         audio = await synthesize_speech(sentence)
         if not audio:
             continue
+        if getattr(ws, "_speak_cancel", False):
+            return sent_any
         try:
             await ws.send_json({
                 "type": "audio",
@@ -5476,6 +5483,7 @@ async def voice_handler(ws: WebSocket):
     # Response cancellation — when new input arrives, cancel current response
     _current_response_id = 0
     _cancel_response = False
+    setattr(ws, "_speak_cancel", False)
 
     # Long-running native research task — set when an [ACTION:RESEARCH] is
     # dispatched, cleared (.done()) when the task completes. Used by the
@@ -5575,6 +5583,7 @@ async def voice_handler(ws: WebSocket):
             # loop (just flips a flag + cancels a task), so the loop never parks.
             if msg.get("type") == "barge_in":
                 _cancel_response = True
+                setattr(ws, "_speak_cancel", True)   # stop in-flight TTS chunking now
                 _uc = getattr(ws, "_uc_task", None)
                 if _uc is not None and not _uc.done():
                     _uc.cancel()
@@ -5686,6 +5695,7 @@ async def voice_handler(ws: WebSocket):
             _current_response_id += 1
             my_response_id = _current_response_id
             _cancel_response = True
+            setattr(ws, "_speak_cancel", True)   # also halt old TTS chunking
             # UC5: a fresh command also interrupts a running UC loop/action (the
             # frontend usually sends an explicit barge_in first; this covers the
             # case it didn't), so the new instruction isn't queued behind the old.
@@ -5694,6 +5704,7 @@ async def voice_handler(ws: WebSocket):
                 _uc.cancel()
             await asyncio.sleep(0.05)  # Let any pending sends notice the cancellation
             _cancel_response = False
+            setattr(ws, "_speak_cancel", False)
 
             voice_state["last_user_time"] = time.time()
             log.info(f"User: {user_text}")
