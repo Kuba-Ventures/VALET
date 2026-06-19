@@ -7,9 +7,13 @@ long the user waits between finishing speaking and hearing Vee reply:
     t1  request_sent   the LLM request is about to go out to the proxy/model
     t2  first_token    the model response is available to the server
     t3  first_audio    the first TTS audio chunk is dispatched to the client
+    t4  action_done    a Mac-control action (open/click/type) finished — for
+                       agent turns this is the number that matters, since the
+                       turn speaks "On it, sir" at first_audio and does the real
+                       work afterward on a background task.
 
-These four marks let every later latency change (streaming TTS, a faster Fish
-tier, a pre-warmed proxy connection) be *measured* instead of guessed.
+These marks let every later latency change (streaming TTS, a faster Fish tier, a
+pre-warmed proxy connection, a faster console launch) be *measured* not guessed.
 
 The timer holds ONLY mark names and timestamps — never transcript or payload
 content — so logging or emitting a summary cannot leak what was said. This
@@ -29,7 +33,8 @@ from typing import Callable
 # Ordered marks. Each segment is the delta from the previously recorded mark,
 # so a turn that skips a mark (e.g. a canned reply that never hits the model)
 # still yields a sensible speech_final -> first_audio total.
-MARKS: tuple[str, ...] = ("speech_final", "request_sent", "first_token", "first_audio")
+MARKS: tuple[str, ...] = (
+    "speech_final", "request_sent", "first_token", "first_audio", "action_done")
 
 
 @dataclass
@@ -89,3 +94,33 @@ class TurnTimer:
         if total is not None:
             parts.append(f"total {total}ms")
         return " · ".join(parts) if parts else "no timing"
+
+
+# --------------------------------------------------------------------------- #
+# Last-turn store — lets a read endpoint (/api/latency/last) surface the most
+# recent turn's breakdown for the demo clip. Holds ONLY numbers + a kind tag and
+# a counter; never transcript or payload content, matching the timer's own
+# privacy-by-construction discipline.
+# --------------------------------------------------------------------------- #
+_last: dict | None = None
+_count: int = 0
+
+
+def record(timer: "TurnTimer", kind: str) -> dict:
+    """Store ``timer``'s breakdown as the 'last turn' reading and return it.
+    ``kind`` is a coarse tag like "chat" or "ui_act" — not content."""
+    global _last, _count
+    _count += 1
+    _last = {
+        "kind": kind,
+        "n": _count,
+        "segments_ms": timer.segments_ms(),
+        "total_ms": timer.total_ms(),
+        "summary": timer.summary(),
+    }
+    return _last
+
+
+def last() -> dict | None:
+    """The most recent recorded turn, or None if none recorded yet."""
+    return dict(_last) if _last is not None else None

@@ -120,6 +120,7 @@ from process_events import (
     emit_voice_timing,
 )
 from voice_timing import TurnTimer
+import voice_timing
 from voice_stream import SpeakableStreamer
 
 from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
@@ -5935,7 +5936,7 @@ async def voice_handler(ws: WebSocket):
                             # gated execute on a background task (keeps the WS loop free
                             # for the confirm reply).
                             response_text = "On it, sir."
-                            _track_uc(ws, _handle_ui_act(action, ws))
+                            _track_uc(ws, _timed_action(turn_timer, "ui_act", _handle_ui_act(action, ws)))
                         elif action["action"] == "run_command":
                             # UC6 — voice terminal command (Tier 0 auto / Tier 1 confirm).
                             response_text = "Let me run that, sir."
@@ -6414,6 +6415,7 @@ async def voice_handler(ws: WebSocket):
                     # VALET_VOICE_TIMING env flag is set, so default UX is
                     # unchanged. Numbers only — no transcript content.
                     log.info(f"[voice-timing] {turn_timer.summary()}")
+                    voice_timing.record(turn_timer, "chat")
                     if os.getenv("VALET_VOICE_TIMING", "").lower() in ("1", "true", "yes"):
                         try:
                             await emit_voice_timing(
@@ -7225,6 +7227,24 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
             "label": res.label, "message": r.message, "target": res.to_dict()}
 
 
+async def _timed_action(timer, kind: str, coro):
+    """Run a Mac-control action coroutine, then stamp ``action_done`` on the turn
+    timer and record the turn's end-to-end latency. Mac-control turns speak their
+    ack at first_audio and finish the real work on a background task, so without
+    this the action's true speech->result time is never measured. Generic over
+    the action kind, so the console (open X), click, and type all reuse it."""
+    try:
+        return await coro
+    finally:
+        if timer is not None:
+            timer.mark("action_done")
+            try:
+                voice_timing.record(timer, kind)
+                log.info(f"[voice-timing] ({kind}) {timer.summary()}")
+            except Exception:
+                pass
+
+
 def _track_uc(ws, coro):
     """Spawn a UC3/UC4 background task and remember it on the WS as the current
     interruptible turn, so a barge-in (UC5) — or a fresh command — can cancel it.
@@ -7271,6 +7291,15 @@ async def api_ui_act(request: Request):
         body.get("text") or "",
         body.get("app") or None,
     )
+
+
+@app.get("/api/latency/last")
+async def api_latency_last():
+    """Latency harness — the most recent voice turn's phase breakdown (numbers
+    only, no transcript). For the demo clip and the latency budget. Returns
+    {kind, n, segments_ms, total_ms, summary} or {available: false}."""
+    rec = voice_timing.last()
+    return rec or {"available": False, "message": "No voice turn recorded yet."}
 
 
 async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
