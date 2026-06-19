@@ -43,6 +43,13 @@ def test_fuzzy_handles_stt_slips():
     assert app_index.match_app("safri", APPS) == "Safari"
 
 
+def test_space_insensitive_match():
+    # STT splits compound names inconsistently ("da vinci" vs "davinci").
+    apps = ["DaVinci Resolve", "Safari"]
+    assert app_index.match_app("da vinci", apps) == "DaVinci Resolve"
+    assert app_index.match_app("davinci", apps) == "DaVinci Resolve"
+
+
 def test_the_prefix_stripped():
     assert app_index.match_app("the slack", APPS) == "Slack"
 
@@ -56,6 +63,19 @@ def test_non_app_phrases_dont_match():
     assert app_index.match_app("a new tab", APPS) is None
     assert app_index.match_app("the pod bay doors", APPS) is None
     assert app_index.match_app("", APPS) is None
+
+
+def test_scan_finds_nested_bundles():
+    # Apps that ship inside a subfolder (DaVinci Resolve, Adobe, etc.) must still
+    # be indexed — the original top-level-only scan missed them.
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "Top.app"))
+        os.makedirs(os.path.join(d, "DaVinci Resolve", "DaVinci Resolve.app"))
+        names = app_index.scan_apps((d,))
+        assert "Top" in names
+        assert "DaVinci Resolve" in names
 
 
 def test_real_scan_returns_some_apps():
