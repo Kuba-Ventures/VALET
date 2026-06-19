@@ -16,10 +16,13 @@
 
 export const PTT_ENABLED_KEY = "valet.ptt.enabled";
 export const PTT_CODE_KEY = "valet.ptt.code";
-export const PTT_DEFAULT_CODE = "Space";
+// Option (⌥) by default — hold to talk, Wispr-style. Configurable in Settings.
+export const PTT_DEFAULT_CODE = "AltLeft";
 
 export function isPushToTalkEnabled(): boolean {
-  return localStorage.getItem(PTT_ENABLED_KEY) === "1";
+  // Default ON: push-to-talk is now the primary activation. Only an explicit "0"
+  // (user disabled it) turns it off.
+  return localStorage.getItem(PTT_ENABLED_KEY) !== "0";
 }
 
 export function setPushToTalkEnabled(on: boolean): void {
@@ -31,9 +34,13 @@ export function pushToTalkCode(): string {
   return localStorage.getItem(PTT_CODE_KEY) || PTT_DEFAULT_CODE;
 }
 
-/** Human-readable label for a key code, e.g. "Space", "F" (KeyF), "9" (Digit9). */
+/** Human-readable label for a key code, e.g. "⌥" (Alt), "Space", "F" (KeyF). */
 export function pushToTalkKeyLabel(code?: string): string {
   const c = code || pushToTalkCode();
+  if (c === "AltLeft" || c === "AltRight") return "⌥";
+  if (c === "MetaLeft" || c === "MetaRight") return "⌘";
+  if (c === "ControlLeft" || c === "ControlRight") return "⌃";
+  if (c === "ShiftLeft" || c === "ShiftRight") return "⇧";
   if (c === "Space") return "Space";
   if (c.startsWith("Key")) return c.slice(3);
   if (c.startsWith("Digit")) return c.slice(5);
