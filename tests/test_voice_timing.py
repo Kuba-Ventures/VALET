@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import voice_timing
 from voice_timing import MARKS, TurnTimer
 
 
@@ -80,7 +81,44 @@ def test_skipped_mark_spans_to_next_recorded():
 
 
 def test_marks_order_is_stable():
-    assert MARKS == ("speech_final", "request_sent", "first_token", "first_audio")
+    assert MARKS == (
+        "speech_final", "request_sent", "first_token", "first_audio", "action_done")
+
+
+def test_agent_turn_measures_speech_to_action_done():
+    # An agent turn: speaks "On it" (first_audio) then finishes the action later.
+    # The number that matters is speech_final -> action_done.
+    timer = TurnTimer(clock=_FakeClock([1.0, 1.150, 2.300]))  # speech, ack, done
+    timer.mark("first_audio")    # the "On it, sir" ack at 1.150
+    timer.mark("action_done")    # the click/launch finished at 2.300
+    segs = timer.segments_ms()
+    assert segs == {
+        "speech_final->first_audio": 150.0,
+        "first_audio->action_done": 1150.0,
+    }
+    assert timer.total_ms() == 1300.0
+
+
+def test_record_and_last_round_trip():
+    timer = TurnTimer(clock=_FakeClock([1.0, 1.120]))
+    timer.mark("first_audio")
+    rec = voice_timing.record(timer, "ui_act")
+    got = voice_timing.last()
+    assert got["kind"] == "ui_act"
+    assert got["total_ms"] == 120.0
+    assert got["segments_ms"] == {"speech_final->first_audio": 120.0}
+    # last() returns a copy, not the live object
+    got["kind"] = "mutated"
+    assert voice_timing.last()["kind"] == "ui_act"
+    # store holds numbers + tags only, never content
+    assert set(rec.keys()) == {"kind", "n", "segments_ms", "total_ms", "summary"}
+
+
+def test_last_increments_n():
+    a = voice_timing.record(TurnTimer(clock=_FakeClock([1.0, 1.05])), "chat")
+    b = voice_timing.record(TurnTimer(clock=_FakeClock([2.0, 2.05])), "ui_act")
+    assert b["n"] == a["n"] + 1
+    assert voice_timing.last()["kind"] == "ui_act"
 
 
 def test_holds_only_names_and_floats():
