@@ -467,6 +467,10 @@ class AccessibilityExecutor(ActionExecutor):
         # ref -> AXUIElement from the most recent observe_ui, so click_element can
         # resolve a ref the model picked. Rebuilt on each observation.
         self._ref_map: dict = {}
+        # PIDs we've already asked to expose their full accessibility tree (see
+        # observe_ui). Enabling is one-time per app; subsequent observes skip the
+        # tree-build delay.
+        self._a11y_enabled: set = set()
 
     # --- trust helpers (no gate) -----------------------------------------
     def is_trusted(self) -> bool:
@@ -501,6 +505,22 @@ class AccessibilityExecutor(ActionExecutor):
                 return None, None, "no_target_app"
             name = _app_name_for_pid(pid) or app or "frontmost"  # the REAL app observed
             app_el = _AX.AXUIElementCreateApplication(pid)
+            # Force web/Electron apps (Chrome, Brave, Slack, VS Code, …) to build
+            # their FULL accessibility tree. Chromium leaves it thin (just the
+            # toolbar) until an assistive tech asks via these attributes, so
+            # without this "click <a web thing>" sees no page content and falls
+            # back to imprecise vision. With it, real web elements (links,
+            # buttons, labelled images) resolve by ref. Idempotent; harmless on
+            # apps that don't support it. On first enable per app, give Chromium a
+            # beat to build the tree (one-time — repeat observes skip the wait).
+            for _attr in ("AXManualAccessibility", "AXEnhancedUserInterface"):
+                try:
+                    _AX.AXUIElementSetAttributeValue(app_el, _attr, True)
+                except Exception:
+                    pass
+            if pid not in self._a11y_enabled:
+                self._a11y_enabled.add(pid)
+                time.sleep(0.35)
             win = _focused_window(app_el)
             if win is None:
                 return None, name, "no_window"
