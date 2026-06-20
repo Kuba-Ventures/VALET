@@ -152,7 +152,7 @@ after the sponsor demo; only worth it once Stages 0–2 are solid.
 
 ---
 
-## GSTACK REVIEW REPORT
+## Stage 2 eng-review (archived 2026-06-18)
 
 Eng review of **Stage 2** (`move_cursor` + visible click), 2026-06-18, branch `feat/voice-console`.
 
@@ -201,3 +201,64 @@ Skipped — Codex not installed; decisions are grounded in the actual CGEvent/AX
 
 **UNRESOLVED:** none — all 3 decisions answered.
 **VERDICT:** ENG CLEARED — architecture locked, ready to implement Stage 2.
+
+---
+
+## NATIVE STAGE — locked architecture (eng-review 2026-06-19)
+
+The on-desktop colored cursor follower + global hold-to-talk. ONE native-overlay
+spike. Tauri v2; production webview navigates to the `valet-backend` sidecar at
+`localhost:8340` (main.rs); single "main" window today.
+
+### Decisions locked (the 2 that carry the risk)
+1. **Rendering → fullscreen transparent click-through overlay + CSS-transform dot**
+   (NOT per-frame window moves, which stutter; NOT a Swift sidecar). One always-on-top
+   click-through window per display; Rust polls the cursor and emits coords; the overlay
+   JS moves the dot via CSS transform (GPU-smooth). The dot is CSS — recolor/reshape free.
+   - Click-through: `set_ignore_cursor_events(true)` on the overlay window.
+   - Coord space: cursor location is global **points**; map to overlay-local per display,
+     Retina-safe (points, not pixels) — same point space as `UIElement.frame`.
+2. **Global PTT → ⌥-Space chord** via `tauri-plugin-global-shortcut` (add dep). Bare ⌥
+   alone is NOT registerable as a global accelerator — confirmed feasibility gotcha. The
+   plugin reports **Pressed/Released**, so hold-to-talk works; Pressed→`beginPushToTalk`,
+   Released→`endPushToTalk`. The in-window bare-⌥ (#122) still works when VALET is focused.
+
+### What already exists (reused, not rebuilt)
+- `main.rs` sidecar/window plumbing — add the overlay window in `setup()`.
+- `emit_pointer` (#113) + the glide path (#117) — the dot consumes these to appear during
+  point-and-teach and glide-and-click. Reuse `cursor_control` events (#119) for show/hide.
+- The PTT handlers (`beginPushToTalk`/`endPushToTalk`, #122) — the global chord feeds them.
+
+### NOT in scope (deferred, with reason)
+- **Bare-⌥ global** — not registerable; would need a permissioned CGEventTap (heavier, fragile).
+- **Swift sidecar** — fullscreen-overlay + CSS gets the same visual in-stack.
+- **Per-display dynamic add/remove** beyond launch-time displays — handle current displays first.
+
+### Failure modes
+- Overlay blocks clicks (click-through misconfigured) → **CRITICAL manual check** before merge.
+- Cursor-follow stutter → mitigated by CSS-transform (no window moves); **manual smoothness check**.
+- Multi-monitor / Retina mis-mapping → **unit test the coord mapping** + manual on real HW.
+- ⌥-Space collides with an app's shortcut → make the chord configurable; document.
+- macOS-version fragility (overlay/global-shortcut APIs) → **manual on the target macOS**.
+- Critical gap to watch: **click-through** — if wrong, the overlay eats every click. Gate merge on it.
+
+### Test plan
+- **Unit:** coord mapping (global point → overlay-local; single + multi-monitor + Retina) and the
+  dot show/hide-on-event logic. Pure functions / event handlers.
+- **Manual-on-device (can't unit-test):** smoothness, click-through, ⌥-Space Pressed/Released → PTT,
+  multi-monitor coverage. **This stage can ONLY be exercised in the Tauri app (`tauri dev` / a build),
+  NOT the vite dev server** — a real workflow shift from every prior stage.
+
+### Outside voice
+Skipped — Codex not installed; decisions grounded in the actual `main.rs` + Tauri v2 facts.
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 (native stage) | clean | 2 architecture decisions locked, 1 critical-gap flagged (click-through), 0 unresolved |
+
+- **UNRESOLVED:** none — both decisions answered (rendering = fullscreen overlay + CSS dot; global PTT = ⌥-Space chord).
+- **VERDICT:** ENG CLEARED — native-stage architecture locked. Build gated on the manual click-through + smoothness checks in `tauri dev` before merge. (Stage 2 eng-review archived above.)
