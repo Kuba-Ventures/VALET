@@ -38,6 +38,12 @@ let lastSpokenText = "";
 let lastSpokeAt = 0;
 const ECHO_COOLDOWN_MS = 1500;
 
+// Hard-stop mute. Distinct from isSleeping: PTT mode keeps isSleeping=true (wake
+// mic off) but Vee must STILL speak its replies. Only Escape/hard-stop mutes
+// audio; cleared on the next user action (PTT press or a new command). Without
+// this, PTT mode (isSleeping=true by default) silenced Vee entirely.
+let muted = false;
+
 // Wake-word listening toggle. Persisted across reloads via localStorage so the
 // user's preference survives a refresh. Controls only the frontend's wake-word
 // listening — the backend service is unaffected.
@@ -77,7 +83,10 @@ function hideError() {
 }
 
 function updateStatus(state: State) {
-  if (isSleeping) {
+  // PTT mode keeps isSleeping=true (wake mic off), but holding ⌥ still listens —
+  // so show the active-state label ("listening…"/"thinking…"); only blank when
+  // genuinely idle/asleep (then the "press ⌥ to talk" hint carries the cue).
+  if (isSleeping && state === "idle") {
     statusEl.textContent = "";
     return;
   }
@@ -222,9 +231,11 @@ const wake = createWakeWord(
   "vee", // casual wake word; overwritten once /api/config resolves below
   {
     onWake: () => {
+      muted = false; // a new interaction un-mutes a prior hard-stop
       transition("listening");
     },
     onCommand: (text: string, opts?: { fromPushToTalk?: boolean }) => {
+      muted = false; // a dispatched command clears any prior hard-stop mute
       // UC5 barge-in: while Vee is mid-reply or mid-task the mic is live, so
       // filter echoes — only a real interruption cuts in, and it tells the
       // backend to cancel the in-flight reply/loop before the new command runs.
@@ -340,8 +351,10 @@ socket.onMessage((msg) => {
   if (type === "audio") {
     // Hard stop / sleep: never play audio while asleep. Drops any TTS frames the
     // backend sent in the window before its barge_in cancel took effect, so
-    // Escape silences Vee instantly regardless of backend timing.
-    if (isSleeping) return;
+    // Escape silences Vee instantly regardless of backend timing. Gated on
+    // `muted` (hard-stop), NOT isSleeping — PTT mode is isSleeping=true but must
+    // still play replies.
+    if (muted) return;
     const audioData = msg.data as string;
     console.log("[audio] received", audioData ? `${audioData.length} chars` : "EMPTY", "state:", currentState);
     if (audioData) {
@@ -677,6 +690,7 @@ applyWakeVisuals();
 // and put VALET to sleep so it stops listening until you wake it. Important now
 // that VALET can move the real cursor: one key always takes back control.
 function hardStop() {
+  muted = true;                                     // 0. mute audio until next user action
   audioPlayer.stop();                               // 1. kill TTS now (client-side)
   try { socket.send({ type: "barge_in" }); } catch { /* ignore */ }  // 2. cancel reply + UC task
   if (!isSleeping) {                                 // 3. sleep: mic off, won't act until woken
