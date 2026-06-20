@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>VALET cursor</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      overflow: hidden; background: transparent;
+      /* Belt-and-suspenders: the window is click-through via
+         set_ignore_cursor_events, but make the page itself inert too. */
+      pointer-events: none; user-select: none;
+    }
+    /* The colored cursor follower. Positioned by window.moveDot(x, y) via a CSS
+       transform (GPU-composited, so motion stays smooth — no per-frame window
+       moves). Centered on the point via the negative margins. Custom shape/color
+       lives entirely here, so restyling is a CSS edit. */
+    #dot {
+      position: fixed; top: 0; left: 0;
+      width: 22px; height: 22px; margin: -11px 0 0 -11px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #8fd0ff 0%, #2a86ff 58%, rgba(42,134,255,0) 72%);
+      box-shadow: 0 0 14px 4px rgba(58,160,255,0.85), 0 0 4px 1px rgba(160,210,255,0.9);
+      transform: translate(-100px, -100px);
+      will-change: transform;
+      transition: opacity 0.16s ease;
+      pointer-events: none;
+    }
+    #dot.hidden { opacity: 0; }
+  </style>
+</head>
+<body>
+  <div id="dot"></div>
+  <script>
+    // Rust calls these via window.eval() each frame — no Tauri JS API / capabilities
+    // needed. moveDot positions the dot; setDotVisible toggles it (used by the
+    // next slice to show it only while Vee is steering).
+    (function () {
+      var dot = document.getElementById("dot");
+      window.moveDot = function (x, y) {
+        dot.style.transform = "translate(" + x + "px," + y + "px)";
+      };
+      window.setDotVisible = function (visible) {
+        dot.classList.toggle("hidden", !visible);
+      };
+    })();
+  </script>
+</body>
+</html>
