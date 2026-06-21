@@ -40,6 +40,7 @@ export interface WakeWordController {
   // utterance is dispatched as a command. Does NOT change the wake `active` flag.
   beginPushToTalk(): void;
   endPushToTalk(): void;
+  cancelPushToTalk(): void;  // abort a held turn and DISCARD captured audio
 }
 
 export interface WakeWordHandlers {
@@ -153,6 +154,9 @@ export function createWakeWord(
   // so a pause mid-hold (which the recognizer emits as its own FINAL) isn't lost.
   let pttHeld = false;
   let pttFinalizing = false;
+  // `pttDiscarding`: a cancelled ⌃⌥ turn — swallow the trailing buffered
+  // transcript (flushed by finalize) instead of dispatching it, then clear.
+  let pttDiscarding = false;
   let pttSegments: string[] = [];
   let pttTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -180,6 +184,10 @@ export function createWakeWord(
     (text: string, isFinal: boolean) => {
       const trimmed = text.trim();
       if (!trimmed) return;
+
+      // A cancelled ⌃⌥ turn: drop the trailing buffered audio so a ⌃⌥-letter
+      // shortcut never leaks into a dispatched command or the wake path.
+      if (pttDiscarding) return;
 
       // Push-to-talk owns the transcript stream while held or finalizing —
       // wake-word matching is skipped entirely. Accumulate FINAL segments;
@@ -278,6 +286,20 @@ export function createWakeWord(
       // Fallback: if no FINAL lands promptly, dispatch whatever we captured.
       if (pttTimer !== undefined) clearTimeout(pttTimer);
       pttTimer = setTimeout(() => { if (pttFinalizing) dispatchPushToTalk(); }, 1200);
+    },
+    cancelPushToTalk() {
+      // Abort a held turn WITHOUT dispatching — used when the global ⌃⌥ hold was
+      // actually a ⌃⌥-letter shortcut (a non-modifier key landed mid-hold).
+      if (!pttHeld && !pttFinalizing) return;
+      pttHeld = false;
+      pttFinalizing = false;
+      pttSegments = [];
+      pttDiscarding = true;
+      if (pttTimer !== undefined) clearTimeout(pttTimer);
+      // Flush the recognizer buffer (mic keeps listening — onend restarts it),
+      // then swallow that trailing FINAL and re-open the normal wake path.
+      voiceInput.finalize();
+      pttTimer = setTimeout(() => { pttDiscarding = false; pttTimer = undefined; }, 1500);
     },
   };
 }

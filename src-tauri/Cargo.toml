@@ -9,9 +9,10 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
 tokio = { version = "1", features = ["time", "rt", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
