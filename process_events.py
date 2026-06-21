@@ -87,9 +87,14 @@ class ProcessEventBus:
             if ws in self._subs:
                 self._subs.remove(ws)
 
-    async def emit(self, event: Event) -> None:
-        """Broadcast an event to all subscribers."""
-        message = {"type": "process_event", "event": event.to_dict()}
+    async def broadcast(self, message: dict) -> None:
+        """Send an arbitrary message dict to all subscribers.
+
+        Reuses the connected-WS set (and dead-sub pruning) for non-event control
+        frames — e.g. global push-to-talk state ({"type": "ptt", ...}). The bus
+        already tracks exactly the live voice WebSockets, so control frames that
+        originate off the request path (a background event tap) ride the same
+        fan-out instead of duplicating the connection registry."""
         async with self._lock:
             subs = list(self._subs)
         dead: list[Any] = []
@@ -103,6 +108,10 @@ class ProcessEventBus:
                 for ws in dead:
                     if ws in self._subs:
                         self._subs.remove(ws)
+
+    async def emit(self, event: Event) -> None:
+        """Broadcast an event to all subscribers."""
+        await self.broadcast({"type": "process_event", "event": event.to_dict()})
 
     @asynccontextmanager
     async def task_context(self, title: str, detail: str = ""):

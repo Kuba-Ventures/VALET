@@ -392,6 +392,15 @@ socket.onMessage((msg) => {
     // Text-only path (TTS failed or skipped) — still surface it to the user.
     console.log("[VALET]", msg.text);
     if (msg.text) showReply(msg.text as string);
+  } else if (type === "ptt") {
+    // Global hold-⌥ from the backend's system-wide event tap — fires even when
+    // another app is focused (the in-window keydown can't). Mirror the local PTT
+    // path exactly; begin/endPushToTalk are idempotent, so the double-fire while
+    // VALET itself is focused is harmless. Honor the same enable toggle.
+    if (isPushToTalkEnabled()) {
+      if (msg.state === "down") wake.beginPushToTalk();
+      else if (msg.state === "up") wake.endPushToTalk();
+    }
   } else if (type === "task_spawned") {
     console.log("[task]", "spawned:", msg.task_id, msg.prompt);
   } else if (type === "task_complete") {
