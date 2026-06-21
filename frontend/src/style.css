@@ -187,17 +187,34 @@ html, body {
   z-index: 10;
 }
 
-/* Drag handle for the frameless menu-bar orb widget. Invisible strip across the
-   very top; sits above the orb canvas/text but below #controls (z-index 20) so
-   the wake-toggle and settings buttons stay clickable. */
+/* Visible drag header for the frameless menu-bar orb widget. A title-bar-strip
+   across the top (with a grab-handle pill so it's discoverable) that moves the
+   window via Tauri's native drag. Deliberately NOT the whole window: the orb body
+   must stay clickable so a click can unlock the AudioContext (autoplay policy) and
+   so the reply/controls work. Sits below #controls (z20) / reply (z10). */
 #drag-bar {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 32px;
-  z-index: 15;
-  -webkit-app-region: drag; /* belt-and-suspenders alongside data-tauri-drag-region */
+  height: 44px;
+  z-index: 1;
+}
+#drag-bar::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(160, 200, 255, 0.22);
+}
+/* The orb canvas is purely visual — let clicks fall through to the document so
+   the click-to-unlock-audio handler (main.ts) fires when you click the orb. */
+#orb-canvas {
+  pointer-events: none;
 }
 
 #controls {

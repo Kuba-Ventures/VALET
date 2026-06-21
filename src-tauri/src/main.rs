@@ -106,74 +106,226 @@ fn free_stale_backend() {
         .status();
 }
 
-/// Cursor follower (native overlay, stage 3 — first slice).
-///
-/// A fullscreen, transparent, always-on-top, CLICK-THROUGH window holding a CSS
-/// dot (overlay.html). A ~60fps poll loop reads the global cursor position and
-/// moves the dot via `window.eval()` — a Rust->webview call, so no Tauri JS API
-/// / capabilities are needed. Crucially it moves only the dot's CSS transform,
-/// never the WINDOW, so motion stays GPU-smooth (per-frame window moves are the
-/// canonical cursor-follow stutter — the eng-review's locked decision).
-///
-///   cursor (physical px) --/scale--> logical pt --eval--> dot CSS transform
-///
-/// First slice: the dot is always visible and follows the cursor (so smoothness
-/// + click-through can be judged). Showing it only while Vee steers (via the
-/// cursor_control events) and global ⌥-Space PTT are the next slices. Primary
-/// monitor only for now; multi-monitor mapping is a follow-up.
-fn spawn_cursor_overlay(app: AppHandle) {
-    // Tauri window sizes are LOGICAL points; the cursor position below is
-    // PHYSICAL px, so capture the scale factor to convert between them.
-    let (logical_w, logical_h, scale) = app
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .map(|m| {
-            let s = m.scale_factor();
-            let sz = m.size();
-            (sz.width as f64 / s, sz.height as f64 / s, s)
-        })
-        .unwrap_or((1440.0, 900.0, 2.0));
+/// One overlay per display. Bounds are in the global LOGICAL (point) space —
+/// the only coordinate space macOS keeps consistent across mixed-DPI displays.
+struct CursorOverlay {
+    win: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
 
-    let overlay = match WebviewWindowBuilder::new(
-        &app,
-        "overlay",
-        WebviewUrl::App("overlay.html".into()),
-    )
-    .title("VALET cursor")
-    .inner_size(logical_w, logical_h)
-    .position(0.0, 0.0)
-    .resizable(false)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .shadow(false)
-    .focused(false)
-    .build()
-    {
-        Ok(win) => win,
-        Err(e) => {
-            eprintln!("[valet] cursor overlay failed to build: {e}");
+/// Cursor follower (native overlay) — multi-monitor.
+///
+/// One transparent, always-on-top, CLICK-THROUGH window per display (overlay.html
+/// holds a CSS dot). A ~60fps poll loop reads the global cursor position, finds the
+/// display it's on, and moves that overlay's dot via `window.eval()` (a
+/// Rust->webview call, so no Tauri JS API / capabilities needed). Only the dot's
+/// CSS transform moves, never the WINDOW, so motion stays GPU-smooth.
+///
+///   cursor (physical, global) --minus display origin /scale--> local CSS pt
+///
+/// Each overlay is placed in PHYSICAL coordinates exactly over its display, so a
+/// secondary monitor with a different scale factor still maps correctly. The dot
+/// shows only on the display the cursor is currently on.
+fn spawn_cursor_overlay(app: AppHandle) {
+    let monitors = match app.available_monitors() {
+        Ok(m) if !m.is_empty() => m,
+        _ => {
+            eprintln!("[valet] cursor overlay: no monitors found");
             return;
         }
     };
-    // Click-through: the overlay must NEVER intercept clicks or hover. If this is
-    // wrong the overlay eats every click (the eng-review's flagged critical gap).
-    let _ = overlay.set_ignore_cursor_events(true);
+
+    // macOS keeps ONE consistent global coordinate space in LOGICAL POINTS, and
+    // `cursor_position()` reports those points scaled by the PRIMARY display's
+    // scale factor (so on a 2x primary, cursor.x is points*2). Convert the cursor
+    // to global points by dividing by the primary scale, then everything — window
+    // placement and hit-testing — happens in points. `monitor.position()` is
+    // already in points; `monitor.size()` is physical px, so /scale → point size.
+    let primary_scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(2.0);
+    eprintln!(
+        "[valet] cursor overlay: {} monitor(s), primary_scale={}",
+        monitors.len(),
+        primary_scale
+    );
+
+    let mut overlays: Vec<CursorOverlay> = Vec::new();
+    for (i, m) in monitors.iter().enumerate() {
+        let scale = m.scale_factor();
+        let pos = m.position(); // LOGICAL points (global)
+        let size = m.size(); // physical px
+        let lx = pos.x as f64;
+        let ly = pos.y as f64;
+        let lw = size.width as f64 / scale; // point size
+        let lh = size.height as f64 / scale;
+        eprintln!(
+            "[valet]   monitor {i}: origin=({lx},{ly}) size={lw}x{lh} pts scale={scale}"
+        );
+        let win = match WebviewWindowBuilder::new(
+            &app,
+            format!("overlay-{i}"),
+            WebviewUrl::App("overlay.html".into()),
+        )
+        .title("VALET cursor")
+        .inner_size(lw, lh)
+        .position(lx, ly) // LOGICAL placement in the global point space
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .focused(false)
+        .build()
+        {
+            Ok(win) => win,
+            Err(e) => {
+                eprintln!("[valet] cursor overlay {i} failed to build: {e}");
+                continue;
+            }
+        };
+        // Click-through: the overlay must NEVER intercept clicks or hover.
+        let _ = win.set_ignore_cursor_events(true);
+
+        overlays.push(CursorOverlay { win, x: lx, y: ly, w: lw, h: lh });
+    }
+    if overlays.is_empty() {
+        return;
+    }
 
     tauri::async_runtime::spawn(async move {
+        let mut last_active: Option<usize> = None;
         loop {
-            if let Ok(pos) = app.cursor_position() {
-                let x = pos.x / scale;
-                let y = pos.y / scale;
-                let _ = overlay.eval(&format!(
-                    "window.moveDot && window.moveDot({:.1}, {:.1})",
-                    x, y
-                ));
+            if let Ok(p) = app.cursor_position() {
+                // Cursor → global points.
+                let gx = p.x / primary_scale;
+                let gy = p.y / primary_scale;
+                let active = overlays.iter().position(|ov| {
+                    gx >= ov.x && gx < ov.x + ov.w && gy >= ov.y && gy < ov.y + ov.h
+                });
+                // Hide the dot on the display the cursor just left.
+                if active != last_active {
+                    if let Some(prev) = last_active {
+                        if let Some(ov) = overlays.get(prev) {
+                            let _ = ov.win.eval("window.setDotVisible&&window.setDotVisible(false)");
+                        }
+                    }
+                    last_active = active;
+                }
+                if let Some(i) = active {
+                    let ov = &overlays[i];
+                    let lx = gx - ov.x; // local point coords within the window
+                    let ly = gy - ov.y;
+                    let _ = ov.win.eval(&format!(
+                        "window.moveDot&&window.moveDot({:.1},{:.1});window.setDotVisible&&window.setDotVisible(true)",
+                        lx, ly
+                    ));
+                }
             }
             tokio::time::sleep(Duration::from_millis(16)).await;
         }
+    });
+}
+
+/// Drive the frontend's push-to-talk from a chord event. Reuses the exact WS
+/// `ptt` path the frontend already has, via a small `window.__valetChord` hook —
+/// a Rust->webview eval (like the cursor overlay), so no Tauri JS API needed.
+fn emit_chord(app: &AppHandle, state: &str) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.eval(&format!(
+            "window.__valetChord&&window.__valetChord('{state}')"
+        ));
+    }
+}
+
+/// Global ⌃⌥ push-to-talk tap, in the MAIN app process.
+///
+/// macOS gates key monitoring behind Input Monitoring, granted PER EXECUTABLE.
+/// Running the tap here (the stable "VALET" binary) means one promptable, durable
+/// grant — unlike the backend helper, whose hash (and thus grant) churns each
+/// build, so its tap silently received no events. The tap is LISTEN-ONLY, so ⌃⌥
+/// keeps working everywhere. A FlagsChanged tap reads the Control/Option modifier
+/// bits directly (no main-thread-only keycode→string resolution), so it runs fine
+/// on this background thread and returns gracefully if the grant is missing.
+/// Chord semantics mirror the in-window handler: down when both held, up on
+/// release, cancel if another key is pressed mid-hold (a real ⌃⌥-letter shortcut).
+fn spawn_global_chord(app: AppHandle) {
+    use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
+    use core_graphics::event::{
+        CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+        CGEventType, CallbackResult,
+    };
+
+    std::thread::spawn(move || {
+        let active = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(false);
+
+        let tap = CGEventTap::new(
+            CGEventTapLocation::HID,
+            CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::ListenOnly,
+            vec![CGEventType::FlagsChanged, CGEventType::KeyDown],
+            move |_proxy, etype, event| {
+                match etype {
+                    CGEventType::FlagsChanged => {
+                        let f = event.get_flags();
+                        let chord = f.contains(CGEventFlags::CGEventFlagControl)
+                            && f.contains(CGEventFlags::CGEventFlagAlternate);
+                        if chord && !active.load(Ordering::Relaxed) {
+                            active.store(true, Ordering::Relaxed);
+                            cancelled.store(false, Ordering::Relaxed);
+                            emit_chord(&app, "down");
+                        } else if !chord && active.load(Ordering::Relaxed) {
+                            let was_cancelled = cancelled.load(Ordering::Relaxed);
+                            active.store(false, Ordering::Relaxed);
+                            cancelled.store(false, Ordering::Relaxed);
+                            if !was_cancelled {
+                                emit_chord(&app, "up");
+                            }
+                        }
+                    }
+                    CGEventType::KeyDown => {
+                        // A non-modifier key while the chord is held = a real
+                        // ⌃⌥-letter shortcut → cancel and discard.
+                        if active.load(Ordering::Relaxed) && !cancelled.load(Ordering::Relaxed) {
+                            cancelled.store(true, Ordering::Relaxed);
+                            emit_chord(&app, "cancel");
+                        }
+                    }
+                    _ => {}
+                }
+                CallbackResult::Keep // listen-only: pass the event through untouched
+            },
+        );
+
+        let tap = match tap {
+            Ok(t) => t,
+            Err(_) => {
+                eprintln!(
+                    "[valet] global ⌃⌥ tap off — grant VALET Input Monitoring in \
+                     System Settings to talk from any app (the in-window chord still works)."
+                );
+                return;
+            }
+        };
+        let source = match tap.mach_port().create_runloop_source(0) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("[valet] global ⌃⌥ tap: failed to create run-loop source");
+                return;
+            }
+        };
+        CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopCommonModes });
+        tap.enable();
+        eprintln!("[valet] global ⌃⌥ tap active — hold ⌃⌥ in any app to talk");
+        CFRunLoop::run_current();
     });
 }
 
@@ -209,16 +361,21 @@ fn main() {
     // icons" that turned out to be stale Launch Services entries, not real second
     // instances, and its lock went stale on a force-quit, blocking reopen. Clean
     // launches are guaranteed instead by free_stale_backend() below.
+    // Persist the orb widget's dragged position/size across launches. The
+    // per-display cursor `overlay-N` windows are placed explicitly over each
+    // monitor every launch, so exclude them from state restore (cover plenty of
+    // displays). The orb widget ("main") is the only window we want remembered.
+    let window_state = {
+        let mut b = tauri_plugin_window_state::Builder::default();
+        for i in 0..16 {
+            b = b.skip_initial_state(&format!("overlay-{i}"));
+        }
+        b.build()
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        // Persist the orb widget's dragged position/size across launches. The
-        // fullscreen cursor `overlay` window must always cover the screen at
-        // (0,0), so it's excluded from state restore.
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .skip_initial_state("overlay")
-                .build(),
-        )
+        .plugin(window_state)
         .manage(Backend {
             child: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
@@ -231,6 +388,7 @@ fn main() {
             free_stale_backend();
             spawn_backend(app.handle().clone(), 1);
             spawn_cursor_overlay(app.handle().clone());
+            spawn_global_chord(app.handle().clone());
 
             // Tray icon + minimal menu (Show/Hide, Permissions, Quit). Left-click
             // toggles the orb; right-click opens the menu.
@@ -243,8 +401,12 @@ fn main() {
 
             let menu_item = show_hide.clone();
             let click_item = show_hide.clone();
-            let _tray = TrayIconBuilder::with_id("valet-tray")
-                .icon(app.default_window_icon().unwrap().clone())
+            // Embed the tray icon at COMPILE TIME rather than reusing
+            // `default_window_icon()`, which can be None in dev — the previous
+            // `.unwrap()` there panicked right after the window showed, killing the
+            // app before the tray appeared. 32x32 is the right size for the menu bar.
+            let tray = TrayIconBuilder::with_id("valet-tray")
+                .icon(tauri::include_image!("icons/32x32.png"))
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
@@ -273,15 +435,35 @@ fn main() {
                         toggle_main(tray.app_handle(), &click_item);
                     }
                 })
-                .build(app)?;
+                .build(app);
+            // Don't let a tray failure take down the whole app — log it and keep
+            // the orb running so we can still see what's wrong.
+            if let Err(e) = tray {
+                eprintln!("[valet] tray icon failed to build: {e}");
+            }
 
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
-                shutdown_backend(window.app_handle());
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // Menu-bar app: closing the orb HIDES it (quit is via the tray), so
+                // the app keeps living in the menu bar instead of exiting. Other
+                // windows (e.g. the cursor overlay) tear down the backend as before.
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    shutdown_backend(window.app_handle());
+                }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running VALET");
+        .build(tauri::generate_context!())
+        .expect("error while running VALET")
+        .run(|_app, event| {
+            // Menu-bar app: do NOT quit when the last window closes — live in the
+            // tray. Without this, Tauri's default exits the app on zero windows.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }
