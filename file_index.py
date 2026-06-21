@@ -167,7 +167,7 @@ async def find_files(
     kind: str | None = None,
     recent: bool = False,
     limit: int = 8,
-    timeout: float = 2.0,
+    timeout: float = 1.5,
     home: str | None = None,
 ) -> list[FileHit]:
     """Resolve a spoken file query to ranked hits via mdfind. Searches the user's
@@ -181,8 +181,8 @@ async def find_files(
     if doc_args is None:
         return []
     paths = await _run_mdfind(doc_args, timeout)
-    if not paths:  # nothing in the doc folders — widen to the whole home
-        paths = await _run_mdfind(_mdfind_args([h], pred, q) or [], timeout)
+    if not paths:  # nothing in the doc folders — widen to the whole home (tighter cap)
+        paths = await _run_mdfind(_mdfind_args([h], pred, q) or [], min(timeout, 1.0))
     if not paths:
         return []
     hits = rank_hits(paths, q, home=h)
