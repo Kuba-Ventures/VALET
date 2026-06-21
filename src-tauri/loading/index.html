@@ -11,7 +11,10 @@
         font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         display: flex; align-items: center; justify-content: center;
       }
-      .wrap { text-align: center; }
+      /* Whole loading screen is a drag handle so the widget can be moved even
+         before the orb UI loads. Content is inert so every mousedown hits body. */
+      body { -webkit-user-select: none; }
+      .wrap { text-align: center; pointer-events: none; }
       .brand { font-size: 28px; letter-spacing: 0.3em; color: #e6f8ff; }
       .sub { margin-top: 14px; font-size: 12px; color: #4f7e92; }
       .dot { animation: blink 1.2s infinite; }
@@ -20,7 +23,7 @@
       @keyframes blink { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }
     </style>
   </head>
-  <body>
+  <body data-tauri-drag-region>
     <div class="wrap">
       <div class="brand">VALET</div>
       <div class="sub">starting<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></div>

@@ -8,7 +8,7 @@
 import { createOrb, type OrbState } from "./orb";
 import { createAudioPlayer } from "./voice";
 import { createWakeWord } from "./wakeWord";
-import { isPushToTalkEnabled, pushToTalkCode, pushToTalkKeyLabel, isEditableTarget } from "./pushToTalk";
+import { isPushToTalkEnabled, isEditableTarget } from "./pushToTalk";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { maybeShowOnboarding } from "./onboarding";
@@ -528,27 +528,64 @@ document.addEventListener("keydown", (e) => {
 function pttSettingsOpen(): boolean {
   return !!document.getElementById("settings-panel-inner")?.classList.contains("open");
 }
+// PTT is the ⌃⌥ (Control+Option) chord — identical to the global system-wide tap
+// (global_ptt.py), so the gesture is the same whether VALET is focused (this
+// handler) or another app is (the backend tap). Begin when BOTH are held; a
+// non-modifier key mid-hold is a real ⌃⌥-letter shortcut, so cancel and discard.
+let pttChordActive = false;
+let pttChordCancelled = false;
+const isModifierKey = (k: string) =>
+  k === "Control" || k === "Alt" || k === "Meta" || k === "Shift";
 document.addEventListener("keydown", (e) => {
-  if (!isPushToTalkEnabled() || e.code !== pushToTalkCode()) return;
-  if (e.repeat || isEditableTarget(e.target) || pttSettingsOpen()) return;
-  e.preventDefault();
-  wake.beginPushToTalk();
+  if (!isPushToTalkEnabled() || isEditableTarget(e.target) || pttSettingsOpen()) return;
+  if (pttChordActive) {
+    if (!pttChordCancelled && !isModifierKey(e.key)) {
+      pttChordCancelled = true;
+      wake.cancelPushToTalk();  // ⌃⌥-letter shortcut → drop the captured audio
+    }
+    return;
+  }
+  if (e.ctrlKey && e.altKey) {
+    pttChordActive = true;
+    pttChordCancelled = false;
+    e.preventDefault();
+    wake.beginPushToTalk();
+  }
 }, { capture: true });
 document.addEventListener("keyup", (e) => {
-  if (!isPushToTalkEnabled() || e.code !== pushToTalkCode()) return;
-  e.preventDefault();
-  wake.endPushToTalk();  // no-op if no PTT session is active
+  if (!pttChordActive) return;
+  // The chord ends as soon as either Control or Option is released.
+  if (!e.ctrlKey || !e.altKey) {
+    const wasCancelled = pttChordCancelled;
+    pttChordActive = false;
+    pttChordCancelled = false;
+    e.preventDefault();
+    if (!wasCancelled) wake.endPushToTalk();
+  }
 }, { capture: true });
 // Releasing focus / switching apps while held must not strand the mic "open".
-window.addEventListener("blur", () => wake.endPushToTalk());
+window.addEventListener("blur", () => {
+  pttChordActive = false;
+  pttChordCancelled = false;
+  wake.endPushToTalk();
+});
 
-// Show a "press <key> to talk" affordance under the status line whenever the
-// push-to-talk toggle is on. Reflects the configured key; updates live when the
-// Settings toggle flips (settings.ts dispatches "ptt-changed").
+// Global ⌃⌥ chord from the native Rust listener (works from ANY app, even when
+// VALET isn't focused). The Rust tap evals this hook; mirror the in-window path.
+(window as unknown as { __valetChord?: (s: string) => void }).__valetChord = (state: string) => {
+  if (!isPushToTalkEnabled()) return;
+  if (state === "down") wake.beginPushToTalk();
+  else if (state === "up") wake.endPushToTalk();
+  else if (state === "cancel") wake.cancelPushToTalk();
+};
+
+// Show a "hold ⌃⌥ to talk" affordance under the status line whenever the
+// push-to-talk toggle is on. Updates live when the Settings toggle flips
+// (settings.ts dispatches "ptt-changed").
 const pttHintEl = document.getElementById("ptt-hint")!;
 function updatePttHint() {
   const on = isPushToTalkEnabled();
-  pttHintEl.textContent = `press ${pushToTalkKeyLabel()} to talk`;
+  pttHintEl.textContent = "hold ⌃⌥ to talk";
   pttHintEl.classList.toggle("hidden", !on);
 }
 window.addEventListener("ptt-changed", updatePttHint);

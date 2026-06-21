@@ -13,6 +13,14 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-pn
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
+# Global ⌃⌥ push-to-talk key tap (Quartz CGEventTap), in the MAIN app process so
+# macOS Input Monitoring is granted to "VALET" (one stable identity), unlike the
+# backend helper whose hash — and thus TCC grant — churns every build. Raw
+# core-graphics (not rdev): rdev resolves keycodes via main-thread-only HIToolbox
+# APIs and aborts when run off-main; a flags-only tap reads modifiers directly and
+# returns gracefully (no crash) when the permission isn't granted yet.
+core-graphics = "0.25"
+core-foundation = "0.10"
 tokio = { version = "1", features = ["time", "rt", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
