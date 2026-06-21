@@ -4721,6 +4721,18 @@ _CURSOR_SYMBOL_RE = re.compile(
 # Both run LAST in detect_action_fast so every specific handler wins first.
 _FIND_FILE_RE = re.compile(
     r'^(?:find|look\s+for|locate|search\s+for)\s+(?P<query>.+?)\s*[.?!]*$', re.IGNORECASE)
+# Standard home folders openable by name ("open my downloads folder" / "open
+# Desktop"). open_app_or_path resolves a bare name under $HOME (or a full path).
+_HOME_FOLDERS = {
+    "desktop": "Desktop", "documents": "Documents", "docs": "Documents",
+    "downloads": "Downloads", "pictures": "Pictures", "photos": "Pictures",
+    "movies": "Movies", "music": "Music", "public": "Public",
+    "applications": "/Applications", "home": "~", "home folder": "~",
+}
+_OPEN_FOLDER_RE = re.compile(
+    r'^(?:open|show\s+me|go\s+to|take\s+me\s+to|reveal|pull\s+up)\s+'
+    r'(?:my\s+|the\s+)?(?P<name>[a-z][a-z ]*?)(?:\s+folder|\s+directory)?\s*[.?!]*$',
+    re.IGNORECASE)
 _SETTINGS_VOICE_RE = re.compile(
     r'^(?:open|go\s+to|show\s+me|take\s+me\s+to|jump\s+to|launch)\s+'
     r'(?:the\s+|my\s+)?(?P<target>.+?)\s*[.?!]*$', re.IGNORECASE)
@@ -4833,6 +4845,15 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                                   app_index.installed_apps())
         if app:
             return {"action": "open_app", "target": app}
+
+    # Standard home folders ("open my downloads folder", "open Desktop"). Only the
+    # known set returns here; anything else falls through (file search / project).
+    # After the app match so "open Music" still opens the Music app, not ~/Music.
+    _folm = _OPEN_FOLDER_RE.match(text.strip())
+    if _folm:
+        _fn = _folm.group("name").strip().lower()
+        if _fn in _HOME_FOLDERS:
+            return {"action": "open_app", "target": _HOME_FOLDERS[_fn]}
 
     # ── (3) Word-count gate for everything else.
     if len(words) > 12:
@@ -5066,7 +5087,11 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
             _cand = _om2.group("target")
             _k, _, _ = file_index.detect_kind(_cand)
             _cl = f" {_cand} "
-            if _k or " file " in _cl or " document " in _cl:
+            # File cue: a kind word, the word file/document, or a possessive
+            # "my X" that isn't clearly a project/note ("open my résumé" → file,
+            # "open my work project" → stays a project).
+            _poss = _cand.startswith("my ") and "project" not in _cand and "note" not in _cand
+            if _k or " file " in _cl or " document " in _cl or _poss:
                 _fileq = _cand
     if _fileq:
         _raw = _fileq.strip(" .?!")
