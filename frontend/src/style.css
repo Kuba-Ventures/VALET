@@ -43,7 +43,7 @@ html, body {
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  color: rgba(110, 92, 255, 0.32);
+  color: rgba(190, 175, 255, 0.9);  /* match VALET reply text — readable purple */
   font-size: 10px;
   letter-spacing: 2px;
   text-transform: lowercase;
