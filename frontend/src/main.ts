@@ -501,6 +501,10 @@ function ensureAudioContext() {
   }
 }
 document.addEventListener("click", ensureAudioContext);
+// mousedown fires even when the press starts a whole-window drag (where the
+// drag region suppresses the subsequent click), so grabbing the orb to move it
+// still satisfies the autoplay gesture and unlocks TTS audio.
+document.addEventListener("mousedown", ensureAudioContext);
 document.addEventListener("touchstart", ensureAudioContext);
 document.addEventListener("keydown", ensureAudioContext, { once: true });
 
@@ -765,6 +769,11 @@ btnMenu.addEventListener("click", (e) => {
   e.stopPropagation();
   openSettings();
 });
+// Settings now opens from the menu-bar tray (main.rs evals this hook); the
+// in-orb three-dots button is hidden in CSS in favor of that.
+(window as unknown as { __valetOpenSettings?: () => void }).__valetOpenSettings = () => {
+  openSettings();
+};
 
 // First-time setup detection — check after a short delay for server readiness.
 // Onboarding is the first-run flow; only fall back to the Settings setup-mode

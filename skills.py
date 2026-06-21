@@ -60,6 +60,8 @@ SKILLS: dict[str, Skill] = {
     "find_file":      Skill("find_file", "Find & open a file/doc via Spotlight", Tier.FREE, "system"),
     "open_settings":  Skill("open_settings", "Jump to a System Settings pane", Tier.FREE, "system"),
     "system_action":  Skill("system_action", "Lock/sleep/volume/trash + system actions", Tier.FREE, "system"),
+    # --- new in Stage 3: guided walkthroughs (teach, don't do) ---------------
+    "walkthrough":    Skill("walkthrough", "Guided on-screen walkthrough (point + narrate)", Tier.PAID, "system"),
 }
 
 
