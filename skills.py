@@ -56,6 +56,10 @@ SKILLS: dict[str, Skill] = {
     "run_command":    Skill("run_command", "Run a terminal command by voice", Tier.PAID, "dev"),
     "cursor_goto":    Skill("cursor_goto", "Open a file at a line in Cursor", Tier.PAID, "dev"),
     "cursor_symbol":  Skill("cursor_symbol", "Search a symbol in Cursor", Tier.PAID, "dev"),
+    # --- new in Stage 2: voice-native Raycast (no-LLM search) ----------------
+    "find_file":      Skill("find_file", "Find & open a file/doc via Spotlight", Tier.FREE, "system"),
+    "open_settings":  Skill("open_settings", "Jump to a System Settings pane", Tier.FREE, "system"),
+    "system_action":  Skill("system_action", "Lock/sleep/volume/trash + system actions", Tier.FREE, "system"),
 }
 
 
