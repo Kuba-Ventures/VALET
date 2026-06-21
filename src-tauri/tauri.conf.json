@@ -12,11 +12,12 @@
         "title": "VALET",
         "label": "main",
         "url": "index.html",
-        "width": 1100,
-        "height": 760,
-        "minWidth": 720,
-        "minHeight": 560,
-        "resizable": true,
+        "width": 380,
+        "height": 560,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
         "fullscreen": false,
         "center": true
       }

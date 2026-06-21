@@ -187,6 +187,19 @@ html, body {
   z-index: 10;
 }
 
+/* Drag handle for the frameless menu-bar orb widget. Invisible strip across the
+   very top; sits above the orb canvas/text but below #controls (z-index 20) so
+   the wake-toggle and settings buttons stay clickable. */
+#drag-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  z-index: 15;
+  -webkit-app-region: drag; /* belt-and-suspenders alongside data-tauri-drag-region */
+}
+
 #controls {
   position: fixed;
   top: 16px;
