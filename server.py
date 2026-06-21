@@ -4733,6 +4733,13 @@ _OPEN_FOLDER_RE = re.compile(
     r'^(?:open|show\s+me|go\s+to|take\s+me\s+to|reveal|pull\s+up)\s+'
     r'(?:my\s+|the\s+)?(?P<name>[a-z][a-z ]*?)(?:\s+folder|\s+directory)?\s*[.?!]*$',
     re.IGNORECASE)
+# Stage 3 — guided walkthroughs. Explicit "teach me" intents only ("how do I X"
+# stays conversational/LLM so it can answer in words).
+_WALKTHROUGH_RE = re.compile(
+    r'^(?:(?:can|could|would|will|please)\s+)?(?:you\s+)?'
+    r'(?:show\s+me\s+how\s+to|walk\s+me\s+through|guide\s+me\s+through|'
+    r'teach\s+me\s+how\s+to|teach\s+me\s+to)\s+(?P<goal>.+?)\s*[.?!]*$',
+    re.IGNORECASE)
 _SETTINGS_VOICE_RE = re.compile(
     r'^(?:open|go\s+to|show\s+me|take\s+me\s+to|jump\s+to|launch)\s+'
     r'(?:the\s+|my\s+)?(?P<target>.+?)\s*[.?!]*$', re.IGNORECASE)
@@ -4799,6 +4806,15 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         task = am.group("task").strip()
         if agent_raw and task:
             return {"action": "dispatch_to_agent", "agent": agent_raw, "task": task}
+
+    # Guided walkthrough — "show me how to X" / "walk me through X" (Stage 3).
+    # Checked BEFORE UC3 point-and-teach so "show me how to …" isn't mistaken for
+    # "show me <element>". The "how to" / "through" anchors keep it specific.
+    _wm = _WALKTHROUGH_RE.match(text.strip())
+    if _wm:
+        _g = _wm.group("goal").strip(" .?!")
+        if _g:
+            return {"action": "walkthrough", "goal": _g}
 
     # ── (2c) UC3 universal control: "click on X" / "type X into the Y field".
     # Exempt from the word-count gate (a typed phrase can be long) — the verb
@@ -6014,6 +6030,18 @@ async def voice_handler(ws: WebSocket):
 
             await ws.send_json({"type": "status", "state": "thinking"})
 
+            # Active walkthrough: catch step controls ("next" / "do it for me" /
+            # "stop") and feed them to the running teach loop, bypassing normal
+            # routing. Barge-in/kill still cancel the task entirely.
+            if getattr(ws, "_wt_active", False):
+                _wt_sig = _walkthrough_signal(user_text)
+                if _wt_sig:
+                    ws._wt_signal = _wt_sig
+                    if _wt_sig == "stop":
+                        ws._wt_stop = True
+                    await ws.send_json({"type": "status", "state": "idle"})
+                    continue
+
             # If a pending alias offer is waiting (register-on-miss or remove-
             # stale-alias), give it first crack at this utterance. Cleared
             # whether handled or not — if the user moved on, drop the offer.
@@ -6215,6 +6243,13 @@ async def voice_handler(ws: WebSocket):
                             response_text = ""
                             _track_uc(ws, _timed_action(
                                 turn_timer, "find_file", _execute_find_file(action, ws)))
+                        elif action["action"] == "walkthrough":
+                            # Stage 3 — guided walkthrough (teach loop). Executor
+                            # narrates each step; interruptible via barge-in/STOP.
+                            response_text = ""
+                            _track_uc(ws, _timed_action(
+                                turn_timer, "walkthrough",
+                                _handle_walkthrough(action.get("goal", ""), ws)))
                         elif action["action"] == "open_settings":
                             _slabel = action.get("label", "Settings")
                             response_text = f"Opening {_slabel} settings, sir."
@@ -7849,6 +7884,106 @@ async def _handle_ui_task(goal: str, ws) -> None:
         await _speak(ws, "I ran into trouble with that, sir.")
         return
     await _speak(ws, result.get("message") or "Done, sir.")
+
+
+# Walkthrough step controls spoken mid-flow (Stage 3).
+_WT_STOP = {"stop", "cancel", "quit", "exit", "never mind", "nevermind",
+            "stop it", "that's enough", "thats enough", "i'm good", "im good"}
+_WT_NEXT = {"next", "ok next", "okay next", "continue", "go on", "done",
+            "next step", "got it", "next one", "keep going", "go ahead"}
+
+
+def _walkthrough_signal(text: str) -> Optional[str]:
+    """Map a mid-walkthrough utterance to a control: next / doit / stop / None."""
+    t = (text or "").lower().strip().rstrip(" .?!")
+    if t in _WT_STOP:
+        return "stop"
+    if t in _WT_NEXT:
+        return "next"
+    if any(p in t for p in ("do it for me", "do this for me", "you do it",
+                            "do it yourself", "just do it", "do this one")):
+        return "doit"
+    return None
+
+
+async def _handle_walkthrough(goal: str, ws) -> None:
+    """Stage 3 — guided walkthrough. Plan steps (curated or model-generated), then
+    run the teach loop (point + narrate + wait + re-observe) on this background
+    task. Never clicks except an explicit 'do it for me' (gated). Speaks outcome."""
+    import walkthrough as wt
+    import perception
+    import target_resolver
+    if not goal:
+        await _speak(ws, "Walk you through what, sir?")
+        return
+    ws._wt_active = True
+    ws._wt_signal = None
+    ws._wt_stop = False
+    msg = "Done, sir."
+    try:
+        async with process_bus.task_context(f"Walkthrough: {goal[:50]}") as task_id:
+            steps = wt.match_curated(goal)
+            if not steps:
+                await emit_step(task_id, "Planning the steps…", status="active")
+                try:
+                    obs0 = await perception.build_observation(executor, app=None)
+                except Exception:
+                    obs0 = None
+                steps = await wt.plan_steps(goal, anthropic_client, obs0)
+            if not steps:
+                await _speak(ws, "I'm not sure how to walk you through that, sir.")
+                return
+
+            async def _observe():
+                return await perception.build_observation(executor, app=None)
+
+            async def _resolve(obs, desc):
+                return await target_resolver.resolve(
+                    obs, desc, anthropic_client, intent="point at")
+
+            async def _glide(x, y, ref, label):
+                await emit_cursor_control(task_id, True, label)
+                try:
+                    await _ax_executor.glide_to_target(x, y, ref=ref)
+                finally:
+                    await emit_cursor_control(task_id, False)
+
+            async def _speak_cb(t):
+                await _speak(ws, t)
+
+            async def _emit_cb(title, detail="", status="active"):
+                await emit_step(task_id, title, detail=detail, status=status)
+
+            def _wait_signal():
+                sig = getattr(ws, "_wt_signal", None)
+                if sig:
+                    ws._wt_signal = None
+                return sig
+
+            async def _do_it(desc):
+                # The ONLY place a walkthrough clicks — gated (confirm + kill switch).
+                await _resolve_and_act("click", desc, task_id=task_id)
+
+            deps = wt._LoopDeps(
+                observe=_observe, resolve=_resolve, glide=_glide,
+                speak=_speak_cb, emit=_emit_cb,
+                should_cancel=lambda: getattr(ws, "_wt_stop", False),
+                kill_engaged=kill_switch.is_engaged,
+                wait_signal=_wait_signal, do_it=_do_it,
+            )
+            result = await wt.run_walkthrough(goal=goal, steps=steps, deps=deps)
+            msg = result.get("message") or "Done, sir."
+    except asyncio.CancelledError:
+        await _speak(ws, "Stopped, sir.")
+        ws._wt_active = False
+        raise
+    except Exception as e:
+        log.error(f"walkthrough error: {e}")
+        await _speak(ws, "I ran into trouble with that walkthrough, sir.")
+        return
+    finally:
+        ws._wt_active = False
+    await _speak(ws, msg)
 
 
 @app.post("/api/ax/click")
