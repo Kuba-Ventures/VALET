@@ -68,7 +68,11 @@ _kPressAction = "AXPress"
 
 # How deep / wide we walk an AX tree. Bounds latency and token cost downstream.
 _MAX_DEPTH = 30
-_MAX_ELEMENTS = 250
+# Web pages (esp. GitHub) expose hundreds of interactive elements once the full
+# a11y tree is built; keep the cap high enough that nav/toolbar controls aren't
+# truncated before the resolver ever sees them (the resolver shows the model the
+# first ~200 of these).
+_MAX_ELEMENTS = 400
 
 
 # --------------------------------------------------------------------------- #
@@ -520,7 +524,10 @@ class AccessibilityExecutor(ActionExecutor):
                     pass
             if pid not in self._a11y_enabled:
                 self._a11y_enabled.add(pid)
-                time.sleep(0.35)
+                # Big pages (GitHub, Gmail) take longer than a fast SPA to build
+                # the full tree; 0.35s sometimes observed a half-built tree and
+                # missed nav controls. 0.6s is the one-time cost per app.
+                time.sleep(0.6)
             win = _focused_window(app_el)
             if win is None:
                 return None, name, "no_window"
