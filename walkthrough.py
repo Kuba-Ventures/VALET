@@ -31,41 +31,34 @@ class Step:
     narration: str             # what Vee says for this step
     target: str = ""           # NL description of the control to point at (optional)
     verify: str = ""           # text/label that appears once the step is done (optional)
+    open: str = ""             # settings pane / app to open FIRST so the target is
+                               # on-screen and the cursor can glide to it (optional)
 
 
 # ── Curated seeds — hand-tuned for demo reliability. The LLM handles the rest. ──
 _CURATED: dict[str, list[Step]] = {
     "bluetooth": [
-        Step("Open Bluetooth settings",
-             "I'll point you to it, sir. Open System Settings, then choose Bluetooth.",
-             target="Bluetooth in the System Settings sidebar", verify="bluetooth"),
-        Step("Toggle Bluetooth on",
-             "Now flip the Bluetooth switch on at the top.",
-             target="the Bluetooth on/off switch", verify="on"),
-        Step("Pair a device",
+        Step("Turn Bluetooth on",
+             "I'm opening Bluetooth settings, sir. Flip the switch at the top to turn it on.",
+             open="Bluetooth", target="the Bluetooth on/off switch", verify="on"),
+        Step("Pair your device",
              "Put your device in pairing mode, then click Connect next to it when it appears.",
              target="the Connect button next to your device", verify="connected"),
     ],
     "wifi": [
-        Step("Open Wi-Fi settings",
-             "Open System Settings, sir, then choose Wi-Fi.",
-             target="Wi-Fi in the System Settings sidebar", verify="wi-fi"),
         Step("Turn Wi-Fi on",
-             "Flip the Wi-Fi switch on.",
-             target="the Wi-Fi on/off switch", verify="on"),
+             "I'm opening Wi-Fi settings, sir. Flip the switch on.",
+             open="Wi-Fi", target="the Wi-Fi on/off switch", verify="on"),
         Step("Join a network",
-             "Pick your network from the list and enter the password if it asks.",
+             "Pick your network from the list, sir, and enter the password if it asks.",
              target="your network in the list", verify="connected"),
     ],
     "filevault": [
-        Step("Open Privacy & Security",
-             "Open System Settings, sir, and choose Privacy and Security.",
-             target="Privacy and Security in the sidebar", verify="filevault"),
         Step("Find FileVault",
-             "Scroll down to FileVault.",
-             target="the FileVault row", verify="turn on"),
+             "I'm opening Privacy and Security, sir. Scroll to FileVault.",
+             open="Privacy & Security", target="the FileVault row", verify="turn on"),
         Step("Turn FileVault on",
-             "Click Turn On, and keep your recovery key somewhere safe.",
+             "Click Turn On, sir, and keep your recovery key somewhere safe.",
              target="the Turn On button for FileVault", verify="on"),
     ],
 }
@@ -114,6 +107,10 @@ _PLANNER_TOOL = {
                         "verify": {"type": "string",
                                    "description": "a word/label visible on screen once this "
                                                   "step is done, or empty"},
+                        "open": {"type": "string",
+                                 "description": "a System Settings pane (e.g. 'Bluetooth') or "
+                                                "app to open FIRST so the target is on screen, "
+                                                "or empty"},
                     },
                     "required": ["title", "narration"],
                 },
@@ -151,7 +148,8 @@ async def plan_steps(goal: str, client, observation: Optional[dict] = None) -> l
         if not narration:
             continue
         steps.append(Step(title or narration[:40], narration,
-                          (s.get("target") or "").strip(), (s.get("verify") or "").strip()))
+                          (s.get("target") or "").strip(), (s.get("verify") or "").strip(),
+                          (s.get("open") or "").strip()))
     return steps
 
 
@@ -213,6 +211,7 @@ class _LoopDeps:
     # Returns None | "next" | "doit" | "stop" — a voice signal during the wait.
     wait_signal: Callable[[], Optional[str]] = lambda: None
     do_it: Optional[Callable[[str], Awaitable[None]]] = None  # gated click for "do it for me"
+    open_target: Optional[Callable[[str], Awaitable[None]]] = None  # open a pane/app first
 
 
 async def run_walkthrough(
@@ -237,6 +236,11 @@ async def run_walkthrough(
             return {"status": "halted", "message": "Stopped, sir."}
         await deps.emit(f"Step {i + 1}/{total}: {step.title}",
                         detail=step.narration, status="active")
+        # Bring the target on-screen first (open a settings pane / app) so the
+        # cursor can actually glide to the control this step is about.
+        if step.open and deps.open_target is not None:
+            await deps.open_target(step.open)
+            await sleep(1.2)  # let the pane render before observing
         before = await deps.observe()
 
         if step.target:

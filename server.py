@@ -7920,6 +7920,7 @@ async def _handle_walkthrough(goal: str, ws) -> None:
     ws._wt_signal = None
     ws._wt_stop = False
     msg = "Done, sir."
+    await _speak(ws, "Let me walk you through it, sir.")  # instant ack while planning
     try:
         async with process_bus.task_context(f"Walkthrough: {goal[:50]}") as task_id:
             steps = wt.match_curated(goal)
@@ -7964,12 +7965,26 @@ async def _handle_walkthrough(goal: str, ws) -> None:
                 # The ONLY place a walkthrough clicks — gated (confirm + kill switch).
                 await _resolve_and_act("click", desc, task_id=task_id)
 
+            async def _open_target(spec):
+                # Navigation aid: open a settings pane (deep link) or app so the
+                # step's control is on-screen for the cursor to glide to. Not the
+                # user's task action — that stays theirs.
+                import settings_index
+                hit = settings_index.match_setting(spec)
+                if hit:
+                    await _execute_open_settings(hit[1], hit[0])
+                else:
+                    try:
+                        await open_app_or_path(spec, task_id=task_id)
+                    except Exception:
+                        pass
+
             deps = wt._LoopDeps(
                 observe=_observe, resolve=_resolve, glide=_glide,
                 speak=_speak_cb, emit=_emit_cb,
                 should_cancel=lambda: getattr(ws, "_wt_stop", False),
                 kill_engaged=kill_switch.is_engaged,
-                wait_signal=_wait_signal, do_it=_do_it,
+                wait_signal=_wait_signal, do_it=_do_it, open_target=_open_target,
             )
             result = await wt.run_walkthrough(goal=goal, steps=steps, deps=deps)
             msg = result.get("message") or "Done, sir."
