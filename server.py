@@ -3920,6 +3920,26 @@ async def lifespan(application: FastAPI):
     except Exception as e:
         log.warning(f"cleanup_stale_aliases failed: {e}")
 
+    # Global push-to-talk: a system-wide ⌥-hold tap so the user can talk from
+    # ANY app, not just VALET's window (the in-window keydown can't see keys when
+    # another app is focused). The tap runs on its own thread; on each Option
+    # transition it hops back onto this loop to broadcast a {"type":"ptt"} frame
+    # the frontend handles identically to the local ⌥ key. No-ops (logs a hint)
+    # if Input Monitoring isn't granted — the in-window ⌥ keeps working.
+    try:
+        import global_ptt
+        _loop = asyncio.get_running_loop()
+
+        def _on_ptt_change(state: str) -> None:
+            asyncio.run_coroutine_threadsafe(
+                process_bus.broadcast({"type": "ptt", "state": state}), _loop)
+
+        # The daemon tap thread holds the only reference it needs (its bound
+        # _run method), so this stays alive without a module-level handle.
+        global_ptt.GlobalPTT(_on_ptt_change).start()
+    except Exception as e:
+        log.warning(f"global PTT not started: {e}")
+
     log.info("VALET server starting")
 
     yield
