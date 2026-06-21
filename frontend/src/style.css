@@ -43,7 +43,7 @@ html, body {
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  color: rgba(110, 92, 255, 0.32);
+  color: rgba(190, 175, 255, 0.9);  /* match VALET reply text — readable purple */
   font-size: 10px;
   letter-spacing: 2px;
   text-transform: lowercase;
@@ -187,32 +187,17 @@ html, body {
   z-index: 10;
 }
 
-/* Visible drag header for the frameless menu-bar orb widget. A title-bar-strip
-   across the top (with a grab-handle pill so it's discoverable) that moves the
-   window via Tauri's native drag. Deliberately NOT the whole window: the orb body
-   must stay clickable so a click can unlock the AudioContext (autoplay policy) and
-   so the reply/controls work. Sits below #controls (z20) / reply (z10). */
+/* Whole-window drag for the frameless orb widget — grab it ANYWHERE to move it.
+   Covers the full window beneath the interactive layers: #controls (z20) and
+   reply (z10) stay clickable, the orb body drags. Audio still unlocks because
+   main.ts also resumes the AudioContext on mousedown (which fires even when the
+   press starts a window drag, unlike click). */
 #drag-bar {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 44px;
+  inset: 0;
   z-index: 1;
 }
-#drag-bar::after {
-  content: "";
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(160, 200, 255, 0.22);
-}
-/* The orb canvas is purely visual — let clicks fall through to the document so
-   the click-to-unlock-audio handler (main.ts) fires when you click the orb. */
+/* The orb canvas is purely visual — let presses fall through to #drag-bar. */
 #orb-canvas {
   pointer-events: none;
 }
@@ -224,6 +209,12 @@ html, body {
   display: flex;
   gap: 8px;
   z-index: 20;
+}
+
+/* Settings now lives in the menu-bar tray menu (Settings…), so the in-orb
+   three-dots button is hidden. The element stays in the DOM for the JS handler. */
+#btn-menu {
+  display: none;
 }
 
 #controls button {
