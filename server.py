@@ -1128,6 +1128,31 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
         # Doesn't match anything — let normal flow handle it
         return False
 
+    # Stage 2: voice-resolvable file pick-list ("the second one"). Reuses the
+    # ordinal vocabulary above; falls through if the reply isn't a pick.
+    if offer["kind"] == "file_pick":
+        cands = offer.get("candidates", [])
+        idx = None
+        if t in confirm_words or any(t.startswith(w + " ") for w in confirm_words) \
+                or t in {"first", "the first", "the first one", "one", "number one"}:
+            idx = 0
+        elif t in {"second", "the second", "the second one", "two", "number two"}:
+            idx = 1
+        elif t in {"third", "the third", "the third one", "three", "number three"}:
+            idx = 2
+        else:
+            for i, c in enumerate(cands):
+                lbl = c["label"].lower()
+                if lbl in t or (len(t) >= 3 and t in lbl):
+                    idx = i
+                    break
+        if idx is not None and idx < len(cands):
+            chosen = cands[idx]
+            await _speak(ws, f"Opening {chosen['label']}, sir.")
+            asyncio.create_task(_execute_open_file(chosen["path"], chosen["label"]))
+            return True
+        return False
+
     return False
 
 
@@ -2272,6 +2297,105 @@ async def _execute_open_note(query: str, ws):
             await emit_error(task_id, "Open note failed", detail=str(e)[:200])
             msg = "Something went wrong opening that note, sir."
     await _speak(ws, msg)
+
+
+async def _execute_open_file(path: str, label: str, reveal: bool = False):
+    """Open a resolved file with its default app (or reveal in Finder). Backs the
+    Stage 2 file fast-path; reuses open_app_or_path which already handles paths."""
+    async with process_bus.task_context(f"Opening {label}"[:60]) as task_id:
+        try:
+            await emit_step(task_id, f"Opening {label}…", status="active")
+            if reveal:
+                proc = await asyncio.create_subprocess_exec("open", "-R", path)
+                await proc.wait()
+                await emit_app_launch(task_id, "Finder", status="done", detail=label)
+            else:
+                await open_app_or_path(path, task_id=task_id)
+        except Exception as e:
+            log.error(f"open_file failed: {e}")
+            await emit_error(task_id, "Open file failed", detail=str(e)[:200])
+
+
+async def _execute_find_file(action: dict, ws):
+    """Resolve a spoken file query via mdfind and open the best hit, or offer a
+    short voice pick-list on ambiguity. No LLM — a confident match opens directly."""
+    import file_index
+    query = action.get("query", "")
+    kind = action.get("kind")
+    recent = bool(action.get("recent"))
+    phrase = (action.get("phrase") or query or "that").strip()
+    listing = ""
+    async with process_bus.task_context(f"Finding: {phrase}"[:60]) as task_id:
+        await emit_step(task_id, f"Searching for {phrase}…", status="active")
+        hits = await file_index.find_files(query, kind=kind, recent=recent, limit=6)
+        if not hits:
+            await emit_error(task_id, "No file found", detail=phrase[:120])
+            await _speak(ws, f"I couldn't find {phrase}, sir.")
+            return
+        top = hits[0]
+        clear_winner = len(hits) == 1 or (top.score - hits[1].score) >= 25
+        if clear_winner:
+            await emit_step(task_id, f"Opening {top.name}", status="done")
+            await open_app_or_path(top.path, task_id=task_id)
+            await _speak(ws, f"Opening {top.name}, sir.")
+            return
+        cands = hits[:3]
+        for i, h in enumerate(cands):
+            await emit_step(task_id, f"{i + 1}. {h.name}", status="active")
+        if ws is not None:
+            ws.pending_offer = {
+                "kind": "file_pick",
+                "candidates": [{"label": h.name, "path": h.path} for h in cands],
+            }
+        listing = ", ".join(f"{i + 1}, {h.name}" for i, h in enumerate(cands))
+    await _speak(ws, f"I found a few, sir: {listing}. Which one?")
+
+
+async def _execute_open_settings(url: str, label: str):
+    """Open a System Settings pane via its x-apple.systempreferences: deep link."""
+    async with process_bus.task_context(f"Opening {label} settings"[:60]) as task_id:
+        try:
+            await emit_step(task_id, f"Opening {label} settings…", status="active")
+            proc = await asyncio.create_subprocess_exec("open", url)
+            await proc.wait()
+            await emit_app_launch(task_id, "System Settings", status="done", detail=label)
+        except Exception as e:
+            log.error(f"open_settings failed: {e}")
+            await emit_error(task_id, "Open settings failed", detail=str(e)[:200])
+
+
+async def _execute_system_action(action: dict, ws):
+    """Run a system action. Tier 0 runs immediately; Tier 1 (destructive) confirms
+    via the Tier-1 card first. Safe here because the executor is already on a
+    background task, so awaiting the confirm reply never parks the WS loop."""
+    import system_actions
+    spec = system_actions.get(action.get("name", ""))
+    if spec is None:
+        await _speak(ws, "I'm not sure how to do that, sir.")
+        return
+    if spec.tier >= system_actions.TIER_DESTRUCTIVE:
+        allowed = await confirmations.request(
+            summary=f"{spec.label}?", targets=[spec.name], tier=1)
+        if not allowed:
+            await _speak(ws, "Cancelled, sir.")
+            return
+    # Ack before running so disruptive actions (lock/sleep/shutdown) are heard.
+    await _speak(ws, f"{spec.label}, sir.")
+    async with process_bus.task_context(spec.label[:60]) as task_id:
+        try:
+            await emit_step(task_id, f"{spec.label}…", status="active")
+            proc = await asyncio.create_subprocess_exec(
+                *spec.argv, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE)
+            _, err = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode == 0:
+                await emit_step(task_id, "Done", status="done")
+            else:
+                await emit_error(task_id, "Action failed",
+                                 detail=err.decode("utf-8", "replace")[:200])
+        except Exception as e:
+            log.error(f"system_action {spec.name} failed: {e}")
+            await emit_error(task_id, "Action failed", detail=str(e)[:200])
 
 
 async def _execute_type(target: str, press_enter: bool):
@@ -4592,6 +4716,15 @@ _CURSOR_SYMBOL_RE = re.compile(
     r'^(?:search|find|go\s*to|jump\s*to)\s+(?:the\s+)?symbol\s+(?P<sym>.+?)'
     r'\s*(?:in\s+cursor)?\s*[.?]?$', re.IGNORECASE)
 
+# Stage 2 voice search. File browse verbs ("find my Q2 report"); settings deep
+# links ("go to bluetooth settings" — gated on the word settings/preferences).
+# Both run LAST in detect_action_fast so every specific handler wins first.
+_FIND_FILE_RE = re.compile(
+    r'^(?:find|look\s+for|locate|search\s+for)\s+(?P<query>.+?)\s*[.?!]*$', re.IGNORECASE)
+_SETTINGS_VOICE_RE = re.compile(
+    r'^(?:open|go\s+to|show\s+me|take\s+me\s+to|jump\s+to|launch)\s+'
+    r'(?:the\s+|my\s+)?(?P<target>.+?)\s*[.?!]*$', re.IGNORECASE)
+
 
 def detect_action_fast(text: str, ws=None) -> dict | None:
     """Keyword/regex-based action detection — ONLY for short, obvious commands.
@@ -4909,6 +5042,39 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if _LIST_PROJECTS_PATTERN.search(t):
         return {"action": "list_projects"}
 
+    # ── Stage 2: System Settings deep links + file search. BEFORE the project
+    # route (which greedily claims "open X"), AFTER every domain matcher above.
+    # Settings is gated on the word settings/preferences so "open displays" still
+    # routes normally. File search needs a real cue (browse verb, or a kind word /
+    # the word file/document) — a bare "open my X" stays a project, not a file.
+    if "setting" in t or "preference" in t:
+        _setm = _SETTINGS_VOICE_RE.match(t)
+        if _setm:
+            import settings_index
+            _hit = settings_index.match_setting(_setm.group("target"))
+            if _hit:
+                return {"action": "open_settings", "label": _hit[0], "target": _hit[1]}
+
+    import file_index
+    _fileq = None
+    _fv = _FIND_FILE_RE.match(t)
+    if _fv and "note" not in t and "setting" not in t:
+        _fileq = _fv.group("query")            # "find/locate X" → file browse
+    else:
+        _om2 = _OPEN_APP_RE.match(t)           # "open X" — app already missed above
+        if _om2:
+            _cand = _om2.group("target")
+            _k, _, _ = file_index.detect_kind(_cand)
+            _cl = f" {_cand} "
+            if _k or " file " in _cl or " document " in _cl:
+                _fileq = _cand
+    if _fileq:
+        _raw = _fileq.strip(" .?!")
+        _kind, _name_q, _recent = file_index.detect_kind(_raw)
+        if _kind or _name_q:
+            return {"action": "find_file", "query": _name_q, "kind": _kind,
+                    "recent": _recent, "phrase": _raw}
+
     # Open a named project — regex captures "open X", "open the X project",
     # "open my X project in cursor", "can you open X", "open the project called X".
     # Skipped when the captured name looks like an app (so "open Cursor",
@@ -4952,6 +5118,14 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                              "what's the cost", "whats the cost", "api cost", "token usage",
                              "how expensive", "what's my bill"]):
         return {"action": "check_usage"}
+
+    # ── Stage 2 system actions ("lock the screen", "empty the trash"). These
+    # never start with "open", so they don't collide with the project route.
+    import system_actions
+    _sa = system_actions.match_action(t)
+    if _sa:
+        return {"action": "system_action", "name": _sa.name,
+                "label": _sa.label, "tier": _sa.tier}
 
     return None  # Everything else goes to the LLM for conversational routing
 
@@ -6010,6 +6184,25 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "cursor_symbol":
                             response_text = "Searching in Cursor, sir."
                             _track_uc(ws, _cursor_symbol(action.get("target", ""), ws))
+                        elif action["action"] == "find_file":
+                            # Stage 2 — mdfind file open, no LLM. Executor speaks
+                            # the result (opened / pick-list / not found) + is timed.
+                            response_text = ""
+                            _track_uc(ws, _timed_action(
+                                turn_timer, "find_file", _execute_find_file(action, ws)))
+                        elif action["action"] == "open_settings":
+                            _slabel = action.get("label", "Settings")
+                            response_text = f"Opening {_slabel} settings, sir."
+                            _track_uc(ws, _timed_action(
+                                turn_timer, "open_settings",
+                                _execute_open_settings(action.get("target", ""), _slabel)))
+                        elif action["action"] == "system_action":
+                            # Tier 0 runs now; Tier 1 confirms first (in the executor,
+                            # which is a background task — confirm-safe). Executor acks.
+                            response_text = ""
+                            _track_uc(ws, _timed_action(
+                                turn_timer, "system_action",
+                                _execute_system_action(action, ws)))
                         elif action["action"] == "check_calendar":
                             response_text = "Checking your calendar now, sir."
                             asyncio.create_task(_lookup_and_report("calendar", _do_calendar_lookup, ws, history=history, voice_state=voice_state))
