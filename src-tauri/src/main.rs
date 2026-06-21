@@ -403,12 +403,13 @@ fn main() {
 
             let menu_item = show_hide.clone();
             let click_item = show_hide.clone();
-            // Embed the tray icon at COMPILE TIME rather than reusing
-            // `default_window_icon()`, which can be None in dev — the previous
-            // `.unwrap()` there panicked right after the window showed, killing the
-            // app before the tray appeared. 32x32 is the right size for the menu bar.
+            // Monochrome orb mark (black on transparent), marked as a TEMPLATE so
+            // macOS renders it in the menu-bar text colour — black on a light bar,
+            // white on a dark bar — instead of the blue-on-black app icon. Embedded
+            // at compile time (default_window_icon() can be None in dev).
             let tray = TrayIconBuilder::with_id("valet-tray")
-                .icon(tauri::include_image!("icons/32x32.png"))
+                .icon(tauri::include_image!("icons/tray@2x.png"))
+                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
