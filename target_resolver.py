@@ -72,7 +72,7 @@ def _parse_json(text: str) -> Optional[dict]:
     return None
 
 
-def _elements_block(elements: list, limit: int = 80) -> str:
+def _elements_block(elements: list, limit: int = 200) -> str:
     lines = []
     for e in elements[:limit]:
         label = (e.get("title") or e.get("value") or "").strip()
