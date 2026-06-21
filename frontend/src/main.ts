@@ -501,6 +501,10 @@ function ensureAudioContext() {
   }
 }
 document.addEventListener("click", ensureAudioContext);
+// mousedown fires even when the press starts a whole-window drag (where the
+// drag region suppresses the subsequent click), so grabbing the orb to move it
+// still satisfies the autoplay gesture and unlocks TTS audio.
+document.addEventListener("mousedown", ensureAudioContext);
 document.addEventListener("touchstart", ensureAudioContext);
 document.addEventListener("keydown", ensureAudioContext, { once: true });
 
