@@ -394,10 +394,12 @@ fn main() {
             // toggles the orb; right-click opens the menu.
             let show_hide =
                 MenuItem::with_id(app, "show_hide", "Hide VALET", true, None::<&str>)?;
+            let settings =
+                MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let permissions =
                 MenuItem::with_id(app, "permissions", "Permissions…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit VALET", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_hide, &permissions, &quit])?;
+            let menu = Menu::with_items(app, &[&show_hide, &settings, &permissions, &quit])?;
 
             let menu_item = show_hide.clone();
             let click_item = show_hide.clone();
@@ -411,6 +413,17 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show_hide" => toggle_main(app, &menu_item),
+                    "settings" => {
+                        // Open the in-app settings panel from the menu bar (replaces
+                        // the in-orb three-dots button). Show the orb, then call the
+                        // frontend hook via eval (no Tauri JS API needed).
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                            let _ = win.eval(
+                                "window.__valetOpenSettings && window.__valetOpenSettings()");
+                        }
+                    }
                     "permissions" => {
                         // Stage 1: surface the orb so the in-app permissions UI is
                         // reachable. A dedicated deep link lands with Stage 4 onboarding.

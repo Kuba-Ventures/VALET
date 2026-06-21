@@ -211,6 +211,12 @@ html, body {
   z-index: 20;
 }
 
+/* Settings now lives in the menu-bar tray menu (Settings…), so the in-orb
+   three-dots button is hidden. The element stays in the DOM for the JS handler. */
+#btn-menu {
+  display: none;
+}
+
 #controls button {
   width: 36px;
   height: 36px;

@@ -769,6 +769,11 @@ btnMenu.addEventListener("click", (e) => {
   e.stopPropagation();
   openSettings();
 });
+// Settings now opens from the menu-bar tray (main.rs evals this hook); the
+// in-orb three-dots button is hidden in CSS in favor of that.
+(window as unknown as { __valetOpenSettings?: () => void }).__valetOpenSettings = () => {
+  openSettings();
+};
 
 // First-time setup detection — check after a short delay for server readiness.
 // Onboarding is the first-run flow; only fall back to the Settings setup-mode
