@@ -5066,7 +5066,11 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
             _cand = _om2.group("target")
             _k, _, _ = file_index.detect_kind(_cand)
             _cl = f" {_cand} "
-            if _k or " file " in _cl or " document " in _cl:
+            # File cue: a kind word, the word file/document, or a possessive
+            # "my X" that isn't clearly a project/note ("open my résumé" → file,
+            # "open my work project" → stays a project).
+            _poss = _cand.startswith("my ") and "project" not in _cand and "note" not in _cand
+            if _k or " file " in _cl or " document " in _cl or _poss:
                 _fileq = _cand
     if _fileq:
         _raw = _fileq.strip(" .?!")
