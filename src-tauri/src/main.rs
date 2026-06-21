@@ -16,7 +16,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{
+    ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry,
+};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -173,6 +177,33 @@ fn spawn_cursor_overlay(app: AppHandle) {
     });
 }
 
+/// Clean shutdown shared by the tray "Quit" item and the window-close handler:
+/// stop the respawn watchdog and kill the backend sidecar so nothing is orphaned.
+fn shutdown_backend(app: &AppHandle) {
+    let state = app.state::<Backend>();
+    state.shutting_down.store(true, Ordering::SeqCst);
+    let child = state.child.lock().unwrap().take();
+    if let Some(child) = child {
+        let _ = child.kill();
+    }
+}
+
+/// Toggle the orb popover from the tray. The orb is always available; the user
+/// hides/shows it from the menu bar (it is never auto-dismissed by the ⌃⌥ chord,
+/// which only opens the mic). Keeps the menu item's label in sync with state.
+fn toggle_main(app: &AppHandle, item: &MenuItem<Wry>) {
+    if let Some(win) = app.get_webview_window("main") {
+        if win.is_visible().unwrap_or(false) {
+            let _ = win.hide();
+            let _ = item.set_text("Show VALET");
+        } else {
+            let _ = win.show();
+            let _ = win.set_focus();
+            let _ = item.set_text("Hide VALET");
+        }
+    }
+}
+
 fn main() {
     // Note: no single-instance plugin. It was added to stop "duplicate dock
     // icons" that turned out to be stale Launch Services entries, not real second
@@ -180,24 +211,75 @@ fn main() {
     // launches are guaranteed instead by free_stale_backend() below.
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // Persist the orb widget's dragged position/size across launches. The
+        // fullscreen cursor `overlay` window must always cover the screen at
+        // (0,0), so it's excluded from state restore.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .skip_initial_state("overlay")
+                .build(),
+        )
         .manage(Backend {
             child: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
         })
         .setup(|app| {
+            // Menu-bar product: no Dock icon. The orb lives as an always-on-top
+            // popover summoned via ⌃⌥ and toggled from the tray.
+            app.set_activation_policy(ActivationPolicy::Accessory);
+
             free_stale_backend();
             spawn_backend(app.handle().clone(), 1);
             spawn_cursor_overlay(app.handle().clone());
+
+            // Tray icon + minimal menu (Show/Hide, Permissions, Quit). Left-click
+            // toggles the orb; right-click opens the menu.
+            let show_hide =
+                MenuItem::with_id(app, "show_hide", "Hide VALET", true, None::<&str>)?;
+            let permissions =
+                MenuItem::with_id(app, "permissions", "Permissions…", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit VALET", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_hide, &permissions, &quit])?;
+
+            let menu_item = show_hide.clone();
+            let click_item = show_hide.clone();
+            let _tray = TrayIconBuilder::with_id("valet-tray")
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(move |app, event| match event.id.as_ref() {
+                    "show_hide" => toggle_main(app, &menu_item),
+                    "permissions" => {
+                        // Stage 1: surface the orb so the in-app permissions UI is
+                        // reachable. A dedicated deep link lands with Stage 4 onboarding.
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        shutdown_backend(app);
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(move |tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        toggle_main(tray.app_handle(), &click_item);
+                    }
+                })
+                .build(app)?;
+
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
-                let state = window.state::<Backend>();
-                state.shutting_down.store(true, Ordering::SeqCst);
-                let child = state.child.lock().unwrap().take();
-                if let Some(child) = child {
-                    let _ = child.kill();
-                }
+                shutdown_backend(window.app_handle());
             }
         })
         .run(tauri::generate_context!())
