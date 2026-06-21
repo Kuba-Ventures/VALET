@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::TrayIconBuilder;
 use tauri::{
     ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -407,7 +407,7 @@ fn main() {
                 .icon(tauri::include_image!("icons/tray@2x.png"))
                 .icon_as_template(true)
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(true)  // one click opens the menu
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "open" => show_main(app),
                     "toggle_listen" => {
@@ -450,16 +450,6 @@ fn main() {
                         app.exit(0);
                     }
                     _ => {}
-                })
-                .on_tray_icon_event(move |tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main(tray.app_handle());
-                    }
                 })
                 .build(app);
             // Don't let a tray failure take down the whole app — log it and keep
