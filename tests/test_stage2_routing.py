@@ -59,6 +59,14 @@ def test_open_plain_phrase_not_hijacked():
     assert a is None or a["action"] not in ("find_file", "open_settings", "system_action"), a
 
 
+def test_home_folder_opens():
+    for phrase, target in [("open my downloads folder", "Downloads"),
+                           ("open desktop", "Desktop"),
+                           ("open my documents", "Documents")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "open_app" and a["target"] == target, (phrase, a)
+
+
 def test_open_known_app_still_wins():
     # An installed app must beat the file fallback.
     a = server.detect_action_fast("open safari")
