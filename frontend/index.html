@@ -11,10 +11,10 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <!-- Frameless-window drag handle: a thin invisible strip across the top so
-         the menu-bar orb widget can be dragged anywhere. Tauri moves the window
-         natively on mousedown over a [data-tauri-drag-region] element; the
-         top-right #controls sit above it (higher z-index) and stay clickable. -->
+    <!-- Frameless-window drag layer: covers the whole window so the menu-bar orb
+         widget can be grabbed anywhere to move it. Tauri moves the window natively
+         on mousedown over a [data-tauri-drag-region] element; interactive elements
+         (#controls, reply, panels) sit above it and stay clickable. -->
     <div id="drag-bar" data-tauri-drag-region></div>
 
     <canvas id="orb-canvas"></canvas>

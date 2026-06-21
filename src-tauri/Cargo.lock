@@ -4440,6 +4440,8 @@ dependencies = [
 name = "valet"
 version = "0.1.0"
 dependencies = [
+ "core-foundation",
+ "core-graphics",
  "reqwest 0.12.28",
  "tauri",
  "tauri-build",
