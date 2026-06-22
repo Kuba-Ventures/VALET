@@ -1,5 +1,5 @@
 import HomeHero from "@/components/home/HomeHero";
-import HomeFeatures from "@/components/home/HomeFeatures";
+import HomeShowcase from "@/components/home/HomeShowcase";
 import HomeConnections from "@/components/home/HomeConnections";
 import HomeClosing from "@/components/home/HomeClosing";
 
@@ -17,7 +17,7 @@ export default function Home() {
   return (
     <main className="home">
       <HomeHero downloadHref={downloadHref} />
-      <HomeFeatures />
+      <HomeShowcase />
       <HomeConnections />
       <HomeClosing downloadHref={downloadHref} />
     </main>
