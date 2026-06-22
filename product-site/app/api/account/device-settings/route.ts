@@ -53,11 +53,20 @@ export async function POST(req: Request) {
 
   // Accept either { settings: {...} } or a bare {...}.
   const settings = sanitizeDeviceSettings(body.settings ?? body);
-  const ok = await setDeviceSettingsForUser(user.id, settings);
-  if (!ok) {
+  const result = await setDeviceSettingsForUser(user.id, settings);
+  if (!result.ok) {
+    if (result.reason === "no-license") {
+      return NextResponse.json(
+        { error: "No license is linked to this account yet." },
+        { status: 404 },
+      );
+    }
+    // A real write failure (e.g. the device_settings table/migration is missing
+    // in this environment). Surface the cause instead of masking it as a
+    // missing license — the account clearly has one if we got here.
     return NextResponse.json(
-      { error: "No license is linked to this account yet." },
-      { status: 404 },
+      { error: `Couldn't save settings: ${result.detail}` },
+      { status: 500 },
     );
   }
   return NextResponse.json({ ok: true, settings });

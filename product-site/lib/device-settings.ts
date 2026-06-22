@@ -67,21 +67,35 @@ export async function getDeviceSettingsForUser(userId: string): Promise<DeviceSe
 }
 
 /**
+ * Outcome of a settings write. `no-license` means the account genuinely owns no
+ * license; `error` means the write itself failed (and carries the DB message so
+ * the real cause — e.g. a missing table/migration — is surfaced rather than
+ * masked as "no license linked").
+ */
+export type SetDeviceSettingsResult =
+  | { ok: true }
+  | { ok: false; reason: "no-license" }
+  | { ok: false; reason: "error"; detail: string };
+
+/**
  * Web-facing write: apply settings to ALL of the user's licenses (account-wide,
- * so every device the user owns picks up the same preferences). Returns false if
- * the user has no licenses.
+ * so every device the user owns picks up the same preferences).
  */
 export async function setDeviceSettingsForUser(
   userId: string,
   settings: DeviceSettings,
-): Promise<boolean> {
+): Promise<SetDeviceSettingsResult> {
   const supabase = getSupabaseAdmin();
-  const { data: lic } = await supabase
+  const { data: lic, error: licErr } = await supabase
     .from("licenses")
     .select("license_key")
     .eq("user_id", userId);
+  if (licErr) {
+    console.error("setDeviceSettingsForUser license lookup failed:", licErr.message);
+    return { ok: false, reason: "error", detail: licErr.message };
+  }
   const keys = (lic ?? []).map((r) => r.license_key as string);
-  if (!keys.length) return false;
+  if (!keys.length) return { ok: false, reason: "no-license" };
 
   const now = new Date().toISOString();
   const rows = keys.map((license_key) => ({
@@ -93,8 +107,8 @@ export async function setDeviceSettingsForUser(
     .from("device_settings")
     .upsert(rows, { onConflict: "license_key" });
   if (error) {
-    console.error("setDeviceSettingsForUser failed:", error.message);
-    return false;
+    console.error("setDeviceSettingsForUser write failed:", error.message);
+    return { ok: false, reason: "error", detail: error.message };
   }
-  return true;
+  return { ok: true };
 }
