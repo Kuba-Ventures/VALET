@@ -80,6 +80,7 @@ function pill(p: Permission): { text: string; cls: string } {
 // ---- wizard state ----------------------------------------------------------
 
 type Narrate = (text: string) => void;
+type StartDemo = () => void;
 
 interface State {
   step: number;
@@ -87,6 +88,7 @@ interface State {
   perms: PermStatus | null;
   voice: "male" | "female";
   speak: Narrate;
+  demo: StartDemo;
 }
 
 const STEP_TITLES = ["Welcome", "License", "Permissions", "Voice", "About you", "Done"];
@@ -248,12 +250,18 @@ function profileBody(): string {
     <div class="ob-field"><label class="ob-label">Location</label><input id="ob-loc" class="ob-input" type="text" placeholder="City you live in" /></div>`;
 }
 
-function doneBody(): string {
+function doneBody(state: State): string {
+  // Offer the live guided demo only when Accessibility is granted (it needs to
+  // read the screen and move the cursor); otherwise nudge toward granting it.
+  const canDemo = state.perms?.accessibility?.granted === true;
+  const demo = canDemo
+    ? `<button class="ob-btn primary ob-demo" id="ob-demo">Show me what you can do</button>`
+    : `<p class="ob-fineprint">Grant Accessibility above to see Vee glide your cursor and control the screen.</p>`;
   return `
     <h2 class="ob-title">You're set.</h2>
-    <p class="ob-sub">Say "Hey Vee" or just start talking. Ask for anything, from a quick question to a multi-step task across your apps.</p>
-    <p class="ob-fineprint">Prefer a key? Turn on push-to-talk in Settings to hold Space and talk instantly, skipping the wake word.</p>
-    <div class="ob-done-orb"></div>`;
+    <p class="ob-sub">Hold Control and Option from any app and just talk. Ask for anything, from a quick question to a multi-step task across your apps.</p>
+    <div class="ob-done-orb"></div>
+    <div class="ob-inline" style="justify-content:center">${demo}</div>`;
 }
 
 // ---- step wiring -----------------------------------------------------------
@@ -466,6 +474,15 @@ function wireStep(state: State, root: HTMLElement): void {
       if (loc && (p.hometown_city || p.address)) loc.value = p.hometown_city || p.address || "";
     });
   }
+
+  if (step === 5) {
+    const demoBtn = root.querySelector<HTMLButtonElement>("#ob-demo");
+    demoBtn?.addEventListener("click", () => {
+      demoBtn.disabled = true;
+      demoBtn.textContent = "Watch your cursor…";
+      state.demo();
+    });
+  }
 }
 
 /** Persist whatever the current step collected before moving on. */
@@ -489,7 +506,7 @@ function bodyFor(state: State): string {
     case 2: return permsBody(state.perms);
     case 3: return voiceBody(state.voice);
     case 4: return profileBody();
-    default: return doneBody();
+    default: return doneBody(state);
   }
 }
 
@@ -556,10 +573,20 @@ function render(state: State, root: HTMLElement): void {
 /** Show the wizard on the first open of each new build. No-op once finished.
  *  Returns true if the wizard was shown — the caller skips the Settings
  *  setup-mode auto-open in that case, so the two first-run flows don't stack. */
-export async function maybeShowOnboarding(speak: Narrate = () => {}): Promise<boolean> {
+export async function maybeShowOnboarding(
+  speak: Narrate = () => {},
+  startDemo: StartDemo = () => {},
+): Promise<boolean> {
+  // Dev/test override: force the wizard regardless of the seen-flag or an already
+  // entitled license. Set localStorage "valet_force_onboarding" = "1", or load
+  // with ?onboard=1 — lets us replay onboarding without wiping the .env license.
+  const forced =
+    localStorage.getItem("valet_force_onboarding") === "1" ||
+    new URLSearchParams(location.search).get("onboard") === "1";
+
   const cfg = await getJSON<{ build_id?: string; voice?: string }>("/api/config");
   const buildId = cfg?.build_id || "dev";
-  if (localStorage.getItem(SEEN_KEY) === buildId) return false; // already onboarded this build
+  if (!forced && localStorage.getItem(SEEN_KEY) === buildId) return false; // already onboarded this build
   // If the license is already ENTITLED, the user has been through setup before
   // (e.g. they quit mid-onboarding to grant a permission, then relaunched) — don't
   // make them redo it. Mark this build seen and stay out of the way; everything is
@@ -572,7 +599,7 @@ export async function maybeShowOnboarding(speak: Narrate = () => {}): Promise<bo
   const status = await getJSON<{ env_keys_set?: { license_entitled?: boolean } }>(
     "/api/settings/status",
   );
-  if (status?.env_keys_set?.license_entitled) {
+  if (!forced && status?.env_keys_set?.license_entitled) {
     localStorage.setItem(SEEN_KEY, buildId);
     return false;
   }
@@ -583,6 +610,7 @@ export async function maybeShowOnboarding(speak: Narrate = () => {}): Promise<bo
     perms,
     voice: cfg?.voice === "female" ? "female" : "male",
     speak,
+    demo: startDemo,
   };
   const root = document.createElement("div");
   root.id = "valet-onboarding";

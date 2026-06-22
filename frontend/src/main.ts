@@ -788,9 +788,11 @@ btnMenu.addEventListener("click", (e) => {
 // auto-open when the wizard is NOT showing, so the two don't stack (which left
 // a stale setup-mode Settings panel behind the wizard).
 setTimeout(async () => {
-  // Pass a narrator so the wizard can have Vee speak scripted setup lines.
-  const onboarding = await maybeShowOnboarding((text: string) => {
-    try { socket.send({ type: "narrate", text }); } catch { /* ignore */ }
-  });
+  // Pass a narrator (Vee speaks scripted setup lines) and a demo trigger
+  // (the finale's guided cursor-control walkthrough).
+  const onboarding = await maybeShowOnboarding(
+    (text: string) => { try { socket.send({ type: "narrate", text }); } catch { /* ignore */ } },
+    () => { try { socket.send({ type: "onboarding_demo" }); } catch { /* ignore */ } },
+  );
   if (!onboarding) checkFirstTimeSetup();
 }, 2000);

@@ -5827,6 +5827,11 @@ async def voice_handler(ws: WebSocket):
                     await _speak(ws, text)
                 continue
 
+            # ── Onboarding finale: a short guided cursor-control demo ──
+            if msg.get("type") == "onboarding_demo":
+                asyncio.create_task(_handle_onboarding_demo(ws))
+                continue
+
             # ── Risk-tier confirmation response (Stage D) ──
             if msg.get("type") == "confirm_response":
                 confirmations.resolve(msg.get("id", ""), bool(msg.get("allow")))
@@ -7979,6 +7984,57 @@ def _walkthrough_signal(text: str) -> Optional[str]:
                             "do it yourself", "just do it", "do this one")):
         return "doit"
     return None
+
+
+async def _handle_onboarding_demo(ws) -> None:
+    """Onboarding finale: a short, self-contained guided demo of cursor control.
+    Open a benign Settings pane, glide the cursor to a real control, and narrate
+    the guided-control idea, then end. Reuses the walkthrough building blocks
+    (perception + resolver + glide + cursor-takeover banner) but NOT the wait
+    loop, so it concludes on its own. Best-effort; never raises."""
+    import walkthrough as wt
+    import perception
+    import target_resolver
+    import settings_index
+
+    # Needs Accessibility to observe the screen and glide the cursor.
+    if not _accessibility_access_granted():
+        await _speak(ws, "Grant Accessibility and I'll give you the live demo, sir.")
+        return
+    try:
+        async with process_bus.task_context("Onboarding demo") as task_id:
+            await _speak(ws, "Watch, sir.")
+            # Open a pane so a real control is on screen to point at.
+            hit = settings_index.match_setting("Bluetooth")
+            if hit:
+                await _execute_open_settings(hit[1], hit[0])
+                await asyncio.sleep(1.3)  # let the pane render before observing
+            obs = await perception.build_observation(executor, app=None)
+            res = await target_resolver.resolve(
+                obs, "the Bluetooth on/off switch", anthropic_client, intent="point at")
+            pt = wt._point_of(res)
+            if pt is not None:
+                label = getattr(res, "label", "") or "the Bluetooth switch"
+                await emit_cursor_control(task_id, True, label)
+                try:
+                    await _ax_executor.glide_to_target(
+                        pt[0], pt[1], ref=getattr(res, "ref", None))
+                finally:
+                    await emit_cursor_control(task_id, False)
+                await _speak(
+                    ws,
+                    "I find the control and point right to it. I can wait while you do "
+                    "it, or click it for you when you ask. That's the idea.",
+                )
+            else:
+                await _speak(
+                    ws,
+                    "I open the settings you need and guide you to the right control. "
+                    "You'll see it in action soon, sir.",
+                )
+    except Exception as e:
+        log.error(f"onboarding demo error: {e}")
+        await _speak(ws, "That's the gist of it, sir. We can try the live demo later.")
 
 
 async def _handle_walkthrough(goal: str, ws) -> None:
