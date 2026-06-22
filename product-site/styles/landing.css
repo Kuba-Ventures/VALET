@@ -326,6 +326,46 @@
   overflow: hidden;
 }
 
+/* Window-framed "screen" that holds either a real media example (image/video)
+   or the CSS mockup — so every card reads as a product screenshot. */
+.lp-card-screen {
+  width: 100%;
+  height: 100%;
+  min-height: 230px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-panel-border);
+  border-radius: var(--radius-md);
+  background: rgba(10, 9, 30, 0.6);
+  box-shadow: 0 24px 60px -40px rgba(0, 0, 0, 0.8);
+  overflow: hidden;
+}
+.lp-card-screen-bar {
+  display: flex;
+  gap: 6px;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--color-panel-border);
+  background: rgba(18, 15, 49, 0.5);
+}
+.lp-card-screen-bar i { width: 9px; height: 9px; border-radius: 50%; background: rgba(175, 169, 236, 0.35); }
+.lp-card-screen-body {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  min-height: 200px;
+}
+/* Real media fills the screen edge-to-edge (no inner padding). */
+.lp-card-screen-body:has(.lp-card-media) { padding: 0; }
+.lp-card-media {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 /* ---- Nav: arrows + bottom pill tab strip ---- */
 .lp-showcase-nav {
   margin-top: 2rem;
@@ -393,14 +433,17 @@
 }
 
 /* 01 — Talk: orb + waveform + pill + keycaps */
-.lp-mock--talk { flex-direction: column; gap: 1.1rem; }
-.lp-mock-orb {
-  width: 86px; height: 86px; border-radius: 50%;
-  background:
-    radial-gradient(circle at 50% 38%, rgba(196, 184, 250, 0.95), rgba(124, 104, 240, 0.5) 55%, rgba(124, 104, 240, 0) 72%),
-    radial-gradient(circle, rgba(124, 104, 240, 0.35), transparent 70%);
-  box-shadow: 0 0 50px -6px rgba(124, 104, 240, 0.7);
-  animation: lp-orb-breathe 3.6s ease-in-out infinite;
+/* Talk card: the live spinning HeroOrb fills the panel; waveform + pill overlay
+   at the bottom so it reads as VALET actively listening. */
+.lp-mock--talk { justify-content: flex-end; padding-bottom: 0.5rem; }
+.lp-mock--talk .lp-hero-orb { position: absolute; inset: 0; width: 100%; height: 100%; }
+.lp-mock-talk-overlay {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
 }
 .lp-mock-wave { display: flex; align-items: center; gap: 5px; height: 34px; }
 .lp-mock-wave span {
@@ -563,6 +606,7 @@
   font-family: var(--font-mono);
 }
 .lp-kbd-row--mods .lp-kbd-key { height: 46px; }
+.lp-kbd-key--top { height: 26px; border-radius: 6px; }
 .lp-kbd-key b { font-size: 0.95rem; line-height: 1; color: var(--color-ink); font-weight: 500; }
 .lp-kbd-key small { font-size: 0.58rem; letter-spacing: 0.03em; }
 .lp-kbd-key--fn { flex: 0.85 1 0; }
@@ -576,10 +620,21 @@
 .lp-kbd-key--lit b, .lp-kbd-key--lit small { color: #0a0820; }
 .lp-kbd-key--lit small { opacity: 0.82; }
 
+.lp-kbd-caption {
+  margin-top: 1.4rem;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-purple-label);
+}
+
 @media (max-width: 560px) {
   .lp-kbd-key small { display: none; }
-  .lp-kbd-key { height: 30px; }
-  .lp-kbd-row--mods .lp-kbd-key { height: 36px; }
+  .lp-kbd-key { height: 28px; }
+  .lp-kbd-key--top { height: 20px; }
+  .lp-kbd-row--mods .lp-kbd-key { height: 34px; }
 }
 
 /* ============================ Motion ============================ */
