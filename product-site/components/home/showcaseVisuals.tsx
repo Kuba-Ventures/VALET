@@ -1,3 +1,5 @@
+import HeroOrb from "./HeroOrb";
+
 /**
  * Stylized, on-brand visual mockups for the Raycast-style showcase carousel.
  * All decorative (aria-hidden) — these are CSS/markup illustrations of each
@@ -5,18 +7,19 @@
  */
 
 export function TalkVisual() {
+  // The same live, spinning violet particle orb that sits behind the hero,
+  // with a waveform + "Listening" pill overlaid so the card reads as VALET
+  // actively listening.
   return (
     <div className="lp-mock lp-mock--talk" aria-hidden="true">
-      <div className="lp-mock-orb" />
-      <div className="lp-mock-wave">
-        {[0.4, 0.8, 1, 0.6, 0.9, 0.5, 0.75].map((h, i) => (
-          <span key={i} style={{ ["--h" as string]: h, animationDelay: `${i * 0.09}s` }} />
-        ))}
-      </div>
-      <div className="lp-mock-pill">Listening…</div>
-      <div className="lp-mock-keys">
-        <kbd>⌃</kbd>
-        <kbd>⌥</kbd>
+      <HeroOrb />
+      <div className="lp-mock-talk-overlay">
+        <div className="lp-mock-wave">
+          {[0.4, 0.8, 1, 0.6, 0.9, 0.5, 0.75].map((h, i) => (
+            <span key={i} style={{ ["--h" as string]: h, animationDelay: `${i * 0.09}s` }} />
+          ))}
+        </div>
+        <div className="lp-mock-pill">Listening…</div>
       </div>
     </div>
   );

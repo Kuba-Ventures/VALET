@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
 import Reveal from "../Reveal";
 import {
   TalkVisual,
@@ -10,13 +10,34 @@ import {
   TeachVisual,
 } from "./showcaseVisuals";
 
-const CARDS = [
+/**
+ * A card's visual is EITHER a real media file (image or video) shown in the
+ * window-framed panel, OR — until you drop one in — the stylized CSS mockup.
+ *
+ * To use a real example: put the file in `public/showcase/` and set `media`,
+ * e.g. media: { type: "video", src: "/showcase/talk.mp4", poster: "/showcase/talk.jpg" }
+ *      media: { type: "image", src: "/showcase/instant.png" }
+ * Videos autoplay muted + loop (silent product loops, like Raycast).
+ */
+type Media = { type: "image" | "video"; src: string; poster?: string };
+
+type Card = {
+  n: string;
+  tab: string;
+  title: string;
+  body: string;
+  Visual: ComponentType;
+  media: Media | null;
+};
+
+const CARDS: Card[] = [
   {
     n: "01",
     tab: "Talk",
     title: "Talk from anywhere.",
     body: "Hold ⌃⌥ and speak from any app. The orb listens, no window-switching.",
     Visual: TalkVisual,
+    media: null,
   },
   {
     n: "02",
@@ -24,6 +45,7 @@ const CARDS = [
     title: "Instant, no typing.",
     body: "Open apps, find files, jump to settings, run system actions. Sub-second, no model round-trip.",
     Visual: InstantVisual,
+    media: null,
   },
   {
     n: "03",
@@ -31,6 +53,7 @@ const CARDS = [
     title: "It actually does it.",
     body: "VALET glides your cursor and clicks for you. Native Mac control with a confirm card, kill switch, and Escape to stop.",
     Visual: ControlVisual,
+    media: null,
   },
   {
     n: "04",
@@ -38,6 +61,7 @@ const CARDS = [
     title: "Ship it by voice.",
     body: "Dictate to Claude Code and Cursor and spin up whole projects without touching the keyboard.",
     Visual: ShipVisual,
+    media: null,
   },
   {
     n: "05",
@@ -45,13 +69,44 @@ const CARDS = [
     title: "Or it shows you how.",
     body: "Guided walkthroughs glide your cursor to each step and wait. It teaches, it doesn't take over.",
     Visual: TeachVisual,
+    media: null,
   },
 ];
 
+/** The framed "screen" that holds either a real media example or the mockup. */
+function CardScreen({ media, Visual }: { media: Media | null; Visual: ComponentType }) {
+  return (
+    <div className="lp-card-screen">
+      <div className="lp-card-screen-bar" aria-hidden="true">
+        <i /><i /><i />
+      </div>
+      <div className="lp-card-screen-body">
+        {media?.type === "video" ? (
+          <video
+            className="lp-card-media"
+            autoPlay
+            muted
+            loop
+            playsInline
+            poster={media.poster}
+          >
+            <source src={media.src} />
+          </video>
+        ) : media?.type === "image" ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="lp-card-media" src={media.src} alt="" />
+        ) : (
+          <Visual />
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
- * Raycast-style horizontal showcase: near-full-width cards with a visual per
- * capability, the next card peeking at the edge, prev/next arrows, and a bottom
- * pill tab-strip to jump between cards. Scroll-snap drives the active state.
+ * Raycast-style horizontal showcase: near-full-width cards with a media/visual
+ * panel per capability, the next card peeking at the edge, prev/next arrows, and
+ * a bottom pill tab-strip to jump between cards. Scroll-snap drives active state.
  */
 export default function HomeShowcase() {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -63,7 +118,6 @@ export default function HomeShowcase() {
     const cards = Array.from(track.querySelectorAll<HTMLElement>(".lp-card"));
     const io = new IntersectionObserver(
       (entries) => {
-        // Pick the most-visible card as active.
         let best: { i: number; ratio: number } | null = null;
         for (const e of entries) {
           const i = cards.indexOf(e.target as HTMLElement);
@@ -98,26 +152,23 @@ export default function HomeShowcase() {
       </div>
 
       <div className="lp-showcase-track" ref={trackRef}>
-        {CARDS.map((c, i) => {
-          const Visual = c.Visual;
-          return (
-            <article
-              key={c.title}
-              className="lp-card"
-              aria-roledescription="slide"
-              aria-label={`${i + 1} of ${CARDS.length}: ${c.title}`}
-            >
-              <div className="lp-card-body">
-                <span className="lp-feature-num">{c.n}</span>
-                <h3 className="h-display lp-card-title text-ink">{c.title}</h3>
-                <p className="lp-card-text">{c.body}</p>
-              </div>
-              <div className="lp-card-visual">
-                <Visual />
-              </div>
-            </article>
-          );
-        })}
+        {CARDS.map((c, i) => (
+          <article
+            key={c.title}
+            className="lp-card"
+            aria-roledescription="slide"
+            aria-label={`${i + 1} of ${CARDS.length}: ${c.title}`}
+          >
+            <div className="lp-card-body">
+              <span className="lp-feature-num">{c.n}</span>
+              <h3 className="h-display lp-card-title text-ink">{c.title}</h3>
+              <p className="lp-card-text">{c.body}</p>
+            </div>
+            <div className="lp-card-visual">
+              <CardScreen media={c.media} Visual={c.Visual} />
+            </div>
+          </article>
+        ))}
       </div>
 
       <div className="shell lp-showcase-nav">
