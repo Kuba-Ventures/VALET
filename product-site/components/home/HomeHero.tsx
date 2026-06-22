@@ -3,8 +3,9 @@ import HeroOrb from "./HeroOrb";
 
 /**
  * Landing hero: a live, slowly-rotating violet particle orb + bloom behind a
- * tight headline, the download CTA, and the push-to-talk keycaps. The orb is
- * decorative (aria-hidden); the headline is the page's single <h1>.
+ * tight headline and the download CTA. The orb is decorative (aria-hidden); the
+ * headline is the page's single <h1>. (The push-to-talk shortcut now has its own
+ * section — see HomePushToTalk.)
  */
 export default function HomeHero({ downloadHref }: { downloadHref: string }) {
   return (
@@ -36,13 +37,6 @@ export default function HomeHero({ downloadHref }: { downloadHref: string }) {
             See it work →
           </Link>
         </div>
-
-        <div className="lp-keys" aria-hidden="true">
-          <kbd className="lp-key">⌃ control</kbd>
-          <span className="lp-key-plus">+</span>
-          <kbd className="lp-key">⌥ option</kbd>
-        </div>
-        <p className="lp-key-caption">Push to talk from any app</p>
       </div>
     </section>
   );
