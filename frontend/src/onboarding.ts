@@ -67,6 +67,7 @@ const TARGET_FOR = (key: string): string =>
   : key === "automation" ? "automation"
   : key === "screen_recording" ? "screen_recording"
   : key === "speech_recognition" ? "speech_recognition"
+  : key === "input_monitoring" ? "input_monitoring"
   : "accessibility";
 
 function pill(p: Permission): { text: string; cls: string } {

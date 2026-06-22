@@ -721,13 +721,21 @@ function reconcileWakeControl() {
   }
 }
 
-btnWakeToggle.addEventListener("click", (e) => {
-  e.stopPropagation();
+function toggleListening() {
   isSleeping = !isSleeping;
   localStorage.setItem(WAKE_STATE_KEY, isSleeping ? "sleeping" : "active");
   applyWakeVisuals();
   reconcileWakeControl();
+}
+btnWakeToggle.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleListening();
 });
+// Menu-bar "Toggle Listening" (main.rs evals this) — same path as the orb button,
+// so the listening state has one source of truth and the orb shows it live.
+(window as unknown as { __valetToggleListening?: () => void }).__valetToggleListening = () => {
+  toggleListening();
+};
 
 // Apply persisted visuals immediately so the button label and orb dim match
 // the saved preference on every load. Mic control runs after wake.start()

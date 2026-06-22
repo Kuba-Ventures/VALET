@@ -107,17 +107,18 @@ function buildPanelHTML(): string {
         <!-- ─── COMPUTER SETTINGS TAB ───────────────────────────────── -->
         <div class="settings-tab-content" data-tab="computer" id="tab-content-computer">
 
-        <!-- License -->
+        <!-- License (offline/advanced activation; plan & billing are web-owned) -->
         <section class="settings-section" id="section-api-keys">
           <h3>License</h3>
 
           <div class="settings-field">
-            <label>License Key</label>
+            <label>Offline activation key</label>
             <div class="settings-input-row">
               <input type="password" id="input-license-key" placeholder="PRODUCT-XXXX-XXXX-XXXX-XXXX" />
               <button class="settings-btn" id="btn-test-license">Test</button>
               <span class="status-dot" id="status-license"></span>
             </div>
+            <div class="settings-hint">Normally you just sign in (Account &amp; You) and your license activates automatically. Paste a key here only to activate offline. Manage your plan, billing, and license at <a href="https://valetvoice.vercel.app/account" target="_blank" rel="noreferrer">your account ↗</a>.</div>
           </div>
 
           <div class="settings-field setup-hide">
@@ -191,6 +192,10 @@ function buildPanelHTML(): string {
             <div class="sysinfo-row"><span class="sysinfo-label">Tasks</span><span id="sysinfo-tasks">--</span></div>
             <div class="sysinfo-row"><span class="sysinfo-label">Server port</span><span id="sysinfo-port">--</span></div>
             <div class="sysinfo-row"><span class="sysinfo-label">Uptime</span><span id="sysinfo-uptime">--</span></div>
+          </div>
+          <div class="settings-field">
+            <button class="settings-btn" id="btn-restart-server" type="button">Restart server</button>
+            <div class="settings-hint">Restarts VALET's backend on this Mac. The app reconnects automatically.</div>
           </div>
         </section>
 
@@ -682,6 +687,14 @@ function wireEvents() {
   }
   document.getElementById("btn-save-prefs")?.addEventListener("click", saveAllPreferences);
   document.getElementById("btn-save-personalized")?.addEventListener("click", saveAllPreferences);
+
+  document.getElementById("btn-restart-server")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    btn.textContent = "Restarting…";
+    try { await apiPost("/api/restart", {}); } catch { /* the server is going down; expected */ }
+    setTimeout(() => { btn.disabled = false; btn.textContent = "Restart server"; }, 4000);
+  });
 
   // Account login — provisions the license key + profile, then refreshes the
   // fields below so they fill in immediately.

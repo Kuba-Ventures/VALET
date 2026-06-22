@@ -6837,7 +6837,10 @@ class AppLogin(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     # The app holds NO vendor secrets — only its license key and the proxy URL.
-    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "VALET_VOICE", "VALET_VOICE_MALE_ID", "VALET_VOICE_FEMALE_ID", "VALET_TELEMETRY", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL", "ACCOUNT_EMAIL", "ACCOUNT_PLAN"}
+    # ACCOUNT_PLAN is deliberately NOT writable here: billing/plan is web-owned
+    # (settings IA invariant 2) and only ever applied by /api/account/login from
+    # the server's truth — letting the app write it would forge entitlement locally.
+    allowed = {"LICENSE_KEY", "PROXY_BASE_URL", "FISH_VOICE_ID", "VALET_VOICE", "VALET_VOICE_MALE_ID", "VALET_VOICE_FEMALE_ID", "VALET_TELEMETRY", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "DATE_OF_BIRTH", "ADDRESS", "HOMETOWN_CITY", "WORK_EMAIL", "PERSONAL_EMAIL", "ACCOUNT_EMAIL"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
@@ -6931,6 +6934,15 @@ async def api_save_preferences(body: PreferencesUpdate):
     _write_env_key("ADDRESS", body.address)
     _write_env_key("HOMETOWN_CITY", body.hometown_city)
     return {"success": True}
+
+
+@app.post("/api/restart")
+async def api_restart():
+    """Restart the backend — Settings → System and the tray 'Restart server'.
+    In a packaged build the Tauri shell respawns the sidecar; in dev the detached
+    restarter relaunches. Reuses restart.restart_self (works in shipped builds)."""
+    import restart
+    return restart.restart_self()
 
 
 def _reinit_after_license(new_key: str) -> None:
@@ -7293,6 +7305,17 @@ def _screen_recording_granted():
         return None
 
 
+def _input_monitoring_granted():
+    """Real TCC check for Input Monitoring via CGPreflightListenEventAccess (no
+    prompt) — gates the global ⌃⌥ push-to-talk chord. True/False for the live
+    grant; None if Quartz isn't available."""
+    try:
+        import Quartz
+        return bool(Quartz.CGPreflightListenEventAccess())
+    except Exception:
+        return None
+
+
 @app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
@@ -7347,6 +7370,13 @@ async def api_permissions_status():
             "note": "Required for voice in the desktop app. Grant it, then relaunch VALET.",
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
         },
+        "input_monitoring": {
+            "granted": _input_monitoring_granted(),  # real CGPreflightListenEventAccess check
+            "label": "Input Monitoring",
+            "why": "Hold Control+Option from any app to talk to Vee — the global push-to-talk chord.",
+            "note": "Grant it, then relaunch VALET. Without it, the in-window key still works.",
+            "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+        },
     }
 
 
@@ -7359,6 +7389,7 @@ _SETTINGS_PANES = {
     "speech_recognition": "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
     "calendars": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
     "contacts": "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
+    "input_monitoring": "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
 }
 
 
