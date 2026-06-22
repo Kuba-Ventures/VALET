@@ -186,6 +186,14 @@
 /* ============================ Connections ============================ */
 
 .lp-connections { border-top: 1px solid var(--color-panel-border); }
+.lp-conn-lead {
+  margin-top: 1.4rem;
+  max-width: 46rem;
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  color: var(--color-ink-dim);
+}
+.lp-conn-gridlabel { margin: 2.75rem 0 1rem; }
 
 .lp-conn-grid {
   margin-top: 3rem;
