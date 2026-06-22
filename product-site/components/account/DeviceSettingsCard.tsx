@@ -83,7 +83,7 @@ export default function DeviceSettingsCard() {
                   onClick={() => update({ voice: v })}
                   className={`settings-voice-opt rounded-md border px-4 py-2 text-sm transition-colors ${
                     voice === v
-                      ? "border-accent/50 bg-[rgba(56,225,255,0.08)] text-accent"
+                      ? "border-accent/50 bg-[rgba(124,104,240,0.10)] text-accent"
                       : "border-panel-border text-ink-dim hover:border-accent-soft"
                   }`}
                 >
