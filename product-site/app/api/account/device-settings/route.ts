@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/auth/server";
+import { linkLicensesByEmail } from "@/lib/account";
 import {
   getDeviceSettingsForUser,
   setDeviceSettingsForUser,
@@ -24,6 +25,9 @@ export async function GET() {
   if (!user) {
     return NextResponse.json({ error: "Not signed in." }, { status: 401 });
   }
+  // Auto-claim any license bought with this email but not yet linked, so
+  // settings resolve to a license instead of falsely reporting none.
+  await linkLicensesByEmail(user.id, user.email);
   const settings = await getDeviceSettingsForUser(user.id);
   return NextResponse.json({ settings });
 }
@@ -36,6 +40,9 @@ export async function POST(req: Request) {
   if (!user) {
     return NextResponse.json({ error: "Not signed in." }, { status: 401 });
   }
+  // Same auto-claim as GET so a first save doesn't fail with "no license
+  // linked" when the purchase exists but was never linked.
+  await linkLicensesByEmail(user.id, user.email);
 
   let body: Record<string, unknown> = {};
   try {
