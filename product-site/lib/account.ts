@@ -305,6 +305,11 @@ export async function loginAndProvision(
   }
 
   const userId = auth.user.id;
+  // Auto-claim before reading: a license bought with this email may still have
+  // user_id = null (never opened the web dashboard, which is the only other
+  // place that links). Without this, app sign-in reports "no license linked"
+  // even though the purchase exists. Idempotent. Mirrors app/account/page.tsx.
+  await linkLicensesByEmail(userId, auth.user.email);
   // getAccountLicenses returns licenses newest-first; prefer an entitled one.
   const licenses = await getAccountLicenses(userId);
   const chosen =
