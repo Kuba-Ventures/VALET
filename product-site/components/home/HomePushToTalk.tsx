@@ -4,12 +4,18 @@ import Reveal from "../Reveal";
    one shortcut that summons VALET from any app. Decorative (aria-hidden); the
    shortcut is also stated in the copy for screen readers. */
 function Keyboard() {
+  const rowTop = Array.from({ length: 14 });
   const rowA = Array.from({ length: 13 });
   const rowB = Array.from({ length: 12 });
   return (
     <div className="lp-kbd" aria-hidden="true">
       <div className="lp-kbd-glow" />
       <div className="lp-kbd-deck">
+        <div className="lp-kbd-row">
+          {rowTop.map((_, i) => (
+            <span key={i} className="lp-kbd-key lp-kbd-key--top" />
+          ))}
+        </div>
         <div className="lp-kbd-row">
           {rowA.map((_, i) => (
             <span key={i} className="lp-kbd-key" />
@@ -43,6 +49,7 @@ function Keyboard() {
           </span>
         </div>
       </div>
+      <p className="lp-kbd-caption">Hold ⌃ + ⌥ to talk · from any app</p>
     </div>
   );
 }
