@@ -1,0 +1,301 @@
+/*
+ * Home-page (landing) visual system — VIOLET brand skin.
+ *
+ * Everything here is scoped under `.home` so it ONLY repaints the redesigned
+ * home page. The shared Nav and Footer render OUTSIDE the page's <main> (see
+ * app/layout.tsx), and the other four routes never carry `.home`, so they keep
+ * the site's default signal-cyan system untouched.
+ *
+ * Mechanism: the site's Tailwind utilities (text-ink, bg-panel, btn-primary…)
+ * all resolve to the CSS custom properties in tokens.css. Re-declaring those
+ * properties on `.home` cascades violet into every reused class for free, so we
+ * reuse .shell / .eyebrow / .h-display / .panel rather than re-implementing them.
+ */
+
+.home {
+  /* Surfaces — near-black violet void */
+  --color-bg: #07061a;
+  --color-bg-elevated: #0d0b29;
+  --color-panel: #120f31;
+  --color-panel-border: rgba(175, 169, 236, 0.15);
+  --color-line-strong: rgba(175, 169, 236, 0.24);
+
+  /* Text — #f6f4ff, secondary muted to ~66% */
+  --color-ink: #f6f4ff;
+  --color-ink-dim: rgba(246, 244, 255, 0.66);
+  --color-ink-faint: rgba(246, 244, 255, 0.42);
+
+  /* Accent — primary violet + light-violet glow */
+  --color-accent: #7c68f0;
+  --color-accent-deep: #5a47c8;
+  --color-accent-soft: rgba(124, 104, 240, 0.20);
+  --color-purple-label: #c4b8fa;
+
+  /* Opaque base so the global cyan ambient wash (body::before) never bleeds
+     through behind the hero. */
+  position: relative;
+  background: var(--color-bg);
+}
+
+/* Primary CTA on violet: light text on the violet gradient (the site default is
+   dark-on-cyan, which has no contrast on violet). */
+.home .btn-primary {
+  color: #0a0820;
+  background: linear-gradient(180deg, #9c8cff 0%, var(--color-accent) 58%, var(--color-accent-deep) 100%);
+}
+
+.home .eyebrow { color: var(--color-purple-label); }
+
+/* ============================ Hero ============================ */
+
+.lp-hero {
+  position: relative;
+  overflow: hidden;
+  min-height: 92vh;
+  display: flex;
+  align-items: center;
+}
+
+/* Centered halftone sphere + violet bloom, behind the headline. */
+.lp-hero-orb-wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.lp-hero-bloom {
+  position: absolute;
+  width: min(78vmin, 720px);
+  height: min(78vmin, 720px);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(124, 104, 240, 0.42) 0%, rgba(124, 104, 240, 0.16) 38%, transparent 68%);
+  filter: blur(8px);
+}
+
+.lp-hero-orb {
+  position: relative;
+  width: min(62vmin, 560px);
+  height: auto;
+  opacity: 0.6;
+  animation: lp-float 9s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* Dark radial scrim so the headline stays legible over the orb. */
+.lp-hero-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(60% 50% at 50% 48%, rgba(7, 6, 26, 0.72) 0%, rgba(7, 6, 26, 0.34) 55%, transparent 100%);
+}
+
+.lp-hero-inner {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  text-align: center;
+  padding-top: 8rem;
+  padding-bottom: 6rem;
+}
+
+.lp-hero-title {
+  font-size: clamp(3rem, 11vw, 7rem);
+  margin: 0 auto;
+}
+.lp-hero-title .line-2 { color: var(--color-purple-label); }
+
+.lp-hero-sub {
+  margin: 1.6rem auto 0;
+  max-width: 38rem;
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  color: var(--color-ink-dim);
+}
+
+.lp-hero-cta {
+  margin-top: 2.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: center;
+}
+@media (min-width: 640px) {
+  .lp-hero-cta { flex-direction: row; justify-content: center; }
+}
+
+.lp-hero-seework {
+  color: var(--color-ink-dim);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+.lp-hero-seework:hover { color: var(--color-ink); }
+
+/* ---- Push-to-talk keycaps ---- */
+.lp-keys {
+  margin-top: 2.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+}
+
+.lp-key {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  color: var(--color-ink);
+  background: linear-gradient(180deg, rgba(124, 104, 240, 0.20), rgba(124, 104, 240, 0.06));
+  border: 1px solid rgba(175, 169, 236, 0.45);
+  border-radius: 10px;
+  padding: 0.55rem 0.9rem;
+  box-shadow: 0 0 22px -4px rgba(124, 104, 240, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  animation: lp-pulse 3.4s ease-in-out infinite;
+}
+
+.lp-key-plus {
+  font-family: var(--font-mono);
+  color: var(--color-purple-label);
+  font-size: var(--text-lg);
+}
+
+.lp-key-caption {
+  margin-top: 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-purple-label);
+}
+
+/* ============================ Features ============================ */
+
+.lp-features { border-top: 1px solid var(--color-panel-border); }
+
+.lp-feature-grid {
+  margin-top: 3.5rem;
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 768px) {
+  .lp-feature-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.lp-feature-card {
+  height: 100%;
+  border: 1px solid var(--color-panel-border);
+  background: var(--color-panel);
+  border-radius: var(--radius-lg);
+  padding: 1.9rem;
+  transition: border-color 0.18s ease, transform 0.18s ease;
+}
+.lp-feature-card:hover {
+  border-color: rgba(124, 104, 240, 0.5);
+  transform: translateY(-2px);
+}
+.lp-feature-num {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.2em;
+  color: var(--color-purple-label);
+}
+.lp-feature-title { margin-top: 0.9rem; font-size: var(--text-xl); }
+.lp-feature-body { margin-top: 0.6rem; color: var(--color-ink-dim); line-height: 1.6; }
+
+/* ============================ Connections ============================ */
+
+.lp-connections { border-top: 1px solid var(--color-panel-border); }
+
+.lp-conn-grid {
+  margin-top: 3rem;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.9rem;
+}
+@media (min-width: 560px) { .lp-conn-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 900px) { .lp-conn-grid { grid-template-columns: repeat(4, 1fr); } }
+
+.lp-conn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--color-panel-border);
+  background: rgba(18, 15, 49, 0.55);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+  transition: border-color 0.18s ease;
+}
+.lp-conn:hover { border-color: rgba(124, 104, 240, 0.4); }
+.lp-conn-soon { opacity: 0.5; }
+
+.lp-conn-mark {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  color: var(--color-purple-label);
+}
+.lp-conn-name { font-size: var(--text-sm); color: var(--color-ink); }
+
+.lp-conn-tag {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-purple-label);
+  border: 1px solid rgba(175, 169, 236, 0.3);
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+}
+
+/* ============================ Closing CTA ============================ */
+
+.lp-closing {
+  border-top: 1px solid var(--color-panel-border);
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.lp-closing-bloom {
+  position: absolute;
+  left: 50%;
+  bottom: -40%;
+  transform: translateX(-50%);
+  width: min(80vmin, 760px);
+  height: min(80vmin, 760px);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(124, 104, 240, 0.22) 0%, transparent 64%);
+  pointer-events: none;
+}
+.lp-closing-inner { position: relative; z-index: 1; }
+.lp-closing-title { font-size: clamp(2.4rem, 7vw, 4.5rem); }
+.lp-closing-sub {
+  margin: 1.2rem auto 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  color: var(--color-ink-dim);
+}
+.lp-closing-cta { margin-top: 2.2rem; display: flex; justify-content: center; }
+
+/* ============================ Motion ============================ */
+
+@keyframes lp-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-14px); }
+}
+@keyframes lp-pulse {
+  0%, 100% { box-shadow: 0 0 22px -6px rgba(124, 104, 240, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.10); }
+  50% { box-shadow: 0 0 34px -2px rgba(124, 104, 240, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.14); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-hero-orb { animation: none; }
+  .lp-key { animation: none; }
+}
