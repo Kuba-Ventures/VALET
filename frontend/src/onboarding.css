@@ -13,7 +13,7 @@
 #valet-onboarding .ob-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(2, 5, 10, 0.66);
+  background: rgba(5, 4, 18, 0.66);
   backdrop-filter: blur(8px);
 }
 
@@ -28,10 +28,10 @@
   flex-direction: column;
   padding: 28px 28px 22px;
   border-radius: 16px;
-  background: linear-gradient(180deg, rgba(12, 22, 32, 0.96), rgba(8, 14, 22, 0.96));
-  border: 1px solid rgba(120, 200, 230, 0.28);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 60px rgba(80, 180, 220, 0.08);
-  color: #d7ecf4;
+  background: linear-gradient(180deg, rgba(18, 15, 49, 0.96), rgba(9, 8, 26, 0.96));
+  border: 1px solid rgba(175, 169, 236, 0.28);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 60px rgba(124, 104, 240, 0.08);
+  color: #f6f4ff;
 }
 /* Head and actions stay fixed; only the body scrolls. */
 #valet-onboarding .ob-head,
@@ -40,18 +40,18 @@
 #valet-onboarding .ob-brand {
   font-size: 12px;
   letter-spacing: 0.42em;
-  color: rgba(150, 220, 245, 0.7);
+  color: rgba(196, 184, 250, 0.7);
 }
 #valet-onboarding .ob-title {
   margin: 8px 0 6px;
   font-size: 20px;
-  color: #eaf8ff;
+  color: #f6f4ff;
 }
 #valet-onboarding .ob-sub {
   margin: 0 0 18px;
   font-size: 12.5px;
   line-height: 1.5;
-  color: rgba(170, 200, 215, 0.62);
+  color: rgba(246, 244, 255, 0.62);
 }
 
 #valet-onboarding .ob-rows {
@@ -67,20 +67,20 @@
   padding: 12px 14px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(120, 200, 230, 0.12);
+  border: 1px solid rgba(175, 169, 236, 0.12);
 }
 #valet-onboarding .ob-row-label {
   font-size: 13.5px;
-  color: #e6f6ff;
+  color: #f6f4ff;
 }
 #valet-onboarding .ob-row-why {
   margin-top: 3px;
   font-size: 11.5px;
   line-height: 1.45;
-  color: rgba(170, 200, 215, 0.55);
+  color: rgba(246, 244, 255, 0.55);
 }
 #valet-onboarding .ob-note {
-  color: rgba(150, 180, 200, 0.4);
+  color: rgba(246, 244, 255, 0.4);
 }
 #valet-onboarding .ob-row-side {
   display: flex;
@@ -106,9 +106,9 @@
   border: 1px solid rgba(245, 170, 60, 0.32);
 }
 #valet-onboarding .ob-pill.muted {
-  color: rgba(170, 200, 215, 0.5);
+  color: rgba(246, 244, 255, 0.5);
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(120, 200, 230, 0.16);
+  border: 1px solid rgba(175, 169, 236, 0.16);
 }
 
 #valet-onboarding .ob-open {
@@ -117,11 +117,11 @@
   padding: 5px 10px;
   border-radius: 7px;
   cursor: pointer;
-  color: #cfeeff;
-  background: rgba(80, 180, 220, 0.12);
-  border: 1px solid rgba(120, 200, 230, 0.34);
+  color: #f6f4ff;
+  background: rgba(124, 104, 240, 0.12);
+  border: 1px solid rgba(175, 169, 236, 0.34);
 }
-#valet-onboarding .ob-open:hover { background: rgba(80, 180, 220, 0.22); }
+#valet-onboarding .ob-open:hover { background: rgba(124, 104, 240, 0.22); }
 #valet-onboarding .ob-open:disabled { opacity: 0.5; cursor: default; }
 
 #valet-onboarding .ob-actions {
@@ -138,17 +138,17 @@
   cursor: pointer;
 }
 #valet-onboarding .ob-btn.ghost {
-  color: rgba(190, 215, 225, 0.8);
+  color: rgba(246, 244, 255, 0.8);
   background: transparent;
-  border: 1px solid rgba(120, 200, 230, 0.22);
+  border: 1px solid rgba(175, 169, 236, 0.22);
 }
 #valet-onboarding .ob-btn.ghost:hover { background: rgba(255, 255, 255, 0.04); }
 #valet-onboarding .ob-btn.primary {
-  color: #eaf8ff;
-  background: rgba(80, 180, 220, 0.18);
-  border: 1px solid rgba(120, 200, 230, 0.45);
+  color: #f6f4ff;
+  background: rgba(124, 104, 240, 0.18);
+  border: 1px solid rgba(175, 169, 236, 0.45);
 }
-#valet-onboarding .ob-btn.primary:hover { background: rgba(80, 180, 220, 0.3); }
+#valet-onboarding .ob-btn.primary:hover { background: rgba(124, 104, 240, 0.3); }
 
 /* ---- multi-step wizard ---- */
 #valet-onboarding .ob-wizard { width: min(580px, 92vw); }
@@ -161,10 +161,10 @@
 #valet-onboarding .ob-dots { display: flex; gap: 6px; }
 #valet-onboarding .ob-dot {
   width: 7px; height: 7px; border-radius: 999px;
-  background: rgba(120, 200, 230, 0.18);
+  background: rgba(175, 169, 236, 0.18);
   transition: background 0.25s ease, transform 0.25s ease;
 }
-#valet-onboarding .ob-dot.on { background: rgba(110, 220, 245, 0.85); transform: scale(1.12); }
+#valet-onboarding .ob-dot.on { background: rgba(196, 184, 250, 0.85); transform: scale(1.12); }
 
 #valet-onboarding .ob-body {
   min-height: 0;        /* allow the flex child to shrink so it can scroll */
@@ -176,27 +176,27 @@
 
 #valet-onboarding .ob-list {
   margin: 0; padding-left: 18px;
-  font-size: 12.5px; line-height: 1.9; color: rgba(180, 210, 225, 0.72);
+  font-size: 12.5px; line-height: 1.9; color: rgba(246, 244, 255, 0.72);
 }
 
 #valet-onboarding .ob-field { margin-bottom: 14px; }
 #valet-onboarding .ob-label {
   display: block; margin-bottom: 6px;
   font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
-  color: rgba(160, 195, 212, 0.6);
+  color: rgba(246, 244, 255, 0.6);
 }
 #valet-onboarding .ob-input {
   width: 100%; box-sizing: border-box;
   font: inherit; font-size: 13px; padding: 10px 12px;
-  border-radius: 9px; color: #eaf8ff;
+  border-radius: 9px; color: #f6f4ff;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(120, 200, 230, 0.22);
+  border: 1px solid rgba(175, 169, 236, 0.22);
   color-scheme: dark;
 }
-#valet-onboarding .ob-input:focus { outline: none; border-color: rgba(120, 200, 230, 0.55); }
+#valet-onboarding .ob-input:focus { outline: none; border-color: rgba(175, 169, 236, 0.55); }
 
 #valet-onboarding .ob-inline { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
-#valet-onboarding .ob-status { font-size: 11.5px; color: rgba(170, 200, 215, 0.62); }
+#valet-onboarding .ob-status { font-size: 11.5px; color: rgba(246, 244, 255, 0.62); }
 #valet-onboarding .ob-status.ok { color: #9af5c6; }
 #valet-onboarding .ob-status.warn { color: #ffd49a; }
 
@@ -205,27 +205,27 @@
   text-align: left; font: inherit; cursor: pointer;
   padding: 16px 16px; border-radius: 12px;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(120, 200, 230, 0.14);
+  border: 1px solid rgba(175, 169, 236, 0.14);
   transition: border-color 0.2s ease, background 0.2s ease;
 }
-#valet-onboarding .ob-voice:hover { border-color: rgba(120, 200, 230, 0.34); }
+#valet-onboarding .ob-voice:hover { border-color: rgba(175, 169, 236, 0.34); }
 #valet-onboarding .ob-voice.sel {
-  border-color: rgba(110, 220, 245, 0.7);
-  background: rgba(80, 180, 220, 0.1);
+  border-color: rgba(196, 184, 250, 0.7);
+  background: rgba(124, 104, 240, 0.1);
 }
-#valet-onboarding .ob-voice-label { font-size: 13.5px; color: #eaf8ff; }
-#valet-onboarding .ob-voice-desc { margin-top: 4px; font-size: 11.5px; color: rgba(170, 200, 215, 0.55); }
+#valet-onboarding .ob-voice-label { font-size: 13.5px; color: #f6f4ff; }
+#valet-onboarding .ob-voice-desc { margin-top: 4px; font-size: 11.5px; color: rgba(246, 244, 255, 0.55); }
 
 #valet-onboarding .ob-fineprint {
   margin: 14px 0 0; font-size: 11px; line-height: 1.5;
-  color: rgba(150, 180, 200, 0.45);
+  color: rgba(246, 244, 255, 0.45);
 }
 
 #valet-onboarding .ob-done-orb {
   width: 120px; height: 120px; margin: 22px auto 4px;
   border-radius: 50%;
-  background: radial-gradient(circle at 50% 45%, rgba(110, 220, 245, 0.55), rgba(31, 168, 188, 0.18) 45%, transparent 70%);
-  box-shadow: 0 0 60px rgba(80, 180, 220, 0.25);
+  background: radial-gradient(circle at 50% 45%, rgba(196, 184, 250, 0.55), rgba(124, 104, 240, 0.18) 45%, transparent 70%);
+  box-shadow: 0 0 60px rgba(124, 104, 240, 0.25);
   animation: ob-pulse 2.6s ease-in-out infinite;
 }
 @keyframes ob-pulse { 0%, 100% { transform: scale(1); opacity: 0.9; } 50% { transform: scale(1.06); opacity: 1; } }
