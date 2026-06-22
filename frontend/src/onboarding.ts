@@ -549,6 +549,7 @@ function render(state: State, root: HTMLElement): void {
     await saveStep(state, root);
     if (state.step >= STEP_TITLES.length - 1) {
       localStorage.setItem(SEEN_KEY, state.buildId);
+      localStorage.removeItem("valet_force_onboarding"); // clear the replay/test flag
       root.remove();
       return;
     }
