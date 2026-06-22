@@ -97,7 +97,7 @@ function UsagePanel({ usage }: { usage: AccountLicense["usage"] }) {
       </div>
       <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-bg">
         <div
-          className="h-full rounded-full bg-gradient-to-r from-[#6cecff] to-accent"
+          className="h-full rounded-full bg-gradient-to-r from-[#9c8cff] to-accent"
           style={{ width: `${pct}%` }}
         />
       </div>

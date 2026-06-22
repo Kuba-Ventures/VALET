@@ -25,8 +25,8 @@
     inset: 0;
     z-index: -2;
     background:
-      radial-gradient(1100px 700px at 50% -10%, rgba(56, 225, 255, 0.10), transparent 60%),
-      radial-gradient(800px 500px at 85% 110%, rgba(20, 136, 200, 0.08), transparent 55%);
+      radial-gradient(1100px 700px at 50% -10%, rgba(124, 104, 240, 0.12), transparent 60%),
+      radial-gradient(800px 500px at 85% 110%, rgba(175, 169, 236, 0.07), transparent 55%);
     pointer-events: none;
   }
 
@@ -60,8 +60,8 @@
     justify-content: center;
     gap: 0.5rem;
     font-weight: 600;
-    color: #04121a;
-    background: linear-gradient(180deg, #6cecff 0%, var(--color-accent) 60%, var(--color-accent-deep) 100%);
+    color: #0a0820;
+    background: linear-gradient(180deg, #9c8cff 0%, var(--color-accent) 58%, var(--color-accent-deep) 100%);
     border-radius: var(--radius-md);
     padding: 0.85rem 1.5rem;
     box-shadow: 0 0 40px -8px var(--color-accent-soft);
@@ -90,7 +90,7 @@
 
   .btn-ghost:hover {
     border-color: var(--color-accent-soft);
-    background: rgba(56, 225, 255, 0.05);
+    background: rgba(124, 104, 240, 0.06);
   }
 
   /* Form input on the dark glass surface, used across the account screens. */
@@ -111,7 +111,7 @@
   .input-field:focus {
     outline: none;
     border-color: var(--color-accent-soft);
-    box-shadow: 0 0 0 3px rgba(56, 225, 255, 0.12);
+    box-shadow: 0 0 0 3px rgba(124, 104, 240, 0.18);
   }
 }
 
@@ -139,7 +139,7 @@
   border-bottom: 1px solid transparent;
 }
 .nav.scrolled {
-  background: rgba(5, 8, 12, 0.72);
+  background: rgba(7, 6, 26, 0.72);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--color-panel-border);
 }
@@ -202,7 +202,7 @@
 .term-step { display: flex; gap: 0.7rem; opacity: 0; transform: translateY(8px); transition: opacity 0.5s ease, transform 0.5s ease; }
 .term.in .term-step.show { opacity: 1; transform: none; }
 .term-check { color: var(--color-accent); flex-shrink: 0; }
-.term-result { margin-top: 1rem; padding: 0.9rem 1.1rem; border: 1px solid var(--color-accent-soft); border-radius: var(--radius-md); background: rgba(77,227,242,0.06); color: var(--color-ink); opacity: 0; transition: opacity 0.6s ease; }
+.term-result { margin-top: 1rem; padding: 0.9rem 1.1rem; border: 1px solid var(--color-accent-soft); border-radius: var(--radius-md); background: rgba(124,104,240,0.08); color: var(--color-ink); opacity: 0; transition: opacity 0.6s ease; }
 .term.in .term-result.show { opacity: 1; }
 
 /* --- FAQ accordion --- */

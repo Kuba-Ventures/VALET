@@ -3,15 +3,15 @@ import Reveal from "../Reveal";
 const FEATURES = [
   {
     title: "Talk from anywhere.",
-    body: "Hold ⌃⌥ and speak from any app — the orb listens, no window-switching.",
+    body: "Hold ⌃⌥ and speak from any app. The orb listens, no window-switching.",
   },
   {
     title: "Instant, no typing.",
-    body: "Open apps, find files, jump to settings, run system actions — sub-second, no model round-trip.",
+    body: "Open apps, find files, jump to settings, run system actions. Sub-second, no model round-trip.",
   },
   {
     title: "It actually does it.",
-    body: "VALET glides your cursor and clicks for you — native Mac control with a confirm card, kill switch, and Escape to stop.",
+    body: "VALET glides your cursor and clicks for you. Native Mac control with a confirm card, kill switch, and Escape to stop.",
   },
   {
     title: "Ship it by voice.",
@@ -19,7 +19,7 @@ const FEATURES = [
   },
   {
     title: "Or it shows you how.",
-    body: "Guided walkthroughs glide your cursor to each step and wait — it teaches, it doesn't take over.",
+    body: "Guided walkthroughs glide your cursor to each step and wait. It teaches, it doesn't take over.",
   },
 ];
 

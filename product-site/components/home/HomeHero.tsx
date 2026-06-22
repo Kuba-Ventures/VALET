@@ -1,17 +1,17 @@
 import Link from "next/link";
+import HeroOrb from "./HeroOrb";
 
 /**
- * Landing hero: a centered violet halftone sphere + bloom behind a tight
- * headline, the download CTA, and the push-to-talk keycaps. The orb art is
- * decorative (alt=""); the headline is the page's single <h1>.
+ * Landing hero: a live, slowly-rotating violet particle orb + bloom behind a
+ * tight headline, the download CTA, and the push-to-talk keycaps. The orb is
+ * decorative (aria-hidden); the headline is the page's single <h1>.
  */
 export default function HomeHero({ downloadHref }: { downloadHref: string }) {
   return (
     <section className="lp-hero">
       <div className="lp-hero-orb-wrap" aria-hidden="true">
         <div className="lp-hero-bloom" />
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/hero-orb.png" alt="" className="lp-hero-orb" />
+        <HeroOrb />
       </div>
       <div className="lp-hero-scrim" aria-hidden="true" />
 
@@ -24,7 +24,7 @@ export default function HomeHero({ downloadHref }: { downloadHref: string }) {
 
         <p className="lp-hero-sub">
           A British-butler voice assistant for macOS that finds files, controls
-          apps, and ships code — by voice, from any app. No API keys. Signed &amp;
+          apps, and ships code by voice, from any app. No API keys. Signed &amp;
           notarized.
         </p>
 
@@ -42,7 +42,7 @@ export default function HomeHero({ downloadHref }: { downloadHref: string }) {
           <span className="lp-key-plus">+</span>
           <kbd className="lp-key">⌥ option</kbd>
         </div>
-        <p className="lp-key-caption">Push to talk — from any app</p>
+        <p className="lp-key-caption">Push to talk from any app</p>
       </div>
     </section>
   );
