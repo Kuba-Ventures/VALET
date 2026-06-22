@@ -1,29 +1,39 @@
 import Reveal from "../Reveal";
 
+/* Official app/service marks. Apple + locally-installed app icons are the real
+   macOS icons; the web services use each brand's official logo. */
 const LIVE = [
-  "Apple Calendar",
-  "Google Calendar",
-  "Apple Mail",
-  "Gmail",
-  "Apple Notes",
-  "Apple Contacts",
-  "Chrome",
-  "Claude Code",
-  "Cursor",
-  "Finder / Spotlight",
-  "System Settings",
+  { name: "Apple Calendar", logo: "/logos/apple-calendar.png" },
+  { name: "Google Calendar", logo: "/logos/google-calendar.svg" },
+  { name: "Apple Mail", logo: "/logos/apple-mail.png" },
+  { name: "Gmail", logo: "/logos/gmail.svg" },
+  { name: "Apple Notes", logo: "/logos/apple-notes.png" },
+  { name: "Apple Contacts", logo: "/logos/apple-contacts.png" },
+  { name: "Chrome", logo: "/logos/chrome.png" },
+  { name: "Claude Code", logo: "/logos/claude.png" },
+  { name: "Cursor", logo: "/logos/cursor.png" },
+  { name: "Finder / Spotlight", logo: "/logos/finder.png" },
+  { name: "System Settings", logo: "/logos/system-settings.png" },
 ];
 
-const SOON = ["Linear", "Slack", "Notion", "and more"];
+const SOON: { name: string; logo: string | null }[] = [
+  { name: "Linear", logo: "/logos/linear.svg" },
+  { name: "Slack", logo: "/logos/slack.png" },
+  { name: "Notion", logo: "/logos/notion.svg" },
+  { name: "and more", logo: null },
+];
 
-/* One restrained mark per row — a constellation node, not a fake brand logo. */
-function Mark() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="lp-conn-mark" aria-hidden="true">
-      <circle cx="12" cy="12" r="5.5" stroke="currentColor" strokeWidth="1.4" />
-      <circle cx="12" cy="12" r="1.8" fill="currentColor" />
-    </svg>
-  );
+function Logo({ src, name }: { src: string | null; name: string }) {
+  if (!src) {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" className="lp-conn-logo lp-conn-logo--node" aria-hidden="true">
+        <circle cx="12" cy="12" r="5.5" stroke="currentColor" strokeWidth="1.4" />
+        <circle cx="12" cy="12" r="1.8" fill="currentColor" />
+      </svg>
+    );
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt={`${name} logo`} className="lp-conn-logo" loading="lazy" />;
 }
 
 export default function HomeConnections() {
@@ -39,16 +49,16 @@ export default function HomeConnections() {
 
         <Reveal>
           <div className="lp-conn-grid">
-            {LIVE.map((name) => (
-              <div key={name} className="lp-conn">
-                <Mark />
-                <span className="lp-conn-name">{name}</span>
+            {LIVE.map((c) => (
+              <div key={c.name} className="lp-conn">
+                <Logo src={c.logo} name={c.name} />
+                <span className="lp-conn-name">{c.name}</span>
               </div>
             ))}
-            {SOON.map((name) => (
-              <div key={name} className="lp-conn lp-conn-soon">
-                <Mark />
-                <span className="lp-conn-name">{name}</span>
+            {SOON.map((c) => (
+              <div key={c.name} className="lp-conn lp-conn-soon">
+                <Logo src={c.logo} name={c.name} />
+                <span className="lp-conn-name">{c.name}</span>
                 <span className="lp-conn-tag">soon</span>
               </div>
             ))}
@@ -56,7 +66,7 @@ export default function HomeConnections() {
         </Reveal>
 
         <p className="mt-6 font-mono text-xs text-ink-faint">
-          Coming via MCP — the open protocol for connecting assistants to tools.
+          Coming via MCP, the open protocol for connecting assistants to tools.
         </p>
       </div>
     </section>

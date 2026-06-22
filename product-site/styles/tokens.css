@@ -3,34 +3,34 @@
  * Single source of truth for the visual system. A style-guide swap replaces
  * values here only. Do not hardcode colors, radii, or the type scale elsewhere.
  *
- * Direction: cinematic dark-premium. Near-black void, hairline-bordered
- * sections, restrained signal-cyan accent, purple reserved for the
- * constellation anchors. Space Grotesk display, Inter body, JetBrains mono.
+ * Direction: cinematic dark-premium. Near-black VIOLET void, hairline-bordered
+ * sections, primary-violet accent, light-violet for glows and anchors.
+ * Space Grotesk display, Inter body, JetBrains mono.
  */
 
 :root {
-  /* Surfaces */
-  --color-bg: #05080c;            /* void */
-  --color-bg-elevated: #0a0f16;   /* ink */
-  --color-panel: #0e1521;         /* raised */
-  --color-panel-border: rgba(120, 150, 180, 0.1);   /* line */
-  --color-line-strong: rgba(120, 150, 180, 0.18);
+  /* Surfaces — near-black violet void */
+  --color-bg: #07061a;            /* void */
+  --color-bg-elevated: #0d0b29;   /* ink */
+  --color-panel: #120f31;         /* raised */
+  --color-panel-border: rgba(175, 169, 236, 0.15);   /* line */
+  --color-line-strong: rgba(175, 169, 236, 0.24);
 
-  /* Text */
-  --color-ink: #eaf1f7;       /* frost (headlines) */
-  --color-ink-dim: #7e8a9c;   /* mist (body) */
-  --color-ink-faint: #5a6473; /* mist-dim (faint) */
+  /* Text — #f6f4ff, secondary muted */
+  --color-ink: #f6f4ff;                      /* frost (headlines) */
+  --color-ink-dim: rgba(246, 244, 255, 0.66); /* mist (body) */
+  --color-ink-faint: rgba(246, 244, 255, 0.42); /* mist-dim (faint) */
 
-  /* Accent (signal cyan) */
-  --color-accent: #4de3f2;      /* signal */
-  --color-accent-deep: #1fa8bc; /* signal-deep */
-  --color-accent-soft: rgba(77, 227, 242, 0.14); /* glow */
+  /* Accent (primary violet) */
+  --color-accent: #7c68f0;      /* signal */
+  --color-accent-deep: #5a47c8; /* signal-deep */
+  --color-accent-soft: rgba(124, 104, 240, 0.20); /* glow */
 
-  /* Purple (constellation anchors only) */
+  /* Light-violet (glows + constellation anchors) */
   --color-purple: #6c4fe0;       /* fill */
   --color-purple-rim: #9b86ff;   /* rim */
   --color-purple-halo: #7c5cff;  /* halo */
-  --color-purple-label: #b9a8ff; /* labels */
+  --color-purple-label: #c4b8fa; /* labels */
 
   /* Typography */
   --font-display: "Space Grotesk", system-ui, sans-serif;
