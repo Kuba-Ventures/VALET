@@ -95,7 +95,7 @@ export function TeachVisual() {
         <div className="lp-mock-pane-row" />
       </div>
       <div className="lp-mock-tip">
-        Step 2 of 5 — click here
+        Step 2 of 5 · click here
       </div>
       <svg className="lp-mock-cursor lp-mock-cursor--teach" viewBox="0 0 24 24" fill="none">
         <path d="M5 3l14 8-6 1.5L9.5 19 5 3z" fill="#f6f4ff" stroke="#0a0820" strokeWidth="1.2" strokeLinejoin="round" />

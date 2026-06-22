@@ -6,7 +6,7 @@ const LIVE = [
   { name: "Apple Calendar", logo: "/logos/apple-calendar.png" },
   { name: "Google Calendar", logo: "/logos/google-calendar.svg" },
   { name: "Apple Mail", logo: "/logos/apple-mail.png" },
-  { name: "Gmail", logo: "/logos/gmail.svg" },
+  { name: "Gmail", logo: "/logos/gmail.png" },
   { name: "Apple Notes", logo: "/logos/apple-notes.png" },
   { name: "Apple Contacts", logo: "/logos/apple-contacts.png" },
   { name: "Chrome", logo: "/logos/chrome.png" },
