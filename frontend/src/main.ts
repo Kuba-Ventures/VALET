@@ -788,6 +788,9 @@ btnMenu.addEventListener("click", (e) => {
 // auto-open when the wizard is NOT showing, so the two don't stack (which left
 // a stale setup-mode Settings panel behind the wizard).
 setTimeout(async () => {
-  const onboarding = await maybeShowOnboarding();
+  // Pass a narrator so the wizard can have Vee speak scripted setup lines.
+  const onboarding = await maybeShowOnboarding((text: string) => {
+    try { socket.send({ type: "narrate", text }); } catch { /* ignore */ }
+  });
   if (!onboarding) checkFirstTimeSetup();
 }, 2000);

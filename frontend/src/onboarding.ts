@@ -79,14 +79,52 @@ function pill(p: Permission): { text: string; cls: string } {
 
 // ---- wizard state ----------------------------------------------------------
 
+type Narrate = (text: string) => void;
+
 interface State {
   step: number;
   buildId: string;
   perms: PermStatus | null;
   voice: "male" | "female";
+  speak: Narrate;
 }
 
 const STEP_TITLES = ["Welcome", "License", "Permissions", "Voice", "About you", "Done"];
+
+// What Vee says when each step appears (the hand-holding voice-over). Kept to one
+// or two short sentences — butler tone, no em-dashes (the backend strips them).
+const STEP_NARRATION = [
+  "Good day. I'm Vee, your assistant. Let's get you set up. It only takes a minute, and you can change anything later.",
+  "First, let's activate your copy. Sign in with your VALET account, or paste the license key from your purchase email.",
+  "Now the permissions I need to act for you. Grant each one and I'll confirm as it turns green.",
+  "How would you like me to sound? Pick a voice and I'll say hello.",
+  "Tell me a little about you, so I can address you properly. All of this stays on your Mac.",
+  "You're all set. Hold Control and Option anytime, from any app, and just talk to me.",
+];
+
+/** Speak the line for the current step. */
+function narrateStep(state: State): void {
+  const line = STEP_NARRATION[state.step];
+  if (line) state.speak(line);
+}
+
+/**
+ * Reload permissions and, when one has newly flipped to granted, have Vee
+ * acknowledge it out loud (one at a time, so acks never overlap).
+ */
+async function refreshPerms(state: State): Promise<void> {
+  const prev = state.perms;
+  const next = await loadPerms();
+  if (next && prev) {
+    for (const k of Object.keys(next)) {
+      if (next[k]?.granted === true && prev[k]?.granted !== true) {
+        state.speak(`${next[k].label}, granted.`);
+        break;
+      }
+    }
+  }
+  state.perms = next;
+}
 
 // ---- per-step body renderers ----------------------------------------------
 
@@ -299,7 +337,7 @@ function wireStep(state: State, root: HTMLElement): void {
           try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             stream.getTracks().forEach((t) => t.stop()); // release immediately
-            state.perms = await loadPerms();
+            await refreshPerms(state);
             renderBody(state, root); // mic should now read Granted
           } catch {
             // Previously denied or blocked: native prompt won't show, so guide
@@ -320,7 +358,7 @@ function wireStep(state: State, root: HTMLElement): void {
             "/api/permissions/trigger", { target: "automation" },
           );
           if (res?.granted) {
-            state.perms = await loadPerms();
+            await refreshPerms(state);
             if (state.perms?.automation) state.perms.automation.granted = true;
             renderBody(state, root);
           } else {
@@ -342,7 +380,7 @@ function wireStep(state: State, root: HTMLElement): void {
             "/api/permissions/trigger", { target: "accessibility" },
           );
           if (res?.granted) {
-            state.perms = await loadPerms();
+            await refreshPerms(state);
             renderBody(state, root);
           } else {
             delete btn.dataset.accessibilityEnable;
@@ -362,7 +400,7 @@ function wireStep(state: State, root: HTMLElement): void {
             "/api/permissions/trigger", { target: "screen_recording" },
           );
           if (res?.granted) {
-            state.perms = await loadPerms();
+            await refreshPerms(state);
             renderBody(state, root);
           } else {
             delete btn.dataset.screenrecEnable;
@@ -380,7 +418,7 @@ function wireStep(state: State, root: HTMLElement): void {
             "/api/permissions/trigger", { target: "calendars" },
           );
           if (res?.granted) {
-            state.perms = await loadPerms();
+            await refreshPerms(state);
             if (state.perms?.calendars) state.perms.calendars.granted = true;
             renderBody(state, root);
           } else {
@@ -397,7 +435,7 @@ function wireStep(state: State, root: HTMLElement): void {
       });
     });
     root.querySelector("#ob-recheck")?.addEventListener("click", async () => {
-      state.perms = await loadPerms();
+      await refreshPerms(state);
       renderBody(state, root);
     });
   }
@@ -408,6 +446,8 @@ function wireStep(state: State, root: HTMLElement): void {
         state.voice = (btn.dataset.voice as "male" | "female") || "male";
         await saveKey("VALET_VOICE", state.voice);
         renderBody(state, root);
+        // Saved to .env live, so the next narration speaks in the chosen voice.
+        state.speak("This is how I'll sound. You can change it anytime in Settings.");
       });
     });
   }
@@ -481,8 +521,12 @@ function render(state: State, root: HTMLElement): void {
       </div>
     </div>`;
 
+  // Hide Back on the first step (renderBody handles it after navigation).
+  const backInit = root.querySelector<HTMLButtonElement>("#ob-back");
+  if (backInit) backInit.style.visibility = state.step === 0 ? "hidden" : "visible";
+
   root.querySelector("#ob-back")?.addEventListener("click", () => {
-    if (state.step > 0) { state.step--; renderBody(state, root); }
+    if (state.step > 0) { state.step--; renderBody(state, root); narrateStep(state); }
   });
   root.querySelector("#ob-next")?.addEventListener("click", async () => {
     await saveStep(state, root);
@@ -493,7 +537,18 @@ function render(state: State, root: HTMLElement): void {
     }
     state.step++;
     renderBody(state, root);
+    narrateStep(state);
   });
+
+  // Speak the welcome line on the first user gesture (which also unlocks the
+  // AudioContext), so Vee greets the user instead of the wizard opening silent.
+  const greet = () => {
+    root.removeEventListener("pointerdown", greet);
+    root.removeEventListener("keydown", greet);
+    if (state.step === 0) narrateStep(state);
+  };
+  root.addEventListener("pointerdown", greet);
+  root.addEventListener("keydown", greet);
 
   wireStep(state, root);
 }
@@ -501,7 +556,7 @@ function render(state: State, root: HTMLElement): void {
 /** Show the wizard on the first open of each new build. No-op once finished.
  *  Returns true if the wizard was shown — the caller skips the Settings
  *  setup-mode auto-open in that case, so the two first-run flows don't stack. */
-export async function maybeShowOnboarding(): Promise<boolean> {
+export async function maybeShowOnboarding(speak: Narrate = () => {}): Promise<boolean> {
   const cfg = await getJSON<{ build_id?: string; voice?: string }>("/api/config");
   const buildId = cfg?.build_id || "dev";
   if (localStorage.getItem(SEEN_KEY) === buildId) return false; // already onboarded this build
@@ -527,6 +582,7 @@ export async function maybeShowOnboarding(): Promise<boolean> {
     buildId,
     perms,
     voice: cfg?.voice === "female" ? "female" : "male",
+    speak,
   };
   const root = document.createElement("div");
   root.id = "valet-onboarding";

@@ -5816,6 +5816,17 @@ async def voice_handler(ws: WebSocket):
             except json.JSONDecodeError:
                 continue
 
+            # ── Narration (onboarding hand-holding): speak a fixed line ──
+            # The frontend onboarding asks Vee to speak scripted setup lines.
+            # Reuses _speak (status + sentence-chunked TTS + barge-in safety), so
+            # Escape silences it like any other utterance. Uses the live voice id,
+            # so a line sent right after the voice pick speaks in the new voice.
+            if msg.get("type") == "narrate":
+                text = (msg.get("text") or "").strip()
+                if text:
+                    await _speak(ws, text)
+                continue
+
             # ── Risk-tier confirmation response (Stage D) ──
             if msg.get("type") == "confirm_response":
                 confirmations.resolve(msg.get("id", ""), bool(msg.get("allow")))
