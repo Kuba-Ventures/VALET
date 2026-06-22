@@ -396,9 +396,11 @@ fn main() {
                 MenuItem::with_id(app, "account", "Account ↗", true, None::<&str>)?;
             let restart =
                 MenuItem::with_id(app, "restart", "Restart server", true, None::<&str>)?;
+            let replay =
+                MenuItem::with_id(app, "replay_setup", "Replay setup…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit VALET", true, None::<&str>)?;
             let menu = Menu::with_items(
-                app, &[&open_item, &listen, &settings, &account, &restart, &quit])?;
+                app, &[&open_item, &listen, &settings, &account, &restart, &replay, &quit])?;
             // Monochrome orb mark (black on transparent), marked as a TEMPLATE so
             // macOS renders it in the menu-bar text colour — black on a light bar,
             // white on a dark bar — instead of the blue-on-black app icon. Embedded
@@ -427,6 +429,17 @@ fn main() {
                             let _ = win.set_focus();
                             let _ = win.eval(
                                 "window.__valetOpenSettings && window.__valetOpenSettings()");
+                        }
+                    }
+                    "replay_setup" => {
+                        // Re-run the first-run wizard on demand. Sets the force flag
+                        // (which bypasses the seen-marker AND the entitled-license skip)
+                        // then reloads the webview so maybeShowOnboarding picks it up.
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                            let _ = win.eval(
+                                "localStorage.setItem('valet_force_onboarding','1'); location.reload();");
                         }
                     }
                     "account" => {
