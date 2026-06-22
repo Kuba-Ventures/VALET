@@ -451,17 +451,18 @@
   gap: 0.7rem;
 }
 .lp-mock-wave { display: flex; align-items: center; gap: 5px; height: 34px; }
+/* Voice recognition uses the product's green, not violet. */
 .lp-mock-wave span {
   width: 4px; border-radius: 4px;
   height: calc(8px + var(--h, 0.5) * 26px);
-  background: linear-gradient(180deg, #c4b8fa, #7c68f0);
+  background: linear-gradient(180deg, #7ef0b6, #34d399);
   animation: lp-wave 1s ease-in-out infinite;
 }
 .lp-mock-pill {
   font-family: var(--font-mono); font-size: var(--text-xs);
   letter-spacing: 0.14em; text-transform: uppercase;
-  color: var(--color-purple-label);
-  border: 1px solid rgba(175, 169, 236, 0.35); border-radius: 999px;
+  color: #6ee7b7;
+  border: 1px solid rgba(110, 231, 183, 0.4); border-radius: 999px;
   padding: 0.3rem 0.8rem;
 }
 .lp-mock-keys { display: flex; gap: 0.4rem; }
