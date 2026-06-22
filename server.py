@@ -3599,13 +3599,23 @@ async def _account_sync_loop():
         pass
 
 
+# Last web device-settings we applied, so the poll loop only re-applies when the
+# dashboard value actually CHANGED — that way a live web edit reaches the running
+# session, but a poll never clobbers an in-app toggle that matches the web state.
+_last_web_device_settings: dict | None = None
+
+
 async def _fetch_and_apply_device_settings():
     """Pull the user's web-controlled settings (set on the account dashboard) and
     apply them locally: voice, the advanced voice-id override, and telemetry.
 
-    The web is the source of truth AT LAUNCH; in-app toggles still override for
-    the running session. Best-effort — never fatal, never blocks startup.
+    Applied at launch and then re-checked every ~20s by _device_settings_poll_loop,
+    so a change saved on the dashboard takes effect in the RUNNING session without
+    a restart (e.g. switching to the British female voice). To avoid clobbering an
+    in-app toggle, we only re-apply when the web settings differ from the last set
+    we saw. Best-effort — never fatal, never blocks startup.
     """
+    global _last_web_device_settings
     if not LICENSE_KEY:
         return
     try:
@@ -3620,6 +3630,9 @@ async def _fetch_and_apply_device_settings():
     except Exception as e:
         log.warning(f"device-settings fetch failed: {e}")
         return
+    if settings == _last_web_device_settings:
+        return  # unchanged on the web since we last applied — leave the session as-is
+    _last_web_device_settings = settings
     try:
         voice = settings.get("voice")
         if voice in ("male", "female"):
@@ -3636,6 +3649,24 @@ async def _fetch_and_apply_device_settings():
         log.info("applied web device-settings")
     except Exception as e:
         log.warning(f"device-settings apply failed: {e}")
+
+
+async def _device_settings_poll_loop(interval: float = 20.0):
+    """Re-check the web device-settings on an interval so a change saved on the
+    account dashboard (e.g. the voice) reaches the running app without a restart.
+    _fetch_and_apply_device_settings() no-ops unless the web value changed, so
+    this is cheap and won't fight an in-app toggle. Best-effort; runs for the
+    life of the process."""
+    if not LICENSE_KEY:
+        return
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await _fetch_and_apply_device_settings()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning(f"device-settings poll error: {e}")
 
 
 # Account profile (name/honorific/DOB/location/emails) → local .env keys. Single
@@ -4014,9 +4045,11 @@ async def lifespan(application: FastAPI):
 
     # Apply web-controlled device settings (voice / voice id / telemetry) set on
     # the account dashboard. Web wins at launch; in-app toggles override for the
-    # session. Fired as a task so it never blocks startup.
+    # session. Fired as a task so it never blocks startup. A poll loop then keeps
+    # the running session in sync with later dashboard edits (no restart needed).
     if LICENSE_KEY:
         asyncio.create_task(_fetch_and_apply_device_settings())
+        asyncio.create_task(_device_settings_poll_loop())
         # Same idea for the profile (name/honorific/DOB/location): pull the
         # account's latest synced profile and fill any empty fields locally.
         asyncio.create_task(_fetch_and_apply_profile())
