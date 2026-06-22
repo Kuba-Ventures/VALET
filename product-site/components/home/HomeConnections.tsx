@@ -45,9 +45,15 @@ export default function HomeConnections() {
           <h2 className="h-display mt-5 max-w-3xl text-[clamp(2rem,5vw,3.25rem)] text-ink">
             You don&apos;t install extensions. You just ask.
           </h2>
+          <p className="lp-conn-lead">
+            VALET opens and controls any app on your Mac, whether it shipped with
+            macOS or you downloaded it from the web. It sees your screen and acts
+            on it, so it works with every app, not just a chosen few.
+          </p>
         </Reveal>
 
         <Reveal>
+          <p className="label-mono lp-conn-gridlabel">The ones it knows by name</p>
           <div className="lp-conn-grid">
             {LIVE.map((c) => (
               <div key={c.name} className="lp-conn">
