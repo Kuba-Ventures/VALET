@@ -475,11 +475,17 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while running VALET")
-        .run(|_app, event| {
+        .run(|app, event| {
             // Menu-bar app: do NOT quit when the last window closes — live in the
             // tray. Without this, Tauri's default exits the app on zero windows.
+            // BUT a deliberate tray "Quit" calls shutdown_backend() (which sets
+            // shutting_down) and then app.exit(0); we must let THAT exit through,
+            // or the app hangs on screen with its backend already killed
+            // ("backend not connected").
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+                if !app.state::<Backend>().shutting_down.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
             }
         });
 }
