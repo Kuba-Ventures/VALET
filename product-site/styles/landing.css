@@ -433,9 +433,14 @@
 }
 
 /* 01 — Talk: orb + waveform + pill + keycaps */
-/* Talk card: the live spinning HeroOrb fills the panel; waveform + pill overlay
-   at the bottom so it reads as VALET actively listening. */
-.lp-mock--talk { justify-content: flex-end; padding-bottom: 0.5rem; }
+/* Talk card: the live spinning HeroOrb fills the panel; waveform + pill sit
+   centered at the bottom, beneath the orb — like the product panel. */
+.lp-mock--talk {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 1.25rem;
+}
 .lp-mock--talk .lp-hero-orb { position: absolute; inset: 0; width: 100%; height: 100%; }
 .lp-mock-talk-overlay {
   position: relative;
