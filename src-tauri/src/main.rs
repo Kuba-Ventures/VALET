@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::TrayIconBuilder;
 use tauri::{
-    ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry,
+    ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -340,19 +340,12 @@ fn shutdown_backend(app: &AppHandle) {
     }
 }
 
-/// Toggle the orb popover from the tray. The orb is always available; the user
-/// hides/shows it from the menu bar (it is never auto-dismissed by the ⌃⌥ chord,
-/// which only opens the mic). Keeps the menu item's label in sync with state.
-fn toggle_main(app: &AppHandle, item: &MenuItem<Wry>) {
+/// Bring the orb popover to the front (tray "Open VALET" + left-click). The orb
+/// is the always-on status surface, so the tray opens it rather than toggling it.
+fn show_main(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
-        if win.is_visible().unwrap_or(false) {
-            let _ = win.hide();
-            let _ = item.set_text("Show VALET");
-        } else {
-            let _ = win.show();
-            let _ = win.set_focus();
-            let _ = item.set_text("Hide VALET");
-        }
+        let _ = win.show();
+        let _ = win.set_focus();
     }
 }
 
@@ -390,19 +383,22 @@ fn main() {
             spawn_cursor_overlay(app.handle().clone());
             spawn_global_chord(app.handle().clone());
 
-            // Tray icon + minimal menu (Show/Hide, Permissions, Quit). Left-click
-            // toggles the orb; right-click opens the menu.
-            let show_hide =
-                MenuItem::with_id(app, "show_hide", "Hide VALET", true, None::<&str>)?;
+            // Menu bar = status + toggles + links only, never a form (settings IA
+            // invariant 3): Open VALET · Toggle Listening · Settings… · Account ↗ ·
+            // Restart server · Quit. Left-click opens the orb; right-click the menu.
+            let open_item =
+                MenuItem::with_id(app, "open", "Open VALET", true, None::<&str>)?;
+            let listen =
+                MenuItem::with_id(app, "toggle_listen", "Toggle Listening", true, None::<&str>)?;
             let settings =
                 MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let permissions =
-                MenuItem::with_id(app, "permissions", "Permissions…", true, None::<&str>)?;
+            let account =
+                MenuItem::with_id(app, "account", "Account ↗", true, None::<&str>)?;
+            let restart =
+                MenuItem::with_id(app, "restart", "Restart server", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit VALET", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_hide, &settings, &permissions, &quit])?;
-
-            let menu_item = show_hide.clone();
-            let click_item = show_hide.clone();
+            let menu = Menu::with_items(
+                app, &[&open_item, &listen, &settings, &account, &restart, &quit])?;
             // Monochrome orb mark (black on transparent), marked as a TEMPLATE so
             // macOS renders it in the menu-bar text colour — black on a light bar,
             // white on a dark bar — instead of the blue-on-black app icon. Embedded
@@ -411,9 +407,17 @@ fn main() {
                 .icon(tauri::include_image!("icons/tray@2x.png"))
                 .icon_as_template(true)
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(true)  // one click opens the menu
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "show_hide" => toggle_main(app, &menu_item),
+                    "open" => show_main(app),
+                    "toggle_listen" => {
+                        // Flip Active/Asleep via the SAME path as the in-orb toggle
+                        // (one source of truth); the orb shows the live status.
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.eval(
+                                "window.__valetToggleListening && window.__valetToggleListening()");
+                        }
+                    }
                     "settings" => {
                         // Open the in-app settings panel from the menu bar (replaces
                         // the in-orb three-dots button). Show the orb, then call the
@@ -425,29 +429,27 @@ fn main() {
                                 "window.__valetOpenSettings && window.__valetOpenSettings()");
                         }
                     }
-                    "permissions" => {
-                        // Stage 1: surface the orb so the in-app permissions UI is
-                        // reachable. A dedicated deep link lands with Stage 4 onboarding.
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
+                    "account" => {
+                        // Account/billing/license live on the web (IA invariant 2).
+                        let _ = std::process::Command::new("open")
+                            .arg("https://valetvoice.vercel.app/account")
+                            .spawn();
+                    }
+                    "restart" => {
+                        // Restart the backend via its endpoint (the Tauri shell
+                        // respawns the sidecar). Spawned so the menu handler returns.
+                        tauri::async_runtime::spawn(async {
+                            let _ = reqwest::Client::new()
+                                .post(format!("{BACKEND_URL}/api/restart"))
+                                .send()
+                                .await;
+                        });
                     }
                     "quit" => {
                         shutdown_backend(app);
                         app.exit(0);
                     }
                     _ => {}
-                })
-                .on_tray_icon_event(move |tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        toggle_main(tray.app_handle(), &click_item);
-                    }
                 })
                 .build(app);
             // Don't let a tray failure take down the whole app — log it and keep
