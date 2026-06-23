@@ -237,39 +237,72 @@ html, body {
   border-color: rgba(110, 92, 255, 0.3);
 }
 
-/* Wake-word listening toggle — pill-shaped, replaces the icon-only mute button */
+/* "Always listening" toggle — a labelled pill switch. Push-to-talk (⌃⌥) is
+   native and always works, so this is the only status control. Bright, readable
+   purple; an on/off switch makes the toggle obvious. */
 #controls #btn-wake-toggle {
   width: auto;
   height: 32px;
-  padding: 0 12px;
+  padding: 0 8px 0 12px;
   border-radius: 16px;
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 1.5px;
+  gap: 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 1px;
   text-transform: uppercase;
 }
 
-#controls #btn-wake-toggle .wake-dot {
-  width: 7px;
-  height: 7px;
+/* ON — bright, present, clearly readable */
+#controls #btn-wake-toggle.on {
+  color: #cbb6ff;
+  border-color: rgba(166, 77, 255, 0.55);
+  background: rgba(166, 77, 255, 0.16);
+}
+#controls #btn-wake-toggle.on:hover {
+  background: rgba(166, 77, 255, 0.24);
+  border-color: rgba(166, 77, 255, 0.7);
+}
+
+/* OFF — muted but still legible (not the old near-invisible dim) */
+#controls #btn-wake-toggle.off {
+  color: rgba(180, 188, 204, 0.8);
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(148, 163, 184, 0.08);
+}
+#controls #btn-wake-toggle.off:hover {
+  background: rgba(148, 163, 184, 0.14);
+  color: rgba(205, 211, 222, 0.95);
+}
+
+/* The switch */
+#controls #btn-wake-toggle .wake-switch {
+  position: relative;
+  width: 26px;
+  height: 15px;
+  border-radius: 8px;
+  flex: 0 0 26px;
+  background: rgba(148, 163, 184, 0.35);
+  transition: background 0.22s ease;
+}
+#controls #btn-wake-toggle .wake-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
-  transition: all 0.25s ease;
+  background: #e9eaf2;
+  transition: transform 0.22s ease, background 0.22s ease;
 }
-
-#controls #btn-wake-toggle.sleeping {
-  border-color: rgba(148, 163, 184, 0.18);
-  background: rgba(148, 163, 184, 0.05);
-  color: rgba(148, 163, 184, 0.55);
+#controls #btn-wake-toggle.on .wake-switch {
+  background: #a64dff;
+  box-shadow: 0 0 8px rgba(166, 77, 255, 0.6);
 }
-
-#controls #btn-wake-toggle.sleeping .wake-dot {
-  background: rgba(148, 163, 184, 0.5);
-  box-shadow: none;
+#controls #btn-wake-toggle.on .wake-knob {
+  transform: translateX(11px);
+  background: #ffffff;
 }
 
 /* Visual cue on the orb itself when wake-word listening is off */
