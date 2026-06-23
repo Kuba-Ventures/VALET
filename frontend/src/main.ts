@@ -605,9 +605,10 @@ window.addEventListener("blur", () => {
 // (settings.ts dispatches "ptt-changed").
 const pttHintEl = document.getElementById("ptt-hint")!;
 function updatePttHint() {
-  const on = isPushToTalkEnabled();
+  // Show the "hold ⌃⌥ to talk" cue only in push-to-talk mode (i.e. NOT when
+  // always-listening). The chord itself always works.
   pttHintEl.textContent = "hold ⌃⌥ to talk";
-  pttHintEl.classList.toggle("hidden", !on);
+  pttHintEl.classList.toggle("hidden", !isSleeping);
 }
 window.addEventListener("ptt-changed", updatePttHint);
 updatePttHint();
@@ -751,6 +752,12 @@ btnWakeToggle.addEventListener("click", (e) => {
 // Menu-bar "Toggle Listening" (main.rs evals this) — same path as the orb button,
 // so the listening state has one source of truth and the orb shows it live.
 (window as unknown as { __valetToggleListening?: () => void }).__valetToggleListening = () => {
+  toggleListening();
+};
+// Settings' "Always listening" toggle sets the state directly (one source of
+// truth with the orb's Active/Asleep). on = always-listening (wake on).
+(window as unknown as { __valetSetListening?: (on: boolean) => void }).__valetSetListening = (on) => {
+  if (isSleeping === !on) return; // already in the desired state
   toggleListening();
 };
 
