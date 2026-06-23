@@ -16,8 +16,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::menu::{IconMenuItem, Menu, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -29,6 +28,11 @@ const BACKEND_URL: &str = "http://localhost:8340";
 struct Backend {
     child: Mutex<Option<CommandChild>>,
     shutting_down: AtomicBool,
+    // When the tray popover was last hidden. Clicking the menu-bar icon while the
+    // popover is open blurs it (→ hide) BEFORE the tray click event arrives, so
+    // without this guard that same click would instantly reopen it. We swallow a
+    // show that lands within a short window of a hide, making the icon a toggle.
+    popover_hidden_at: Mutex<Option<Instant>>,
 }
 
 fn spawn_backend(app: AppHandle, attempt: u32) {
@@ -349,6 +353,92 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// Run a tray-menu action by id. Shared by the custom HTML popover (`tray_action`
+/// command) so the menu items behave identically to the old native NSMenu items.
+fn handle_tray_action(app: &AppHandle, id: &str) {
+    match id {
+        "open" => show_main(app),
+        "toggle_listen" => {
+            // Flip Active/Asleep via the SAME path as the in-orb toggle (one
+            // source of truth); the orb shows the live status.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.eval(
+                    "window.__valetToggleListening && window.__valetToggleListening()");
+            }
+        }
+        "settings" => {
+            // Open the in-app settings panel; show the orb, then call the frontend
+            // hook via eval (no Tauri JS API needed).
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+                let _ = win.eval(
+                    "window.__valetOpenSettings && window.__valetOpenSettings()");
+            }
+        }
+        "replay_setup" => {
+            // Re-run the first-run wizard on demand (no reload, so the AudioContext
+            // stays unlocked and Vee starts narrating immediately).
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+                let _ = win.eval(
+                    "window.__valetReplayOnboarding && window.__valetReplayOnboarding()");
+            }
+        }
+        "account" => {
+            // Account/billing/license live on the web (IA invariant 2).
+            let _ = std::process::Command::new("open")
+                .arg("https://valetvoice.vercel.app/account")
+                .spawn();
+        }
+        "restart" => {
+            // Restart the backend via its endpoint (Tauri shell respawns the
+            // sidecar). Spawned so the handler returns promptly.
+            tauri::async_runtime::spawn(async {
+                let _ = reqwest::Client::new()
+                    .post(format!("{BACKEND_URL}/api/restart"))
+                    .send()
+                    .await;
+            });
+        }
+        "quit" => {
+            shutdown_backend(app);
+            app.exit(0);
+        }
+        _ => {}
+    }
+}
+
+/// Invoked from the custom tray popover (tray-menu.html) when an item is clicked.
+#[tauri::command]
+fn tray_action(app: AppHandle, id: String) {
+    handle_tray_action(&app, &id);
+}
+
+/// Show the custom HTML tray popover anchored just below the menu-bar icon.
+/// `icon` is the tray icon's screen rect in physical pixels. Toggles: a second
+/// click while visible hides it (native-menu behavior).
+fn show_tray_popover(app: &AppHandle, icon_x: f64, icon_y: f64, icon_h: f64) {
+    let Some(win) = app.get_webview_window("tray_menu") else { return };
+    if win.is_visible().unwrap_or(false) {
+        let _ = win.hide();
+        return;
+    }
+    // If we just hid (because this very click blurred the open popover), don't
+    // reopen — treat the icon as a toggle.
+    if let Some(t) = *app.state::<Backend>().popover_hidden_at.lock().unwrap() {
+        if t.elapsed() < Duration::from_millis(250) {
+            return;
+        }
+    }
+    // Left-align the popover under the icon (like a native menu) and drop it just
+    // below the menu bar. Position is in physical pixels to match the icon rect.
+    let _ = win.set_position(tauri::PhysicalPosition::new(icon_x, icon_y + icon_h));
+    let _ = win.show();
+    let _ = win.set_focus();
+}
+
 fn main() {
     // Note: no single-instance plugin. It was added to stop "duplicate dock
     // icons" that turned out to be stale Launch Services entries, not real second
@@ -374,7 +464,9 @@ fn main() {
         .manage(Backend {
             child: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
+            popover_hidden_at: Mutex::new(None),
         })
+        .invoke_handler(tauri::generate_handler![tray_action])
         .setup(|app| {
             // Menu-bar product: no Dock icon. The orb lives as an always-on-top
             // popover summoned via ⌃⌥ and toggled from the tray.
@@ -387,107 +479,65 @@ fn main() {
 
             // Menu bar = status + toggles + links only, never a form (settings IA
             // invariant 3): Open VALET · Toggle Listening · Settings… · Account ↗ ·
-            // Restart server · Quit. Left-click opens the orb; right-click the menu.
-            // Each item carries a black line-icon (SF Symbol rendered to PNG) so
-            // the menu matches the design mockup. macOS draws the menu white-on-
-            // light / dark in dark mode; the icons are black for the light menu.
-            let open_item = IconMenuItem::with_id(
-                app, "open", "Open VALET", true,
-                Some(tauri::include_image!("icons/menu/open.png")), None::<&str>)?;
-            let listen = IconMenuItem::with_id(
-                app, "toggle_listen", "Toggle Listening", true,
-                Some(tauri::include_image!("icons/menu/listen.png")), None::<&str>)?;
-            let settings = IconMenuItem::with_id(
-                app, "settings", "Settings…", true,
-                Some(tauri::include_image!("icons/menu/settings.png")), None::<&str>)?;
-            let account = IconMenuItem::with_id(
-                app, "account", "Account ↗", true,
-                Some(tauri::include_image!("icons/menu/account.png")), None::<&str>)?;
-            let restart = IconMenuItem::with_id(
-                app, "restart", "Restart server", true,
-                Some(tauri::include_image!("icons/menu/restart.png")), None::<&str>)?;
-            let replay = IconMenuItem::with_id(
-                app, "replay_setup", "Restart onboarding", true,
-                Some(tauri::include_image!("icons/menu/replay.png")), None::<&str>)?;
-            let quit = IconMenuItem::with_id(
-                app, "quit", "Quit VALET", true,
-                Some(tauri::include_image!("icons/menu/quit.png")), None::<&str>)?;
-            // Grouped with separators (per the menu mockup): primary actions ·
-            // maintenance · quit.
-            let sep1 = PredefinedMenuItem::separator(app)?;
-            let sep2 = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(
+            // Restart server · Restart onboarding · Quit. The macOS status-bar
+            // dropdown is a system-owned surface that follows the SYSTEM appearance
+            // (dark menu in Dark Mode) and exposes no supported way to force it
+            // white — Tauri 2 also seals its underlying NSMenu handle. So instead of
+            // a native NSMenu we render our OWN borderless webview popover
+            // (loading/tray-menu.html), which we style white unconditionally. The
+            // tray icon left-click toggles it; items call back via the `tray_action`
+            // command into the same handler the native menu used.
+            let popover = WebviewWindowBuilder::new(
                 app,
-                &[
-                    &open_item, &listen, &settings, &account,
-                    &sep1,
-                    &restart, &replay,
-                    &sep2,
-                    &quit,
-                ],
-            )?;
+                "tray_menu",
+                WebviewUrl::App("tray-menu.html".into()),
+            )
+            .title("VALET menu")
+            .inner_size(232.0, 286.0)
+            .resizable(false)
+            .decorations(false)
+            .transparent(true) // window is transparent; the card draws its own shadow
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .shadow(false)
+            .visible(false)
+            .focused(false)
+            .build();
+            if let Err(e) = popover {
+                eprintln!("[valet] tray popover failed to build: {e}");
+            }
+
             // Monochrome orb mark (black on transparent), marked as a TEMPLATE so
             // macOS renders it in the menu-bar text colour — black on a light bar,
             // white on a dark bar — instead of the blue-on-black app icon. Embedded
-            // at compile time (default_window_icon() can be None in dev).
+            // at compile time (default_window_icon() can be None in dev). No native
+            // `.menu()` — we summon the custom popover from the click event instead.
             let tray = TrayIconBuilder::with_id("valet-tray")
                 .icon(tauri::include_image!("icons/tray@2x.png"))
                 .icon_as_template(true)
-                .menu(&menu)
-                .show_menu_on_left_click(true)  // one click opens the menu
-                .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "open" => show_main(app),
-                    "toggle_listen" => {
-                        // Flip Active/Asleep via the SAME path as the in-orb toggle
-                        // (one source of truth); the orb shows the live status.
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.eval(
-                                "window.__valetToggleListening && window.__valetToggleListening()");
-                        }
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    // Any mouse-up on the icon toggles the popover, anchored to the
+                    // icon's screen rect (physical px).
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        rect,
+                        ..
+                    } = event
+                    {
+                        // rect.position / .size are dpi enums; on macOS the tray
+                        // reports physical px. Pull them out as f64 either way.
+                        let (x, y) = match rect.position {
+                            tauri::Position::Physical(p) => (p.x as f64, p.y as f64),
+                            tauri::Position::Logical(p) => (p.x, p.y),
+                        };
+                        let h = match rect.size {
+                            tauri::Size::Physical(s) => s.height as f64,
+                            tauri::Size::Logical(s) => s.height,
+                        };
+                        show_tray_popover(tray.app_handle(), x, y, h);
                     }
-                    "settings" => {
-                        // Open the in-app settings panel from the menu bar (replaces
-                        // the in-orb three-dots button). Show the orb, then call the
-                        // frontend hook via eval (no Tauri JS API needed).
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                            let _ = win.eval(
-                                "window.__valetOpenSettings && window.__valetOpenSettings()");
-                        }
-                    }
-                    "replay_setup" => {
-                        // Re-run the first-run wizard on demand. Call the frontend
-                        // hook directly (no reload) so the AudioContext stays unlocked
-                        // and Vee starts narrating the instant the wizard appears.
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                            let _ = win.eval(
-                                "window.__valetReplayOnboarding && window.__valetReplayOnboarding()");
-                        }
-                    }
-                    "account" => {
-                        // Account/billing/license live on the web (IA invariant 2).
-                        let _ = std::process::Command::new("open")
-                            .arg("https://valetvoice.vercel.app/account")
-                            .spawn();
-                    }
-                    "restart" => {
-                        // Restart the backend via its endpoint (the Tauri shell
-                        // respawns the sidecar). Spawned so the menu handler returns.
-                        tauri::async_runtime::spawn(async {
-                            let _ = reqwest::Client::new()
-                                .post(format!("{BACKEND_URL}/api/restart"))
-                                .send()
-                                .await;
-                        });
-                    }
-                    "quit" => {
-                        shutdown_backend(app);
-                        app.exit(0);
-                    }
-                    _ => {}
                 })
                 .build(app);
             // Don't let a tray failure take down the whole app — log it and keep
@@ -499,6 +549,17 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The custom tray popover dismisses on focus loss (click elsewhere /
+            // Esc), matching native menu behavior. The webview also hides itself on
+            // blur; this is the Rust-side backstop.
+            if window.label() == "tray_menu" {
+                if let WindowEvent::Focused(false) = event {
+                    let _ = window.hide();
+                    *window.app_handle().state::<Backend>().popover_hidden_at.lock().unwrap() =
+                        Some(Instant::now());
+                }
+                return;
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Menu-bar app: closing the orb HIDES it (quit is via the tray), so
                 // the app keeps living in the menu bar instead of exiting. Other

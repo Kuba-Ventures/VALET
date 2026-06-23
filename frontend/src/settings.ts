@@ -138,7 +138,7 @@ function buildPanelHTML(): string {
           <div class="mono-eyebrow-row">
             <span class="mono-eyebrow">Permissions</span>
             <span class="mono-legend">
-              <span class="mono-legend-item"><span class="mono-dot on"></span>ok</span>
+              <span class="mono-legend-item"><span class="mono-dot on"></span>granted</span>
               <span class="mono-legend-item"><span class="mono-dot"></span>needs action</span>
             </span>
           </div>
