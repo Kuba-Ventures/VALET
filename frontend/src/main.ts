@@ -708,16 +708,15 @@ const wakeLabelEl = btnWakeToggle.querySelector(".wake-label")!;
 const btnMenu = document.getElementById("btn-menu")!;
 
 function applyWakeVisuals() {
-  const ptt = isPushToTalkEnabled();
-  const pttMode = isSleeping && ptt;       // wake mic off, but hold-⌥ ready
-  const trulyAsleep = isSleeping && !ptt;  // no wake, no PTT → fully off
-  btnWakeToggle.classList.toggle("sleeping", trulyAsleep);
-  btnWakeToggle.classList.toggle("ptt-mode", pttMode);
-  wakeLabelEl.textContent = !isSleeping
-    ? "Always listening"
-    : (ptt ? "Push-to-talk" : "Sleeping");
-  // Only the truly-off state dims the orb — PTT mode is READY, not asleep.
-  document.body.classList.toggle("wake-sleeping", trulyAsleep);
+  // The pill is a single "Always listening" toggle now: ON = wake mic open,
+  // OFF = wake mic closed. Push-to-talk (⌃⌥) is native and always works either
+  // way, so it's no longer shown as a status. The orb stays bright in both
+  // states (OFF is "ready", not asleep), per the always-visible look.
+  const on = !isSleeping;
+  btnWakeToggle.classList.toggle("on", on);
+  btnWakeToggle.classList.toggle("off", !on);
+  wakeLabelEl.textContent = "Always listening";
+  document.body.classList.remove("wake-sleeping");
   updatePttHint();
   updateStatus(currentState);
 }
