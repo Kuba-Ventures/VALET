@@ -7379,10 +7379,42 @@ def _input_monitoring_granted():
         return None
 
 
+def _speech_recognition_granted():
+    """Live Speech Recognition TCC check via SFSpeechRecognizer.authorizationStatus
+    (no prompt). 3 = authorized. None if the Speech framework can't be imported."""
+    try:
+        import Speech
+        return Speech.SFSpeechRecognizer.authorizationStatus() == 3
+    except Exception:
+        return None
+
+
+def _automation_granted() -> Optional[bool]:
+    """Live Automation check: send a harmless Apple Event to System Events. Once
+    the grant is DETERMINED (granted or denied), osascript returns immediately
+    (rc 0 = granted, error -1743 = denied), so this is non-prompting and reflects
+    the live state — fixing the "re-check resets to Enable" problem. Only the
+    never-asked state would prompt; a short timeout caps that. Returns None on a
+    timeout (treated as undetermined) so the UI keeps offering Enable."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", 'tell application "System Events" to count processes'],
+            capture_output=True, timeout=4,
+        )
+        return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:
+        return None
+
+
 @app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
     Automation prompts per-app on first use; Accessibility is post-v1."""
+    # Automation runs a (possibly blocking) Apple Event, so do it off the loop.
+    automation_granted = await asyncio.to_thread(_automation_granted)
     return {
         "microphone": {
             "granted": None,  # prompts on first voice use; no clean pre-check without pyobjc
@@ -7403,7 +7435,7 @@ async def api_permissions_status():
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
         },
         "automation": {
-            "granted": None,  # macOS prompts the first time each app is targeted
+            "granted": automation_granted,  # live Apple Event check (non-prompting once determined)
             "label": "Automation",
             "why": "Drive Calendar, Mail, Notes and Chrome via AppleScript.",
             "note": "Granted per app the first time VALET controls it.",
@@ -7427,7 +7459,7 @@ async def api_permissions_status():
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         },
         "speech_recognition": {
-            "granted": None,  # webview-side (WKWebView) — can't pre-detect from here
+            "granted": _speech_recognition_granted(),  # SFSpeechRecognizer.authorizationStatus
             "label": "Speech Recognition",
             "why": "Hear and transcribe your voice in the app. Separate from Microphone — the app needs both.",
             "note": "Required for voice in the desktop app. Grant it, then relaunch VALET.",

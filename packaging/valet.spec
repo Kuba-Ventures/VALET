@@ -41,7 +41,7 @@ hiddenimports = [
     "licensing", "action_executor", "applescript_executor", "safe_executor",
     "safety", "voice_text", "task_manager", "project_scanner", "design_partner",
     "accessibility_executor", "composite_executor", "apple_calendar",
-    "contacts_access", "Quartz", "AppKit", "EventKit", "Contacts",
+    "contacts_access", "Quartz", "AppKit", "EventKit", "Contacts", "Speech",
     # UC1: AX tree + AXIsProcessTrusted (ApplicationServices, which pulls CoreText).
     "ApplicationServices", "CoreText",
     "observability", "sentry_sdk", "anthropic", "httpx", "uvicorn", "uvicorn.lifespan.on",
@@ -63,6 +63,12 @@ hiddenimports += _ek_hidden
 _cn_datas, _cn_binaries, _cn_hidden = collect_all("Contacts")
 datas += _cn_datas
 hiddenimports += _cn_hidden
+
+# Speech framework — FULL collection so SFSpeechRecognizer resolves in the signed
+# build (the Speech Recognition permission check in /api/permissions/status).
+_sp_datas, _sp_binaries, _sp_hidden = collect_all("Speech")
+datas += _sp_datas
+hiddenimports += _sp_hidden
 
 # Quartz (CGEvent synthetic input) + ApplicationServices (AXUIElement tree,
 # AXIsProcessTrusted) — UC1 universal control. Same FULL collection as EventKit:
