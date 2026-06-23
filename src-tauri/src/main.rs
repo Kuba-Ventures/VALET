@@ -467,13 +467,10 @@ fn tray_action(app: AppHandle, id: String) {
     handle_tray_action(&app, &id);
 }
 
-/// Show the custom HTML tray popover anchored directly under the menu-bar icon.
-/// Positioning is handled by tauri-plugin-positioner from the cached tray rect,
-/// so it lands correctly on any monitor / scale / bar position. Toggles: a
-/// second click while visible hides it (native-menu behavior).
+/// Show the custom HTML tray popover anchored directly under the menu-bar icon,
+/// on whichever monitor the user clicked. Toggles: a second click while visible
+/// hides it (native-menu behavior).
 fn show_tray_popover(app: &AppHandle) {
-    use tauri_plugin_positioner::{Position, WindowExt};
-
     let Some(win) = app.get_webview_window("tray_menu") else { return };
     if win.is_visible().unwrap_or(false) {
         let _ = win.hide();
@@ -486,10 +483,70 @@ fn show_tray_popover(app: &AppHandle) {
             return;
         }
     }
-    // Center the popover just below the clicked icon, clamped to the screen.
-    let _ = win.move_window(Position::TrayBottomCenter);
+    position_popover_under_tray(app, &win);
     let _ = win.show();
     let _ = win.set_focus();
+}
+
+/// Place the tray popover directly below the menu-bar icon on the monitor the
+/// user clicked. tauri-plugin-positioner's `TrayBottomCenter` mis-maps the cached
+/// tray rect across displays — on a multi-monitor setup the popover lands on a
+/// side display (and "flashes" there on rapid clicks) instead of under the icon.
+/// So we compute the anchor ourselves, in LOGICAL POINTS, mirroring
+/// `reposition_to_active_monitor`: macOS keeps one global point space,
+/// `cursor_position()` reports points scaled by the PRIMARY display's factor,
+/// `monitor.position()` is points, and `monitor.size()` is physical px (→ /scale
+/// for point size). The cursor sits on the icon at click time, so its x is the
+/// icon's center and the monitor under it is the one whose menu bar was clicked.
+fn position_popover_under_tray(app: &AppHandle, win: &tauri::WebviewWindow) {
+    let (Ok(cursor), Ok(monitors)) = (app.cursor_position(), app.available_monitors()) else {
+        // Couldn't read cursor/monitors — fall back to the plugin's best effort.
+        use tauri_plugin_positioner::{Position, WindowExt};
+        let _ = win.move_window(Position::TrayBottomCenter);
+        return;
+    };
+    let primary_scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(2.0);
+    let gx = cursor.x / primary_scale; // icon center x ≈ cursor x at click (points)
+    let gy = cursor.y / primary_scale;
+
+    // Monitor under the cursor = the display whose menu bar was clicked.
+    let target = monitors.iter().find_map(|m| {
+        let scale = m.scale_factor();
+        let pos = m.position();
+        let mx = pos.x as f64;
+        let my = pos.y as f64;
+        let mw = m.size().width as f64 / scale;
+        let mh = m.size().height as f64 / scale;
+        if gx >= mx && gx < mx + mw && gy >= my && gy < my + mh {
+            Some((mx, my, mw))
+        } else {
+            None
+        }
+    });
+    let Some((mx, my, mw)) = target else {
+        use tauri_plugin_positioner::{Position, WindowExt};
+        let _ = win.move_window(Position::TrayBottomCenter);
+        return;
+    };
+
+    // Popover window is fixed-size (232×286, see builder). Center it under the icon
+    // and drop it just below the menu bar, clamped to the monitor's horizontal
+    // bounds (small inset so the card's drop shadow isn't clipped at the edge). The
+    // card itself is inset inside the transparent window (8px top / 10px sides of
+    // shadow padding), so the visible menu sits a hair below the bar with a gap.
+    const WIN_W: f64 = 232.0;
+    const MENUBAR_H: f64 = 24.0; // macOS menu-bar height in points
+    const EDGE_INSET: f64 = 4.0;
+    let min_x = mx + EDGE_INSET;
+    let max_x = mx + mw - WIN_W - EDGE_INSET;
+    let tx = (gx - WIN_W / 2.0).clamp(min_x, max_x.max(min_x));
+    let ty = my + MENUBAR_H;
+    let _ = win.set_position(tauri::LogicalPosition::new(tx, ty));
 }
 
 fn main() {
