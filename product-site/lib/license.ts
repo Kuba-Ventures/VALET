@@ -131,6 +131,17 @@ export async function upsertLicenseFromSubscription(
 
   const email = await resolveCustomerEmail(sub.customer);
 
+  // The account UUID is stamped onto the subscription at checkout time
+  // (subscription_data.metadata.valet_user_id) when the buyer was signed in —
+  // always true for the VIP/comp flow, which now gates on login. This binds the
+  // license to the account directly on insert, so it no longer depends on the
+  // fragile email-match auto-claim (which left rows with NULL user_id whenever
+  // the Stripe email was missing or differed from the account email).
+  const valetUserId =
+    typeof sub.metadata?.valet_user_id === "string" && sub.metadata.valet_user_id
+      ? sub.metadata.valet_user_id
+      : null;
+
   const base: Record<string, unknown> = {
     stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
@@ -143,6 +154,9 @@ export async function upsertLicenseFromSubscription(
   // Only set the email when we actually resolved one, so we never overwrite a
   // good address with null on a later lifecycle update.
   if (email) base.customer_email = email;
+  // Likewise only set the owner when we have one, so a later lifecycle update
+  // (which may carry no metadata) never unlinks an already-claimed license.
+  if (valetUserId) base.user_id = valetUserId;
 
   // A single signup fires several events almost simultaneously
   // (customer.subscription.created / .updated + checkout.session.completed, and
