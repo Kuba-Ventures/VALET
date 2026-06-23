@@ -346,11 +346,64 @@ fn shutdown_backend(app: &AppHandle) {
 
 /// Bring the orb popover to the front (tray "Open VALET" + left-click). The orb
 /// is the always-on status surface, so the tray opens it rather than toggling it.
+/// If the saved position lands the window on a DIFFERENT monitor than the one the
+/// user is on (cursor / where they clicked the tray), re-center it on the active
+/// monitor — otherwise it occasionally opens on a side display. When it's already
+/// on the active monitor, its position is left untouched (respects manual drags).
 fn show_main(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.show();
-        let _ = win.set_focus();
+    let Some(win) = app.get_webview_window("main") else { return };
+    reposition_to_active_monitor(app, &win);
+    let _ = win.show();
+    let _ = win.set_focus();
+}
+
+/// Move `win` to the monitor under the cursor, centered, but only if it isn't
+/// already on that monitor. Coordinate handling mirrors the cursor overlay:
+/// macOS keeps one global space in LOGICAL POINTS, `cursor_position()` reports
+/// points scaled by the PRIMARY monitor's factor, `monitor.position()` is points,
+/// and `monitor.size()` is physical px (→ /scale for point size).
+fn reposition_to_active_monitor(app: &AppHandle, win: &tauri::WebviewWindow) {
+    let (Ok(cursor), Ok(monitors)) = (app.cursor_position(), app.available_monitors()) else {
+        return;
+    };
+    let primary_scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(2.0);
+    let gx = cursor.x / primary_scale;
+    let gy = cursor.y / primary_scale;
+
+    // Find the monitor (as a point rect) containing the cursor.
+    let target = monitors.iter().find_map(|m| {
+        let scale = m.scale_factor();
+        let pos = m.position();
+        let mx = pos.x as f64;
+        let my = pos.y as f64;
+        let mw = m.size().width as f64 / scale;
+        let mh = m.size().height as f64 / scale;
+        if gx >= mx && gx < mx + mw && gy >= my && gy < my + mh {
+            Some((mx, my, mw, mh))
+        } else {
+            None
+        }
+    });
+    let Some((mx, my, mw, mh)) = target else { return };
+
+    // Already on this monitor? Leave the user's position alone.
+    if let Ok(Some(cur)) = win.current_monitor() {
+        let cp = cur.position();
+        if (cp.x as f64 - mx).abs() < 1.0 && (cp.y as f64 - my).abs() < 1.0 {
+            return;
+        }
     }
+
+    // Center the fixed-size (380×560) window on the active monitor (point coords).
+    let (win_w, win_h) = (380.0_f64, 560.0_f64);
+    let tx = mx + (mw - win_w) / 2.0;
+    let ty = my + (mh - win_h) / 2.0;
+    let _ = win.set_position(tauri::LogicalPosition::new(tx, ty));
 }
 
 /// Run a tray-menu action by id. Shared by the custom HTML popover (`tray_action`
@@ -367,11 +420,10 @@ fn handle_tray_action(app: &AppHandle, id: &str) {
             }
         }
         "settings" => {
-            // Open the in-app settings panel; show the orb, then call the frontend
-            // hook via eval (no Tauri JS API needed).
+            // Open the in-app settings panel on the active monitor, then call the
+            // frontend hook via eval (no Tauri JS API needed).
+            show_main(app);
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
                 let _ = win.eval(
                     "window.__valetOpenSettings && window.__valetOpenSettings()");
             }
@@ -379,9 +431,8 @@ fn handle_tray_action(app: &AppHandle, id: &str) {
         "replay_setup" => {
             // Re-run the first-run wizard on demand (no reload, so the AudioContext
             // stays unlocked and Vee starts narrating immediately).
+            show_main(app);
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
                 let _ = win.eval(
                     "window.__valetReplayOnboarding && window.__valetReplayOnboarding()");
             }
