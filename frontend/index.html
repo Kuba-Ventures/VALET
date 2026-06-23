@@ -17,6 +17,14 @@
          (#controls, reply, panels) sit above it and stay clickable. -->
     <div id="drag-bar" data-tauri-drag-region></div>
 
+    <!-- Native-style window controls (top-left), available across the whole app
+         (not just onboarding): close hides the popover, minimize hides to the
+         menu bar. They sit above the drag layer so clicks land on them. -->
+    <div id="window-lights">
+      <button id="win-close" class="win-light close" type="button" aria-label="Hide window" title="Hide"></button>
+      <button id="win-min" class="win-light min" type="button" aria-label="Minimize" title="Minimize"></button>
+    </div>
+
     <canvas id="orb-canvas"></canvas>
 
     <!-- Minimal controls — top right -->

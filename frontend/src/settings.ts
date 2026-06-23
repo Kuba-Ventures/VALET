@@ -5,8 +5,6 @@
  * Slides in from the right with glass-morphism styling.
  */
 
-import { isPushToTalkEnabled, setPushToTalkEnabled, pushToTalkKeyLabel } from "./pushToTalk";
-
 // Eye icons for the password show/hide toggle (open = will reveal, slashed = will hide).
 const EYE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
@@ -104,49 +102,46 @@ function buildPanelHTML(): string {
 
       <div class="settings-body">
 
-        <!-- ─── COMPUTER SETTINGS TAB ───────────────────────────────── -->
-        <div class="settings-tab-content" data-tab="computer" id="tab-content-computer">
+        <!-- ─── COMPUTER SETTINGS TAB (monochrome — refined dark) ───────── -->
+        <div class="settings-tab-content console-mono" data-tab="computer" id="tab-content-computer">
 
-        <!-- License (offline/advanced activation; plan & billing are web-owned) -->
+        <!-- VOICE & INPUT -->
         <section class="settings-section" id="section-api-keys">
-          <h3>License</h3>
+          <div class="mono-eyebrow">Voice &amp; Input</div>
 
-          <div class="settings-field">
-            <label>Offline activation key</label>
-            <div class="settings-input-row">
-              <input type="password" id="input-license-key" placeholder="PRODUCT-XXXX-XXXX-XXXX-XXXX" />
-              <button class="settings-btn" id="btn-test-license">Test</button>
-              <span class="status-dot" id="status-license"></span>
+          <div class="mono-seg settings-voice-toggle setup-hide">
+            <button class="voice-opt active" id="voice-male" data-voice="male" type="button">British Male</button>
+            <button class="voice-opt" id="voice-female" data-voice="female" type="button">British Female</button>
+          </div>
+
+          <div class="mono-row setup-hide">
+            <div class="mono-row-text">
+              <div class="mono-row-title">Always listening</div>
+              <div class="mono-row-sub">On: responds to “Hey Vee”. Off: hold ⌃⌥ to talk</div>
             </div>
-            <div class="settings-hint">Normally you just sign in (Account &amp; You) and your license activates automatically. Paste a key here only to activate offline. Manage your plan, billing, and license at <a href="https://valetvoice.vercel.app/account" target="_blank" rel="noreferrer">your account ↗</a>.</div>
+            <label class="mono-switch"><input type="checkbox" id="input-always-listening" /><span class="mono-slider"></span></label>
           </div>
 
-          <div class="settings-field setup-hide">
-            <label>Voice</label>
-            <div class="settings-input-row settings-voice-toggle">
-              <button class="settings-btn voice-opt active" id="voice-male" data-voice="male" type="button">British Male</button>
-              <button class="settings-btn voice-opt" id="voice-female" data-voice="female" type="button">British Female</button>
+          <div class="mono-row setup-hide">
+            <div class="mono-row-text">
+              <div class="mono-row-title">Share crash reports</div>
+              <div class="mono-row-sub">Error metadata only, never content</div>
             </div>
-          </div>
-
-          <div class="settings-field setup-hide">
-            <label class="settings-check"><input type="checkbox" id="input-push-to-talk" /> Push-to-talk</label>
-            <div class="settings-hint">Hold <strong id="ptt-key-label">Space</strong> to talk instantly, skipping the wake word. Release to send. The wake word still works as usual.</div>
-          </div>
-
-          <div class="settings-field setup-hide">
-            <label class="settings-check"><input type="checkbox" id="input-telemetry" /> Share crash + error reports</label>
-            <div class="settings-hint">On by default; turn it off anytime. Sends error metadata only, never file contents, messages, or prompts. <a href="https://valetvoice.vercel.app/privacy" target="_blank" rel="noreferrer">Privacy</a></div>
-          </div>
-
-          <div class="settings-actions">
-            <button class="settings-btn primary" id="btn-save-keys">Save</button>
+            <label class="mono-switch"><input type="checkbox" id="input-telemetry" /><span class="mono-slider"></span></label>
           </div>
         </section>
 
-        <!-- Permissions (Console) — grant the macOS access Vee needs -->
+        <div class="mono-divider"></div>
+
+        <!-- PERMISSIONS -->
         <section class="settings-section" id="section-permissions">
-          <h3>Permissions</h3>
+          <div class="mono-eyebrow-row">
+            <span class="mono-eyebrow">Permissions</span>
+            <span class="mono-legend">
+              <span class="mono-legend-item"><span class="mono-dot on"></span>ok</span>
+              <span class="mono-legend-item"><span class="mono-dot"></span>needs action</span>
+            </span>
+          </div>
           <div class="perm-list" id="settings-perm-list">
             <div class="account-hint">Checking permissions…</div>
           </div>
@@ -155,49 +150,60 @@ function buildPanelHTML(): string {
           </div>
         </section>
 
-        <!-- Connectors (Console) — external accounts Vee can reach -->
-        <section class="settings-section" id="section-accounts">
-          <h3>Connectors</h3>
-          <div class="settings-field">
-            <label>Google Account</label>
-            <div class="account-row">
-              <span class="status-dot" id="status-google"></span>
-              <span id="google-email-label">Not connected</span>
-              <button class="settings-btn" id="btn-google-connect" style="margin-left:auto">Connect</button>
-              <button class="settings-btn" id="btn-google-disconnect" style="display:none">Disconnect</button>
-            </div>
-            <div class="account-hint" id="google-hint">Connecting will open Google's consent screen in a new browser tab.</div>
-          </div>
-        </section>
+        <div class="mono-divider"></div>
 
-        <!-- Contacts are managed on the web account dashboard (not in-app). -->
-
-        <!-- Connection Status (Computer) -->
+        <!-- THIS MAC -->
         <section class="settings-section" id="section-status">
-          <h3>Connection Status</h3>
-          <div class="status-grid">
-            <div class="status-row"><span class="status-dot" id="status-claude-cli"></span><span>Claude Code CLI</span></div>
-            <div class="status-row"><span class="status-dot" id="status-calendar"></span><span>Google Calendar</span></div>
-            <div class="status-row"><span class="status-dot" id="status-mail"></span><span>Gmail</span></div>
-            <div class="status-row"><span class="status-dot" id="status-notes"></span><span>Apple Notes</span></div>
-            <div class="status-row"><span class="status-dot" id="status-server"></span><span>Server</span><span class="status-detail" id="status-server-detail"></span></div>
+          <div class="mono-eyebrow">This Mac</div>
+          <div class="mono-row mono-server">
+            <span class="status-dot" id="status-server"></span>
+            <span class="mono-row-title">Server</span>
+            <span class="status-detail" id="status-server-detail"></span>
           </div>
+          <div class="mono-conn-grid">
+            <div class="mono-conn"><span class="status-dot" id="status-claude-cli"></span><span>Claude Code</span></div>
+            <div class="mono-conn"><span class="status-dot" id="status-calendar"></span><span>Calendar</span></div>
+            <div class="mono-conn"><span class="status-dot" id="status-mail"></span><span>Gmail</span></div>
+            <div class="mono-conn"><span class="status-dot" id="status-notes"></span><span>Apple Notes</span></div>
+          </div>
+          <button class="settings-btn mono-restart" id="btn-restart-server" type="button">Restart server</button>
         </section>
 
-        <!-- System Info (Computer) -->
-        <section class="settings-section" id="section-sysinfo">
-          <h3>System Info</h3>
+        <!-- Advanced: offline license, Google connector, raw system info (kept for
+             function; the section IDs are preserved for the first-run setup flow). -->
+        <details class="mono-advanced" id="section-sysinfo">
+          <summary>Advanced</summary>
+
+          <section id="section-accounts">
+            <div class="settings-field">
+              <label>Offline activation key</label>
+              <div class="settings-input-row">
+                <input type="password" id="input-license-key" placeholder="PRODUCT-XXXX-XXXX-XXXX-XXXX" />
+                <button class="settings-btn" id="btn-test-license">Test</button>
+                <span class="status-dot" id="status-license"></span>
+              </div>
+              <div class="settings-hint">Plan, billing and license live at <a href="https://valetvoice.vercel.app/account" target="_blank" rel="noreferrer">your account ↗</a>. Paste a key here only to activate offline.</div>
+              <div class="settings-actions"><button class="settings-btn" id="btn-save-keys">Save</button></div>
+            </div>
+            <div class="settings-field">
+              <label>Google Account</label>
+              <div class="account-row">
+                <span class="status-dot" id="status-google"></span>
+                <span id="google-email-label">Not connected</span>
+                <button class="settings-btn" id="btn-google-connect" style="margin-left:auto">Connect</button>
+                <button class="settings-btn" id="btn-google-disconnect" style="display:none">Disconnect</button>
+              </div>
+              <div class="account-hint" id="google-hint">Connecting opens Google's consent screen in a new tab.</div>
+            </div>
+          </section>
+
           <div class="sysinfo-grid">
             <div class="sysinfo-row"><span class="sysinfo-label">Memory entries</span><span id="sysinfo-memory">--</span></div>
             <div class="sysinfo-row"><span class="sysinfo-label">Tasks</span><span id="sysinfo-tasks">--</span></div>
             <div class="sysinfo-row"><span class="sysinfo-label">Server port</span><span id="sysinfo-port">--</span></div>
             <div class="sysinfo-row"><span class="sysinfo-label">Uptime</span><span id="sysinfo-uptime">--</span></div>
           </div>
-          <div class="settings-field">
-            <button class="settings-btn" id="btn-restart-server" type="button">Restart server</button>
-            <div class="settings-hint">Restarts VALET's backend on this Mac. The app reconnects automatically.</div>
-          </div>
-        </section>
+        </details>
 
         </div>
         <!-- ─── /COMPUTER SETTINGS TAB ──────────────────────────────── -->
@@ -211,16 +217,18 @@ function buildPanelHTML(): string {
           <h3>Account</h3>
           <!-- Signed-in state (shown once an account email is on file) -->
           <div id="account-signedin" style="display:none">
-            <div class="settings-hint">Signed in as <strong id="account-name-label"></strong></div>
-            <div class="account-meta">
-              <div><span class="account-meta-k">Plan</span><span id="account-plan-label">—</span></div>
-              <div><span class="account-meta-k">License</span><span id="account-license-label" class="account-license">—</span></div>
-            </div>
-            <div class="settings-hint" style="margin-top:8px"><a href="https://valetvoice.vercel.app/account" target="_blank" rel="noreferrer">Manage account &amp; contacts in your browser ↗</a></div>
-            <div class="settings-actions">
-              <span class="settings-hint" id="login-status-in"></span>
+            <div class="acct-row">
+              <div class="acct-avatar" id="account-avatar">·</div>
+              <div class="acct-id">
+                <div class="acct-name-line">
+                  <strong id="account-name-label"></strong>
+                  <span class="acct-badge" id="account-plan-label">—</span>
+                </div>
+                <div class="acct-sub">Signed in</div>
+              </div>
               <button class="settings-btn" id="btn-account-signout">Sign out</button>
             </div>
+            <span class="settings-hint" id="login-status-in"></span>
           </div>
           <!-- Sign-in form -->
           <div id="account-form">
@@ -243,12 +251,13 @@ function buildPanelHTML(): string {
           </div>
         </section>
 
-        <!-- User Preferences -->
+        <!-- How VALET addresses you (the only per-machine identity bits; the rest
+             lives on the web dashboard). Auto-saved on change. -->
         <section class="settings-section" id="section-preferences">
-          <h3>User Preferences</h3>
+          <h3>How VALET addresses you</h3>
 
           <div class="settings-field">
-            <label>Your Name</label>
+            <label>Your name</label>
             <input type="text" id="input-user-name" placeholder="Your name" />
           </div>
 
@@ -261,43 +270,20 @@ function buildPanelHTML(): string {
             </select>
           </div>
 
-          <div class="settings-field">
-            <label>Calendar Accounts</label>
-            <textarea id="input-calendar-accounts" rows="2" placeholder="auto (or comma-separated emails)"></textarea>
-          </div>
-
-          <div class="settings-actions">
-            <button class="settings-btn primary" id="btn-save-prefs">Save Preferences</button>
-          </div>
+          <div class="acct-saved" id="prefs-saved">Saved automatically</div>
         </section>
 
-        <!-- Personalized -->
-        <section class="settings-section" id="section-personalized">
-          <h3>Personalized</h3>
-
-          <div class="settings-field">
-            <label>Date of Birth</label>
-            <input type="date" id="input-date-of-birth" />
-          </div>
-
-          <div class="settings-field">
-            <label>Location</label>
-            <input type="text" id="input-location" placeholder="City, State (used for weather and local context)" />
-          </div>
-
-          <div class="settings-field">
-            <label>About You, written by VALET</label>
-            <div class="bio-summary" id="bio-summary-display">VALET hasn't built your profile yet. Click Regenerate after a few conversations.</div>
-            <div class="bio-meta">
-              <span id="bio-source-count">0 notes</span>
-              <span class="bio-meta-sep">·</span>
-              <span id="bio-updated">never updated</span>
-            </div>
-          </div>
-
-          <div class="settings-actions">
-            <button class="settings-btn" id="btn-regenerate-bio">Regenerate Profile</button>
-            <button class="settings-btn primary" id="btn-save-personalized">Save Personalized</button>
+        <!-- Everything else is managed on the web account (single source of truth). -->
+        <section class="settings-section">
+          <div class="web-card">
+            <div class="web-card-title">Manage everything else on the web</div>
+            <div class="web-card-sub">Your profile and about-you, billing and license, and connected accounts.</div>
+            <ul class="web-card-list">
+              <li>Profile, location and personalization</li>
+              <li>Plan, billing and license</li>
+              <li>Connected accounts</li>
+            </ul>
+            <a class="settings-btn primary web-card-btn" href="https://valetvoice.vercel.app/account" target="_blank" rel="noreferrer">Open dashboard ↗</a>
           </div>
         </section>
 
@@ -412,10 +398,12 @@ function renderAccountState(
   if (email) {
     const nameLabel = document.getElementById("account-name-label");
     const planLabel = document.getElementById("account-plan-label");
-    const licLabel = document.getElementById("account-license-label");
-    if (nameLabel) nameLabel.textContent = (opts.name && opts.name.trim()) || email;
-    if (planLabel) planLabel.textContent = opts.plan || "—";
-    if (licLabel) licLabel.textContent = opts.licenseKey || "—";
+    const avatar = document.getElementById("account-avatar");
+    const display = (opts.name && opts.name.trim()) || email;
+    const first = display.split(/[\s@]/)[0] || display;
+    if (nameLabel) nameLabel.textContent = first;
+    if (planLabel) planLabel.textContent = (opts.plan || "").toUpperCase() || "ACTIVE";
+    if (avatar) avatar.textContent = (first[0] || "·").toUpperCase();
     if (form) form.style.display = "none";
     if (signedIn) signedIn.style.display = "";
   } else {
@@ -629,17 +617,16 @@ function wireEvents() {
     const on = (e.target as HTMLInputElement).checked;
     await apiPost("/api/settings/keys", { key_name: "VALET_TELEMETRY", key_value: on ? "on" : "off" });
   });
-  // Push-to-talk (PR 2) — frontend-only preference in localStorage; default off.
-  const pttCheckbox = document.getElementById("input-push-to-talk") as HTMLInputElement | null;
-  if (pttCheckbox) {
-    pttCheckbox.checked = isPushToTalkEnabled();
-    pttCheckbox.addEventListener("change", () => {
-      setPushToTalkEnabled(pttCheckbox.checked);
-      window.dispatchEvent(new Event("ptt-changed"));  // main.ts updates the on-screen hint live
+  // "Always listening" — controls the wake-word mode (one source of truth with
+  // the orb's Active/Asleep). Off = hold ⌃⌥ to talk; the chord always works.
+  const alwaysListen = document.getElementById("input-always-listening") as HTMLInputElement | null;
+  if (alwaysListen) {
+    alwaysListen.checked = localStorage.getItem("valet.wakeListening") === "active";
+    alwaysListen.addEventListener("change", () => {
+      (window as unknown as { __valetSetListening?: (on: boolean) => void })
+        .__valetSetListening?.(alwaysListen.checked);
     });
   }
-  const pttLabel = document.getElementById("ptt-key-label");
-  if (pttLabel) pttLabel.textContent = pushToTalkKeyLabel();
   void loadVoice();
 
   // Close
@@ -670,21 +657,34 @@ function wireEvents() {
 
   // Save preferences — both Save buttons post the full form, so editing in
   // either section and clicking either button persists everything.
+  // Save only the in-app fields (name + honorific). The backend POST writes every
+  // field it receives, so we MERGE: fetch current prefs and re-send the web-managed
+  // ones unchanged (calendar / DOB / location), or they'd be blanked.
   async function saveAllPreferences() {
-    const user_name = (document.getElementById("input-user-name") as HTMLInputElement).value.trim();
-    const honorific = (document.getElementById("input-honorific") as HTMLSelectElement).value;
-    const calendar_accounts = (document.getElementById("input-calendar-accounts") as HTMLTextAreaElement).value.trim();
-    const date_of_birth = (document.getElementById("input-date-of-birth") as HTMLInputElement)?.value.trim() || "";
-    // One Location field feeds both: address (personal context) + hometown_city
-    // (weather lookup), so the backend's existing logic is unchanged.
-    const location = (document.getElementById("input-location") as HTMLInputElement)?.value.trim() || "";
-    const address = location;
-    const hometown_city = location;
+    const user_name = (document.getElementById("input-user-name") as HTMLInputElement | null)?.value.trim() ?? "";
+    const honorific = (document.getElementById("input-honorific") as HTMLSelectElement | null)?.value ?? "sir";
+    let cur: Partial<PreferencesResponse> = {};
+    try { cur = await apiGet<PreferencesResponse>("/api/settings/preferences"); } catch { /* keep empty */ }
     await apiPost("/api/settings/preferences", {
-      user_name, honorific, calendar_accounts, date_of_birth, address, hometown_city,
+      user_name,
+      honorific,
+      calendar_accounts: cur.calendar_accounts ?? "auto",
+      date_of_birth: cur.date_of_birth ?? "",
+      address: cur.address ?? "",
+      hometown_city: cur.hometown_city ?? "",
     });
     await loadStatus();
   }
+  // Auto-save on change (no Save button); flash the "Saved automatically" note.
+  function flashSaved() {
+    const el = document.getElementById("prefs-saved");
+    if (!el) return;
+    el.classList.add("on");
+    window.setTimeout(() => el.classList.remove("on"), 1500);
+  }
+  const autoSave = async () => { await saveAllPreferences(); flashSaved(); };
+  document.getElementById("input-user-name")?.addEventListener("change", autoSave);
+  document.getElementById("input-honorific")?.addEventListener("change", autoSave);
   document.getElementById("btn-save-prefs")?.addEventListener("click", saveAllPreferences);
   document.getElementById("btn-save-personalized")?.addEventListener("click", saveAllPreferences);
 

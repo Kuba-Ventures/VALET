@@ -819,3 +819,160 @@ body.wake-sleeping #orb-canvas {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.7); }
 }
+
+/* ── Redesigned User Settings: account row, auto-save note, "manage on web" ── */
+.acct-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.acct-avatar {
+  flex-shrink: 0;
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 16px; font-weight: 600;
+  color: #f6f4ff;
+  background: linear-gradient(180deg, rgba(124,104,240,0.45), rgba(124,104,240,0.18));
+  border: 1px solid rgba(196,184,250,0.4);
+}
+.acct-id { flex: 1; min-width: 0; }
+.acct-name-line { display: flex; align-items: center; gap: 8px; }
+.acct-name-line strong { color: #f6f4ff; font-size: 14px; }
+.acct-badge {
+  font-size: 10px; letter-spacing: 0.08em; font-weight: 600;
+  color: #c4b8fa;
+  border: 1px solid rgba(196,184,250,0.4); border-radius: 999px;
+  padding: 1px 7px;
+}
+.acct-sub { margin-top: 2px; font-size: 11.5px; color: rgba(246,244,255,0.5); }
+
+.acct-saved {
+  margin-top: 4px; font-size: 11.5px;
+  color: rgba(155,232,196,0.0); /* hidden until saved */
+  transition: color 0.2s ease;
+}
+.acct-saved::before { content: "✓ "; }
+.acct-saved.on { color: #9be8c4; }
+
+.web-card {
+  border: 1px solid rgba(175,169,236,0.18);
+  border-radius: 12px;
+  background: rgba(124,104,240,0.05);
+  padding: 16px;
+}
+.web-card-title { font-size: 13.5px; color: #f6f4ff; font-weight: 600; }
+.web-card-sub { margin-top: 4px; font-size: 11.5px; line-height: 1.5; color: rgba(246,244,255,0.55); }
+.web-card-list {
+  margin: 12px 0; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.web-card-list li {
+  font-size: 12px; color: rgba(246,244,255,0.7);
+  padding-left: 18px; position: relative;
+}
+.web-card-list li::before {
+  content: ""; position: absolute; left: 2px; top: 6px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: rgba(196,184,250,0.7);
+}
+.web-card-btn { display: block; text-align: center; text-decoration: none; margin-top: 4px; }
+
+/* App window controls — macOS-style traffic lights, top-left, above the drag layer. */
+#window-lights {
+  position: fixed;
+  top: 10px; left: 12px;
+  display: flex; gap: 8px;
+  z-index: 60;
+}
+.win-light {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  border: none; padding: 0; cursor: pointer;
+  opacity: 0.9;
+  transition: filter 0.15s ease, opacity 0.15s ease;
+}
+.win-light:hover { filter: brightness(1.15); opacity: 1; }
+.win-light.close { background: #ff5f57; }
+.win-light.min { background: #febc2e; }
+
+/* ═══ Console Settings — monochrome "refined dark" (scoped to .console-mono) ═══ */
+/* Inset the whole tab (sections normally carry the 24px side padding; we zero
+   those and pad the container so dividers/Advanced line up too). */
+.console-mono { padding: 8px 24px 20px; }
+.console-mono .settings-section { border: none; padding: 0; margin: 0; }
+.console-mono .mono-eyebrow {
+  font-size: 10px; letter-spacing: 0.13em; text-transform: uppercase;
+  color: #6a6a6a; margin: 0 0 12px; display: block;
+}
+.console-mono .mono-eyebrow-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; margin-bottom: 12px;
+}
+.console-mono .mono-eyebrow-row .mono-eyebrow { margin: 0; }
+.console-mono .mono-legend { display: flex; gap: 11px; font-size: 9.5px; color: #777; flex-shrink: 0; white-space: nowrap; }
+.console-mono .mono-legend-item { display: flex; align-items: center; gap: 5px; }
+.console-mono .mono-dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid #fff; box-sizing: border-box; }
+.console-mono .mono-dot.on { background: #fff; border-color: #fff; }
+.console-mono .mono-divider { height: 1px; background: rgba(255,255,255,0.1); margin: 16px 0; }
+
+/* Segmented voice toggle */
+.console-mono .mono-seg {
+  display: flex; gap: 6px; padding: 3px; margin-bottom: 4px;
+  background: #000; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px;
+}
+.console-mono .voice-opt {
+  flex: 1; text-align: center; padding: 7px 0; font: inherit; font-size: 12px;
+  color: #bbb; background: transparent; border: none; border-radius: 6px; cursor: pointer;
+}
+.console-mono .voice-opt.active { background: #fff; color: #000; font-weight: 500; }
+
+/* Toggle rows */
+.console-mono .mono-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0;
+}
+.console-mono .mono-row-title { font-size: 13px; color: #eaeaea; }
+.console-mono .mono-row-sub { font-size: 11px; color: #666; margin-top: 1px; }
+
+/* iOS-style switch (wraps the existing checkbox) */
+.console-mono .mono-switch { position: relative; flex-shrink: 0; width: 38px; height: 22px; cursor: pointer; }
+.console-mono .mono-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.console-mono .mono-slider {
+  position: absolute; inset: 0; border-radius: 11px;
+  border: 1px solid rgba(255,255,255,0.3); background: transparent; transition: all 0.15s ease;
+}
+.console-mono .mono-slider::before {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+  border-radius: 50%; background: #555; transition: all 0.15s ease;
+}
+.console-mono .mono-switch input:checked + .mono-slider { background: #fff; border-color: #fff; }
+.console-mono .mono-switch input:checked + .mono-slider::before { left: auto; right: 3px; background: #000; }
+
+/* Permission + status dots → monochrome (filled = ok, outlined = needs action) */
+.console-mono .status-dot { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid #fff; box-sizing: border-box; background: transparent; flex-shrink: 0; }
+.console-mono .status-dot.status-green { background: #fff; border-color: #fff; }
+.console-mono .status-dot.status-yellow { background: #888; border-color: #888; }
+.console-mono .perm-list .account-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; color: #eaeaea; font-size: 13px; }
+
+/* Buttons → white outline, invert on hover */
+.console-mono .settings-btn {
+  background: transparent; border: 1px solid rgba(255,255,255,0.4); color: #fff;
+  border-radius: 6px; padding: 4px 11px; font-size: 11px;
+}
+.console-mono .settings-btn:hover { background: #fff; color: #000; border-color: #fff; }
+
+/* This Mac */
+.console-mono .mono-server { padding: 6px 0 12px; }
+.console-mono .mono-server .status-detail { margin-left: auto; font-size: 11px; color: #777; font-variant-numeric: tabular-nums; }
+.console-mono .mono-conn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 14px; }
+.console-mono .mono-conn {
+  display: flex; align-items: center; gap: 8px; font-size: 12px; color: #ccc;
+  border: 1px solid rgba(255,255,255,0.14); border-radius: 7px; padding: 7px 10px;
+}
+.console-mono .mono-conn .status-dot { width: 8px; height: 8px; }
+.console-mono .mono-restart { display: block; width: 100%; text-align: center; padding: 10px 0; font-size: 13px; font-weight: 500; border-radius: 8px; }
+
+/* Advanced disclosure */
+.console-mono .mono-advanced { margin-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px; }
+.console-mono .mono-advanced summary { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #6a6a6a; cursor: pointer; padding: 6px 0; }
+.console-mono .mono-advanced label { color: #888; }
