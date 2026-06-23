@@ -416,10 +416,13 @@ fn tray_action(app: AppHandle, id: String) {
     handle_tray_action(&app, &id);
 }
 
-/// Show the custom HTML tray popover anchored just below the menu-bar icon.
-/// `icon` is the tray icon's screen rect in physical pixels. Toggles: a second
-/// click while visible hides it (native-menu behavior).
-fn show_tray_popover(app: &AppHandle, icon_x: f64, icon_y: f64, icon_h: f64) {
+/// Show the custom HTML tray popover anchored directly under the menu-bar icon.
+/// Positioning is handled by tauri-plugin-positioner from the cached tray rect,
+/// so it lands correctly on any monitor / scale / bar position. Toggles: a
+/// second click while visible hides it (native-menu behavior).
+fn show_tray_popover(app: &AppHandle) {
+    use tauri_plugin_positioner::{Position, WindowExt};
+
     let Some(win) = app.get_webview_window("tray_menu") else { return };
     if win.is_visible().unwrap_or(false) {
         let _ = win.hide();
@@ -432,9 +435,8 @@ fn show_tray_popover(app: &AppHandle, icon_x: f64, icon_y: f64, icon_h: f64) {
             return;
         }
     }
-    // Left-align the popover under the icon (like a native menu) and drop it just
-    // below the menu bar. Position is in physical pixels to match the icon rect.
-    let _ = win.set_position(tauri::PhysicalPosition::new(icon_x, icon_y + icon_h));
+    // Center the popover just below the clicked icon, clamped to the screen.
+    let _ = win.move_window(Position::TrayBottomCenter);
     let _ = win.show();
     let _ = win.set_focus();
 }
@@ -460,6 +462,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_positioner::init())
         .plugin(window_state)
         .manage(Backend {
             child: Mutex::new(None),
@@ -517,26 +520,16 @@ fn main() {
                 .icon_as_template(true)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
-                    // Any mouse-up on the icon toggles the popover, anchored to the
-                    // icon's screen rect (physical px).
+                    // Let the positioner cache the icon's rect for THIS event so
+                    // it can anchor the popover correctly on any monitor / scale.
+                    tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
-                        rect,
                         ..
                     } = event
                     {
-                        // rect.position / .size are dpi enums; on macOS the tray
-                        // reports physical px. Pull them out as f64 either way.
-                        let (x, y) = match rect.position {
-                            tauri::Position::Physical(p) => (p.x as f64, p.y as f64),
-                            tauri::Position::Logical(p) => (p.x, p.y),
-                        };
-                        let h = match rect.size {
-                            tauri::Size::Physical(s) => s.height as f64,
-                            tauri::Size::Logical(s) => s.height,
-                        };
-                        show_tray_popover(tray.app_handle(), x, y, h);
+                        show_tray_popover(tray.app_handle());
                     }
                 })
                 .build(app);
