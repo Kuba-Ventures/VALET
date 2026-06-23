@@ -78,7 +78,8 @@ export default function AuthForm({
         <p className="mt-3 leading-relaxed text-ink-dim">
           We sent a confirmation link to{" "}
           <span className="text-ink">{email}</span>. Click it to finish creating
-          your account, then sign in.
+          your account — you&apos;ll be signed in and brought right back to
+          continue.
         </p>
         <Link href="/account/login" className="btn-ghost mt-6">
           Back to sign in

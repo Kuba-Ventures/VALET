@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
+import { createSupabaseServerClient } from "@/lib/auth/server";
 
 export const runtime = "nodejs";
 
@@ -47,6 +48,25 @@ export async function POST(req: NextRequest) {
   // Comp grants are always Ultra.
   if (comp) plan = "ultra";
 
+  // Identify the signed-in user. Comp (VIP) grants now REQUIRE an account so the
+  // license binds to it up front (via the UUID stamped into subscription
+  // metadata below) instead of relying on a later email-match. Paid checkout
+  // stays open to anonymous buyers — they create an account afterward.
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (comp && !user) {
+    return NextResponse.json(
+      {
+        error:
+          "Please create your account or sign in before activating VIP access.",
+      },
+      { status: 401 },
+    );
+  }
+
   const envName = PRICE_ENV[plan];
   const priceId = process.env[envName];
 
@@ -81,6 +101,19 @@ export async function POST(req: NextRequest) {
     params.payment_method_collection = "always";
     params.subscription_data = { trial_period_days: 7 };
     params.allow_promotion_codes = true;
+  }
+
+  // Bind the checkout to the signed-in account when we have one. Prefilling and
+  // locking the email keeps the Stripe customer email aligned with the account,
+  // and the metadata UUID is what the webhook reads to set licenses.user_id
+  // directly — no email-match guesswork. (For comp, `user` is guaranteed above.)
+  if (user) {
+    params.customer_email = user.email ?? undefined;
+    params.client_reference_id = user.id;
+    params.subscription_data = {
+      ...(params.subscription_data ?? {}),
+      metadata: { valet_user_id: user.id },
+    };
   }
 
   try {
