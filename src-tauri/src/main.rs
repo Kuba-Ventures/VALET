@@ -16,7 +16,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{IconMenuItem, Menu, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{
     ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
@@ -354,12 +354,14 @@ fn main() {
     // icons" that turned out to be stale Launch Services entries, not real second
     // instances, and its lock went stale on a force-quit, blocking reopen. Clean
     // launches are guaranteed instead by free_stale_backend() below.
-    // Persist the orb widget's dragged position/size across launches. The
-    // per-display cursor `overlay-N` windows are placed explicitly over each
-    // monitor every launch, so exclude them from state restore (cover plenty of
-    // displays). The orb widget ("main") is the only window we want remembered.
+    // Persist only the orb widget's dragged POSITION across launches, never its
+    // size — the window is fixed-size (resizable:false, 380x560), and restoring a
+    // stale persisted size made it open tiny. POSITION-only keeps the configured
+    // size every launch. The per-display cursor `overlay-N` windows are placed
+    // explicitly each launch, so exclude them from state restore.
     let window_state = {
-        let mut b = tauri_plugin_window_state::Builder::default();
+        let mut b = tauri_plugin_window_state::Builder::default()
+            .with_state_flags(tauri_plugin_window_state::StateFlags::POSITION);
         for i in 0..16 {
             b = b.skip_initial_state(&format!("overlay-{i}"));
         }
@@ -386,21 +388,44 @@ fn main() {
             // Menu bar = status + toggles + links only, never a form (settings IA
             // invariant 3): Open VALET · Toggle Listening · Settings… · Account ↗ ·
             // Restart server · Quit. Left-click opens the orb; right-click the menu.
-            let open_item =
-                MenuItem::with_id(app, "open", "Open VALET", true, None::<&str>)?;
-            let listen =
-                MenuItem::with_id(app, "toggle_listen", "Toggle Listening", true, None::<&str>)?;
-            let settings =
-                MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let account =
-                MenuItem::with_id(app, "account", "Account ↗", true, None::<&str>)?;
-            let restart =
-                MenuItem::with_id(app, "restart", "Restart server", true, None::<&str>)?;
-            let replay =
-                MenuItem::with_id(app, "replay_setup", "Replay setup…", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit VALET", true, None::<&str>)?;
+            // Each item carries a black line-icon (SF Symbol rendered to PNG) so
+            // the menu matches the design mockup. macOS draws the menu white-on-
+            // light / dark in dark mode; the icons are black for the light menu.
+            let open_item = IconMenuItem::with_id(
+                app, "open", "Open VALET", true,
+                Some(tauri::include_image!("icons/menu/open.png")), None::<&str>)?;
+            let listen = IconMenuItem::with_id(
+                app, "toggle_listen", "Toggle Listening", true,
+                Some(tauri::include_image!("icons/menu/listen.png")), None::<&str>)?;
+            let settings = IconMenuItem::with_id(
+                app, "settings", "Settings…", true,
+                Some(tauri::include_image!("icons/menu/settings.png")), None::<&str>)?;
+            let account = IconMenuItem::with_id(
+                app, "account", "Account ↗", true,
+                Some(tauri::include_image!("icons/menu/account.png")), None::<&str>)?;
+            let restart = IconMenuItem::with_id(
+                app, "restart", "Restart server", true,
+                Some(tauri::include_image!("icons/menu/restart.png")), None::<&str>)?;
+            let replay = IconMenuItem::with_id(
+                app, "replay_setup", "Restart onboarding", true,
+                Some(tauri::include_image!("icons/menu/replay.png")), None::<&str>)?;
+            let quit = IconMenuItem::with_id(
+                app, "quit", "Quit VALET", true,
+                Some(tauri::include_image!("icons/menu/quit.png")), None::<&str>)?;
+            // Grouped with separators (per the menu mockup): primary actions ·
+            // maintenance · quit.
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
-                app, &[&open_item, &listen, &settings, &account, &restart, &replay, &quit])?;
+                app,
+                &[
+                    &open_item, &listen, &settings, &account,
+                    &sep1,
+                    &restart, &replay,
+                    &sep2,
+                    &quit,
+                ],
+            )?;
             // Monochrome orb mark (black on transparent), marked as a TEMPLATE so
             // macOS renders it in the menu-bar text colour — black on a light bar,
             // white on a dark bar — instead of the blue-on-black app icon. Embedded
@@ -432,14 +457,14 @@ fn main() {
                         }
                     }
                     "replay_setup" => {
-                        // Re-run the first-run wizard on demand. Sets the force flag
-                        // (which bypasses the seen-marker AND the entitled-license skip)
-                        // then reloads the webview so maybeShowOnboarding picks it up.
+                        // Re-run the first-run wizard on demand. Call the frontend
+                        // hook directly (no reload) so the AudioContext stays unlocked
+                        // and Vee starts narrating the instant the wizard appears.
                         if let Some(win) = app.get_webview_window("main") {
                             let _ = win.show();
                             let _ = win.set_focus();
                             let _ = win.eval(
-                                "localStorage.setItem('valet_force_onboarding','1'); location.reload();");
+                                "window.__valetReplayOnboarding && window.__valetReplayOnboarding()");
                         }
                     }
                     "account" => {
