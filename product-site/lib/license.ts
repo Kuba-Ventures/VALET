@@ -129,12 +129,6 @@ export async function upsertLicenseFromSubscription(
   const planId = sub.items?.data?.[0]?.price?.id ?? null;
   const status = mapStripeStatus(sub.status);
 
-  const { data: existing } = await supabase
-    .from("licenses")
-    .select("id, license_key")
-    .eq("stripe_subscription_id", sub.id)
-    .maybeSingle();
-
   const email = await resolveCustomerEmail(sub.customer);
 
   const base: Record<string, unknown> = {
@@ -150,16 +144,40 @@ export async function upsertLicenseFromSubscription(
   // good address with null on a later lifecycle update.
   if (email) base.customer_email = email;
 
-  if (existing) {
-    await supabase.from("licenses").update(base).eq("id", existing.id);
-    return existing.license_key as string;
-  }
+  // A single signup fires several events almost simultaneously
+  // (customer.subscription.created / .updated + checkout.session.completed, and
+  // the success page may call this too). The old read-then-insert raced: each
+  // caller's SELECT found nothing yet, so each INSERTed — producing 2–3
+  // duplicate rows per subscription. Make it atomic instead: an INSERT ... ON
+  // CONFLICT DO NOTHING against the unique index on stripe_subscription_id, so
+  // concurrent callers collapse to one row. The first writer's generated key
+  // wins; the rest no-op here. (Requires migration_dedupe_licenses.sql.)
+  await supabase.from("licenses").upsert(
+    {
+      license_key: generateLicenseKey(),
+      created_at: new Date().toISOString(),
+      ...base,
+    },
+    { onConflict: "stripe_subscription_id", ignoreDuplicates: true },
+  );
 
-  const license_key = generateLicenseKey();
-  await supabase.from("licenses").insert({
-    license_key,
-    created_at: new Date().toISOString(),
-    ...base,
-  });
-  return license_key;
+  // Apply lifecycle fields to the (now guaranteed single) row WITHOUT touching
+  // license_key — the key is generated once and never rotated.
+  await supabase
+    .from("licenses")
+    .update(base)
+    .eq("stripe_subscription_id", sub.id);
+
+  // Read back the canonical key for this subscription.
+  const { data: row } = await supabase
+    .from("licenses")
+    .select("license_key")
+    .eq("stripe_subscription_id", sub.id)
+    .maybeSingle();
+  if (!row?.license_key) {
+    throw new Error(
+      `license upsert: no row found for subscription ${sub.id} after upsert`,
+    );
+  }
+  return row.license_key as string;
 }
