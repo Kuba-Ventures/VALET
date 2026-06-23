@@ -13,6 +13,9 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-pn
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
+# Anchors the custom tray popover directly under the menu-bar icon, correctly,
+# on any monitor / scale / bar position — replaces hand-rolled coordinate math.
+tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 # Global ⌃⌥ push-to-talk key tap (Quartz CGEventTap), in the MAIN app process so
 # macOS Input Monitoring is granted to "VALET" (one stable identity), unlike the
 # backend helper whose hash — and thus TCC grant — churns every build. Raw
