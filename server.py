@@ -230,8 +230,10 @@ _VALID_FISH_MODEL = {"s1", "s2-pro"}
 
 
 def _fish_latency() -> str:
-    v = (os.getenv("FISH_LATENCY", "normal") or "normal").strip().lower()
-    return v if v in _VALID_FISH_LATENCY else "normal"
+    # Default "balanced": noticeably faster first-audio than "normal" with no real
+    # quality hit, so Vee starts speaking sooner.
+    v = (os.getenv("FISH_LATENCY", "balanced") or "balanced").strip().lower()
+    return v if v in _VALID_FISH_LATENCY else "balanced"
 
 
 def _fish_model() -> str:
@@ -313,13 +315,17 @@ def _active_voice_id() -> str:
 
 
 def _voice_speed() -> float:
-    """Spoken playback speed (Fish prosody). 1.0 = normal. Set VALET_VOICE_SPEED
-    (e.g. 1.15) for a snappier voice. Read live; clamped to a sane range."""
-    try:
-        v = float(os.getenv("VALET_VOICE_SPEED", "1.0"))
-    except (TypeError, ValueError):
-        return 1.0
-    return max(0.5, min(2.0, v))
+    """Spoken playback speed (Fish prosody). 1.0 = normal. An explicit
+    VALET_VOICE_SPEED overrides; otherwise the British female reads a touch slow,
+    so she's nudged a bit faster by default. Read live; clamped to a sane range."""
+    env = os.getenv("VALET_VOICE_SPEED")
+    if env:
+        try:
+            return max(0.5, min(2.0, float(env)))
+        except (TypeError, ValueError):
+            pass
+    choice = (os.getenv("VALET_VOICE", "male") or "male").strip().lower()
+    return 1.25 if choice == "female" else 1.0
 
 
 def _start_parent_watchdog() -> None:
@@ -3054,7 +3060,12 @@ def _tts_request(text: str, voice_id: str, speed: float, *, via_proxy: bool,
     payload: dict = {"text": text, "reference_id": voice_id, "format": "mp3", "latency": latency}
     headers: dict = {}
     if via_proxy:
+        # Send BOTH: `speed` (if the proxy maps it to Fish prosody) and native
+        # `prosody.speed` (if the proxy passes the body straight to Fish). Either
+        # way the speed actually takes effect — without prosody, a proxy that
+        # ignores `speed` left the voice at default (too slow).
         payload["speed"] = speed
+        payload["prosody"] = {"speed": speed}
         if model:
             payload["model"] = model  # proxy turns this into the Fish `model` header
     else:
@@ -3067,6 +3078,9 @@ def _tts_request(text: str, voice_id: str, speed: float, *, via_proxy: bool,
 async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio. Routes through the proxy's TTS endpoint when
     licensed (Fish Audio upstream); falls back to direct Fish in dev only."""
+    # Audio-only pronunciation fix: the TTS reads "VALET" like "valley"; spell it
+    # phonetically so it says "val-AY". The on-screen caption keeps "VALET".
+    text = re.sub(r"\bVALET\b", "Valay", text, flags=re.IGNORECASE)
     voice_id = _active_voice_id()
     speed = _voice_speed()
     latency = _fish_latency()
@@ -7365,10 +7379,42 @@ def _input_monitoring_granted():
         return None
 
 
+def _speech_recognition_granted():
+    """Live Speech Recognition TCC check via SFSpeechRecognizer.authorizationStatus
+    (no prompt). 3 = authorized. None if the Speech framework can't be imported."""
+    try:
+        import Speech
+        return Speech.SFSpeechRecognizer.authorizationStatus() == 3
+    except Exception:
+        return None
+
+
+def _automation_granted() -> Optional[bool]:
+    """Live Automation check: send a harmless Apple Event to System Events. Once
+    the grant is DETERMINED (granted or denied), osascript returns immediately
+    (rc 0 = granted, error -1743 = denied), so this is non-prompting and reflects
+    the live state — fixing the "re-check resets to Enable" problem. Only the
+    never-asked state would prompt; a short timeout caps that. Returns None on a
+    timeout (treated as undetermined) so the UI keeps offering Enable."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", 'tell application "System Events" to count processes'],
+            capture_output=True, timeout=4,
+        )
+        return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:
+        return None
+
+
 @app.get("/api/permissions/status")
 async def api_permissions_status():
     """First-run onboarding reads this to show what's granted and what to enable.
     Automation prompts per-app on first use; Accessibility is post-v1."""
+    # Automation runs a (possibly blocking) Apple Event, so do it off the loop.
+    automation_granted = await asyncio.to_thread(_automation_granted)
     return {
         "microphone": {
             "granted": None,  # prompts on first voice use; no clean pre-check without pyobjc
@@ -7389,7 +7435,7 @@ async def api_permissions_status():
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
         },
         "automation": {
-            "granted": None,  # macOS prompts the first time each app is targeted
+            "granted": automation_granted,  # live Apple Event check (non-prompting once determined)
             "label": "Automation",
             "why": "Drive Calendar, Mail, Notes and Chrome via AppleScript.",
             "note": "Granted per app the first time VALET controls it.",
@@ -7413,7 +7459,7 @@ async def api_permissions_status():
             "settings_pane": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         },
         "speech_recognition": {
-            "granted": None,  # webview-side (WKWebView) — can't pre-detect from here
+            "granted": _speech_recognition_granted(),  # SFSpeechRecognizer.authorizationStatus
             "label": "Speech Recognition",
             "why": "Hear and transcribe your voice in the app. Separate from Microphone — the app needs both.",
             "note": "Required for voice in the desktop app. Grant it, then relaunch VALET.",
@@ -8008,7 +8054,7 @@ async def _handle_onboarding_demo(ws) -> None:
             hit = settings_index.match_setting("Bluetooth")
             if hit:
                 await _execute_open_settings(hit[1], hit[0])
-                await asyncio.sleep(1.3)  # let the pane render before observing
+                await asyncio.sleep(0.8)  # let the pane render before observing
             obs = await perception.build_observation(executor, app=None)
             res = await target_resolver.resolve(
                 obs, "the Bluetooth on/off switch", anthropic_client, intent="point at")

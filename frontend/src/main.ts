@@ -113,6 +113,23 @@ const socket = createSocket(WS_URL);
 const audioPlayer = createAudioPlayer();
 orb.setAnalyser(audioPlayer.getAnalyser());
 
+// Window controls (top-left traffic lights) — dragging is handled natively by
+// #drag-bar; these buttons call the window API (gated by the orb-drag
+// capability). Close hides the popover (the Rust close handler keeps the app in
+// the tray); minimize sends it to the menu bar.
+{
+  const winCtl = (method: "minimize" | "close") => {
+    try {
+      const w = (window as unknown as {
+        __TAURI__?: { window?: { getCurrentWindow?: () => Record<string, () => void> } };
+      }).__TAURI__?.window?.getCurrentWindow?.();
+      w?.[method]?.();
+    } catch { /* ignore */ }
+  };
+  document.getElementById("win-min")?.addEventListener("click", () => winCtl("minimize"));
+  document.getElementById("win-close")?.addEventListener("click", () => winCtl("close"));
+}
+
 // Live "what VALET is doing" panel. Hidden until the first event arrives.
 const processPanel = createProcessPanel();
 const designPanel = createDesignPanel();
@@ -588,9 +605,10 @@ window.addEventListener("blur", () => {
 // (settings.ts dispatches "ptt-changed").
 const pttHintEl = document.getElementById("ptt-hint")!;
 function updatePttHint() {
-  const on = isPushToTalkEnabled();
+  // Show the "hold ⌃⌥ to talk" cue only in push-to-talk mode (i.e. NOT when
+  // always-listening). The chord itself always works.
   pttHintEl.textContent = "hold ⌃⌥ to talk";
-  pttHintEl.classList.toggle("hidden", !on);
+  pttHintEl.classList.toggle("hidden", !isSleeping);
 }
 window.addEventListener("ptt-changed", updatePttHint);
 updatePttHint();
@@ -736,6 +754,12 @@ btnWakeToggle.addEventListener("click", (e) => {
 (window as unknown as { __valetToggleListening?: () => void }).__valetToggleListening = () => {
   toggleListening();
 };
+// Settings' "Always listening" toggle sets the state directly (one source of
+// truth with the orb's Active/Asleep). on = always-listening (wake on).
+(window as unknown as { __valetSetListening?: (on: boolean) => void }).__valetSetListening = (on) => {
+  if (isSleeping === !on) return; // already in the desired state
+  toggleListening();
+};
 
 // Apply persisted visuals immediately so the button label and orb dim match
 // the saved preference on every load. Mic control runs after wake.start()
@@ -787,12 +811,26 @@ btnMenu.addEventListener("click", (e) => {
 // Onboarding is the first-run flow; only fall back to the Settings setup-mode
 // auto-open when the wizard is NOT showing, so the two don't stack (which left
 // a stale setup-mode Settings panel behind the wizard).
+// Onboarding hooks: Vee narrates scripted lines, a demo trigger, and an "ask"
+// that runs a real example prompt through the normal voice pipeline.
+const obNarrate = (text: string) => { try { socket.send({ type: "narrate", text }); } catch { /* ignore */ } };
+const obDemo = () => { try { socket.send({ type: "onboarding_demo" }); } catch { /* ignore */ } };
+const obAsk = (text: string) => { try { socket.send({ type: "transcript", text, isFinal: true }); } catch { /* ignore */ } };
+
+// Tray "Replay setup" calls this directly — no page reload, so the AudioContext
+// stays unlocked and Vee starts narrating the instant the wizard appears. We also
+// resume the audio context here: once the user has interacted with the app this
+// session, the browser allows a programmatic resume (sticky activation), so the
+// narration plays without needing a fresh click in the window.
+(window as unknown as { __valetReplayOnboarding?: () => void }).__valetReplayOnboarding = () => {
+  try {
+    const ctx = audioPlayer.getAnalyser().context as AudioContext;
+    if (ctx.state === "suspended") void ctx.resume();
+  } catch { /* ignore */ }
+  void maybeShowOnboarding(obNarrate, obDemo, obAsk, true);
+};
+
 setTimeout(async () => {
-  // Pass a narrator (Vee speaks scripted setup lines) and a demo trigger
-  // (the finale's guided cursor-control walkthrough).
-  const onboarding = await maybeShowOnboarding(
-    (text: string) => { try { socket.send({ type: "narrate", text }); } catch { /* ignore */ } },
-    () => { try { socket.send({ type: "onboarding_demo" }); } catch { /* ignore */ } },
-  );
+  const onboarding = await maybeShowOnboarding(obNarrate, obDemo, obAsk);
   if (!onboarding) checkFirstTimeSetup();
 }, 2000);

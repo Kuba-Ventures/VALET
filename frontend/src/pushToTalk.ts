@@ -20,9 +20,10 @@ export const PTT_CODE_KEY = "valet.ptt.code";
 export const PTT_DEFAULT_CODE = "AltLeft";
 
 export function isPushToTalkEnabled(): boolean {
-  // Default ON: push-to-talk is now the primary activation. Only an explicit "0"
-  // (user disabled it) turns it off.
-  return localStorage.getItem(PTT_ENABLED_KEY) !== "0";
+  // ⌃⌥ push-to-talk is the native default and is ALWAYS available — it's no
+  // longer a user toggle (the Settings toggle now controls "Always listening"
+  // / wake-word instead). Kept as a function so existing call sites are unchanged.
+  return true;
 }
 
 export function setPushToTalkEnabled(on: boolean): void {

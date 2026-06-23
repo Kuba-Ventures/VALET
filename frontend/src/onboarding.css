@@ -35,7 +35,30 @@
 }
 /* Head and actions stay fixed; only the body scrolls. */
 #valet-onboarding .ob-head,
-#valet-onboarding .ob-actions { flex-shrink: 0; }
+#valet-onboarding .ob-actions,
+#valet-onboarding .ob-titlebar { flex-shrink: 0; }
+
+/* Draggable titlebar with macOS-style traffic lights (drag + minimize/hide). */
+#valet-onboarding .ob-titlebar {
+  position: relative;
+  height: 22px;
+  margin: -10px -10px 6px;   /* pull to the card edges */
+}
+#valet-onboarding .ob-drag {
+  position: absolute; inset: 0;   /* the whole strip drags the window */
+}
+#valet-onboarding .ob-lights {
+  position: absolute; top: 4px; left: 4px;
+  display: flex; gap: 8px; z-index: 1;   /* above the drag layer so clicks land */
+}
+#valet-onboarding .ob-light {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: none; padding: 0; cursor: pointer;
+  transition: filter 0.15s ease;
+}
+#valet-onboarding .ob-light:hover { filter: brightness(1.15); }
+#valet-onboarding .ob-light.close { background: #ff5f57; }
+#valet-onboarding .ob-light.min { background: #febc2e; }
 
 #valet-onboarding .ob-brand {
   font-size: 12px;
@@ -59,11 +82,14 @@
   flex-direction: column;
   gap: 10px;
 }
+/* Stack vertically: label + reason on top (full width, clean wrap), then the
+   status pill + action below. The orb popover window is narrow, so a horizontal
+   row crammed the text and clipped the "Open Settings" button off the edge. */
 #valet-onboarding .ob-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   padding: 12px 14px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.03);
@@ -86,8 +112,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
 }
+/* Let the inline action button size to its text instead of being clipped. */
+#valet-onboarding .ob-row-side .ob-open { flex-shrink: 0; }
 
 #valet-onboarding .ob-pill {
   font-size: 10.5px;
@@ -221,14 +249,46 @@
   color: rgba(246, 244, 255, 0.45);
 }
 
-#valet-onboarding .ob-done-orb {
-  width: 120px; height: 120px; margin: 22px auto 4px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 50% 45%, rgba(196, 184, 250, 0.55), rgba(124, 104, 240, 0.18) 45%, transparent 70%);
-  box-shadow: 0 0 60px rgba(124, 104, 240, 0.25);
-  animation: ob-pulse 2.6s ease-in-out infinite;
+/* Final-step orb: the website-hero particle orb, drawn on a canvas (see mountOrb). */
+#valet-onboarding .ob-orb-canvas {
+  display: block;
+  width: 150px; height: 150px;
+  margin: 18px auto 4px;
 }
-@keyframes ob-pulse { 0%, 100% { transform: scale(1); opacity: 0.9; } 50% { transform: scale(1.06); opacity: 1; } }
+
+/* Push-to-talk teaching card — the user holds the chord and speaks for real. */
+#valet-onboarding .ob-try {
+  margin-top: 18px;
+  padding: 16px 14px;
+  border-radius: 12px;
+  text-align: center;
+  background: rgba(124, 104, 240, 0.10);
+  border: 1px solid rgba(175, 169, 236, 0.30);
+}
+#valet-onboarding .ob-try-keys {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+#valet-onboarding .ob-try-keys kbd {
+  font-family: inherit; font-size: 12.5px; color: #f6f4ff;
+  background: linear-gradient(180deg, rgba(124, 104, 240, 0.30), rgba(124, 104, 240, 0.10));
+  border: 1px solid rgba(196, 184, 250, 0.55); border-radius: 8px;
+  padding: 6px 10px;
+  box-shadow: 0 0 18px -4px rgba(124, 104, 240, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+#valet-onboarding .ob-try-plus { color: rgba(196, 184, 250, 0.9); font-size: 14px; }
+#valet-onboarding .ob-try-say {
+  margin-top: 12px; font-size: 12.5px; color: rgba(246, 244, 255, 0.7);
+}
+#valet-onboarding .ob-try-cmd { color: #c4b8fa; }
+
+/* "See it in action" demo buttons — stack full-width so labels never clip. */
+#valet-onboarding .ob-demos {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+#valet-onboarding .ob-demos .ob-btn { width: 100%; }
 
 /* Password field with an inline show/hide eye toggle. */
 #valet-onboarding .ob-pw-field { position: relative; }

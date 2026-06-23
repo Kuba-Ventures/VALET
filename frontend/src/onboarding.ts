@@ -81,6 +81,7 @@ function pill(p: Permission): { text: string; cls: string } {
 
 type Narrate = (text: string) => void;
 type StartDemo = () => void;
+type Ask = (text: string) => void;
 
 interface State {
   step: number;
@@ -89,23 +90,38 @@ interface State {
   voice: "male" | "female";
   speak: Narrate;
   demo: StartDemo;
+  ask: Ask;
 }
 
-const STEP_TITLES = ["Welcome", "License", "Permissions", "Voice", "About you", "Done"];
+const STEP_TITLES = ["Welcome", "License", "Permissions", "Voice", "About you", "See it work", "Done"];
 
 // What Vee says when each step appears (the hand-holding voice-over). Kept to one
 // or two short sentences — butler tone, no em-dashes (the backend strips them).
 const STEP_NARRATION = [
   "Good day. I'm Vee, your assistant. Let's get you set up. It only takes a minute, and you can change anything later.",
-  "First, let's activate your copy. Sign in with your VALET account, or paste the license key from your purchase email.",
-  "Now the permissions I need to act for you. Grant each one and I'll confirm as it turns green.",
+  "First, let's activate your copy. Sign in with your account, or paste the license key from your purchase email, then click continue to add your credentials.",
+  "", // permissions — narrated dynamically (see permsNarration)
   "How would you like me to sound? Pick a voice and I'll say hello.",
   "Tell me a little about you, so I can address you properly. All of this stays on your Mac.",
-  "You're all set. Hold Control and Option anytime, from any app, and just talk to me.",
+  "Before I leave you to it, try me. Hold Control and Option, and say: open my desktop folder. Or ask me to show you how to do something.",
+  "You're all set. Hold Control and Option anytime, from any app, to talk to me. Click start to begin.",
 ];
+
+/** Permissions step: name which ones still need granting, or confirm all set. */
+function permsNarration(state: State): string {
+  const perms = state.perms || {};
+  const needed = Object.values(perms)
+    .filter((p) => p.granted === false)
+    .map((p) => p.label);
+  if (!needed.length) return "These all look enabled. Press continue when you're ready.";
+  if (needed.length === 1) return `I still need ${needed[0]}. Grant it, then continue.`;
+  const last = needed[needed.length - 1];
+  return `I still need ${needed.slice(0, -1).join(", ")} and ${last}. Grant those, then continue.`;
+}
 
 /** Speak the line for the current step. */
 function narrateStep(state: State): void {
+  if (state.step === 2) { state.speak(permsNarration(state)); return; }
   const line = STEP_NARRATION[state.step];
   if (line) state.speak(line);
 }
@@ -128,6 +144,57 @@ async function refreshPerms(state: State): Promise<void> {
   state.perms = next;
 }
 
+/**
+ * The same violet particle orb as the website hero, on a small canvas for the
+ * final step. Golden-angle sphere, depth-shaded light-violet dots, slow rotate,
+ * soft core glow. Freezes under prefers-reduced-motion.
+ */
+function mountOrb(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
+  let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 0;
+  function size() {
+    DPR = Math.min(devicePixelRatio || 1, 2);
+    W = canvas.clientWidth || 150; H = canvas.clientHeight || 150;
+    canvas.width = W * DPR; canvas.height = H * DPR; ctx!.setTransform(DPR, 0, 0, DPR, 0, 0);
+    cx = W / 2; cy = H / 2; R = Math.min(W, H) * 0.42;
+  }
+  size();
+  const N = 360;
+  const pts: { x: number; y: number; z: number; s: number }[] = [];
+  for (let i = 0; i < N; i++) {
+    const y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(1 - y * y), phi = i * 2.399963229728653;
+    pts.push({ x: Math.cos(phi) * r, y, z: Math.sin(phi) * r, s: Math.random() });
+  }
+  let t = 0;
+  function frame() {
+    if (!ctx) return;
+    ctx.clearRect(0, 0, W, H);
+    t += reduce ? 0 : 0.0028;
+    const cosA = Math.cos(t), sinA = Math.sin(t), cosB = Math.cos(t * 0.6), sinB = Math.sin(t * 0.6);
+    for (const p of pts) {
+      const x = p.x * cosA - p.z * sinA;
+      let z = p.x * sinA + p.z * cosA;
+      const y = p.y * cosB - z * sinB;
+      z = p.y * sinB + z * cosB;
+      const pulse = 1 + Math.sin(t * 1.6 + p.s * 6.28) * 0.05;
+      const px = cx + x * R * pulse, py = cy + y * R * pulse, depth = (z + 1) / 2;
+      ctx.beginPath();
+      ctx.arc(px, py, depth * 1.7 + 0.3, 0, 6.283);
+      ctx.fillStyle = "rgba(196,184,250," + (0.1 + depth * 0.6).toFixed(3) + ")";
+      ctx.fill();
+    }
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.2);
+    g.addColorStop(0, "rgba(124,104,240,0.18)");
+    g.addColorStop(1, "rgba(124,104,240,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.2, 0, 6.283); ctx.fill();
+    if (!reduce) requestAnimationFrame(frame);
+  }
+  frame();
+}
+
 // ---- per-step body renderers ----------------------------------------------
 
 function welcomeBody(): string {
@@ -146,7 +213,7 @@ function licenseBody(): string {
     <h2 class="ob-title">Activate VALET.</h2>
     <!-- Signed-in summary — replaces the whole form once login succeeds. -->
     <div id="ob-activated" style="display:none">
-      <p class="ob-sub">Signed in as <strong id="ob-acct-name"></strong>. You're good to go — press Continue.</p>
+      <p class="ob-sub">Welcome, <strong id="ob-acct-name"></strong>. Continue if this is your account.</p>
       <div class="ob-acct-meta">
         <div><span class="ob-acct-k">Plan</span><span id="ob-acct-plan">—</span></div>
         <div><span class="ob-acct-k">License</span><span id="ob-acct-license" class="ob-acct-lic">—</span></div>
@@ -250,18 +317,32 @@ function profileBody(): string {
     <div class="ob-field"><label class="ob-label">Location</label><input id="ob-loc" class="ob-input" type="text" placeholder="City you live in" /></div>`;
 }
 
-function doneBody(state: State): string {
-  // Offer the live guided demo only when Accessibility is granted (it needs to
-  // read the screen and move the cursor); otherwise nudge toward granting it.
-  const canDemo = state.perms?.accessibility?.granted === true;
-  const demo = canDemo
-    ? `<button class="ob-btn primary ob-demo" id="ob-demo">Show me what you can do</button>`
-    : `<p class="ob-fineprint">Grant Accessibility above to see Vee glide your cursor and control the screen.</p>`;
+// Step 5 — a "see it in action" moment before the user is set loose. The first
+// item TEACHES push-to-talk: the user holds the chord and speaks a real command
+// themselves. The second runs a guided "show me how" walkthrough.
+function seeItWorkBody(): string {
+  return `
+    <h2 class="ob-title">See it in action.</h2>
+    <p class="ob-sub">Try it yourself. Hold the keys and speak, then watch me do it.</p>
+    <div class="ob-try">
+      <div class="ob-try-keys">
+        <kbd>⌃ control</kbd><span class="ob-try-plus">+</span><kbd>⌥ option</kbd>
+      </div>
+      <div class="ob-try-say">and say <span class="ob-try-cmd">"open my desktop folder"</span></div>
+    </div>
+    <div class="ob-demos">
+      <button class="ob-btn ghost ob-ask" data-ask="show me how to turn on dark mode">Show me how to turn on Dark Mode</button>
+    </div>
+    <p class="ob-fineprint">Once you're set, hold ⌃⌥ from any app and just talk.</p>`;
+}
+
+function doneBody(): string {
+  // The same violet particle orb as the website hero, mounted onto the canvas
+  // in wireStep (step 6).
   return `
     <h2 class="ob-title">You're set.</h2>
     <p class="ob-sub">Hold Control and Option from any app and just talk. Ask for anything, from a quick question to a multi-step task across your apps.</p>
-    <div class="ob-done-orb"></div>
-    <div class="ob-inline" style="justify-content:center">${demo}</div>`;
+    <canvas class="ob-orb-canvas" id="ob-orb" aria-hidden="true"></canvas>`;
 }
 
 // ---- step wiring -----------------------------------------------------------
@@ -300,13 +381,16 @@ function wireStep(state: State, root: HTMLElement): void {
           const nameEl = root.querySelector<HTMLElement>("#ob-acct-name");
           const planEl = root.querySelector<HTMLElement>("#ob-acct-plan");
           const licEl = root.querySelector<HTMLElement>("#ob-acct-license");
-          if (nameEl) nameEl.textContent = (res.name && res.name.trim()) || email;
+          const full = (res.name && res.name.trim()) || email;
+          const first = full.split(/[\s@]/)[0] || full;
+          if (nameEl) nameEl.textContent = first;
           if (planEl) planEl.textContent = res.plan || "Active";
           if (licEl) licEl.textContent = res.license_key || "—";
           const form = root.querySelector<HTMLElement>("#ob-activate-form");
           const done = root.querySelector<HTMLElement>("#ob-activated");
           if (form) form.style.display = "none";
           if (done) done.style.display = "";
+          state.speak(`Welcome, ${first}. Continue if this is your account.`);
         } else if (res?.ok) {
           set("Signed in, but no license on this account yet.", "warn");
         } else {
@@ -473,15 +557,39 @@ function wireStep(state: State, root: HTMLElement): void {
       if (dob && p.date_of_birth) dob.value = p.date_of_birth;
       if (loc && (p.hometown_city || p.address)) loc.value = p.hometown_city || p.address || "";
     });
+    // Greet by name once the user enters it (on blur/change, not every keystroke).
+    const nameInput = root.querySelector<HTMLInputElement>("#ob-name");
+    let greetedName = "";
+    nameInput?.addEventListener("change", () => {
+      const n = nameInput.value.trim().split(/\s+/)[0] || "";
+      if (n && n.toLowerCase() !== greetedName) {
+        greetedName = n.toLowerCase();
+        state.speak(`Hello ${n}, nice to meet you.`);
+      }
+    });
   }
 
   if (step === 5) {
-    const demoBtn = root.querySelector<HTMLButtonElement>("#ob-demo");
-    demoBtn?.addEventListener("click", () => {
-      demoBtn.disabled = true;
-      demoBtn.textContent = "Watch your cursor…";
-      state.demo();
+    // "See it in action" — example prompt + screen takeover, with instant feedback
+    // so it's never unclear that something is happening.
+    root.querySelectorAll<HTMLButtonElement>(".ob-ask").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const prompt = btn.dataset.ask || "";
+        const orig = btn.textContent || "";
+        btn.disabled = true;
+        btn.textContent = "On it…";
+        state.ask(prompt);
+        window.setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = orig;
+        }, 8000);
+      });
     });
+  }
+
+  if (step === 6) {
+    const orb = root.querySelector<HTMLCanvasElement>("#ob-orb");
+    if (orb) mountOrb(orb);
   }
 }
 
@@ -506,7 +614,8 @@ function bodyFor(state: State): string {
     case 2: return permsBody(state.perms);
     case 3: return voiceBody(state.voice);
     case 4: return profileBody();
-    default: return doneBody(state);
+    case 5: return seeItWorkBody();
+    default: return doneBody();
   }
 }
 
@@ -527,6 +636,13 @@ function render(state: State, root: HTMLElement): void {
   root.innerHTML = `
     <div class="ob-backdrop"></div>
     <div class="ob-card ob-wizard" role="dialog" aria-label="VALET setup">
+      <div class="ob-titlebar">
+        <div class="ob-drag" data-tauri-drag-region></div>
+        <div class="ob-lights">
+          <button class="ob-light close" id="ob-win-close" type="button" aria-label="Hide"></button>
+          <button class="ob-light min" id="ob-win-min" type="button" aria-label="Minimize"></button>
+        </div>
+      </div>
       <div class="ob-head">
         <div class="ob-brand">VALET</div>
         <div class="ob-dots">${dots}</div>
@@ -537,6 +653,21 @@ function render(state: State, root: HTMLElement): void {
         <button class="ob-btn primary" id="ob-next">Continue</button>
       </div>
     </div>`;
+
+  // Window controls — drag is handled natively by [data-tauri-drag-region]; the
+  // light buttons call the window API (gated by the orb-drag capability). Close
+  // hides the popover (the Rust close handler keeps the app in the tray); the
+  // wizard re-opens via the tray "Replay setup".
+  const winCtl = (method: "minimize" | "close") => {
+    try {
+      const w = (window as unknown as {
+        __TAURI__?: { window?: { getCurrentWindow?: () => Record<string, () => void> } };
+      }).__TAURI__?.window?.getCurrentWindow?.();
+      w?.[method]?.();
+    } catch { /* ignore */ }
+  };
+  root.querySelector("#ob-win-min")?.addEventListener("click", () => winCtl("minimize"));
+  root.querySelector("#ob-win-close")?.addEventListener("click", () => winCtl("close"));
 
   // Hide Back on the first step (renderBody handles it after navigation).
   const backInit = root.querySelector<HTMLButtonElement>("#ob-back");
@@ -558,17 +689,23 @@ function render(state: State, root: HTMLElement): void {
     narrateStep(state);
   });
 
-  // Speak the welcome line on the first user gesture (which also unlocks the
-  // AudioContext), so Vee greets the user instead of the wizard opening silent.
+  wireStep(state, root);
+
+  // Greet immediately when the wizard appears — audio plays freely in the app
+  // webview (Vee already speaks on launch), so there's no need to wait for a
+  // click. A first-gesture listener stays as a fallback in case the very first
+  // launch hasn't unlocked audio yet; it self-cancels once we've greeted.
+  let greeted = false;
   const greet = () => {
+    if (greeted || state.step !== 0) return;
+    greeted = true;
     root.removeEventListener("pointerdown", greet);
     root.removeEventListener("keydown", greet);
-    if (state.step === 0) narrateStep(state);
+    narrateStep(state);
   };
   root.addEventListener("pointerdown", greet);
   root.addEventListener("keydown", greet);
-
-  wireStep(state, root);
+  greet();
 }
 
 /** Show the wizard on the first open of each new build. No-op once finished.
@@ -577,11 +714,15 @@ function render(state: State, root: HTMLElement): void {
 export async function maybeShowOnboarding(
   speak: Narrate = () => {},
   startDemo: StartDemo = () => {},
+  ask: Ask = () => {},
+  force = false,
 ): Promise<boolean> {
-  // Dev/test override: force the wizard regardless of the seen-flag or an already
-  // entitled license. Set localStorage "valet_force_onboarding" = "1", or load
-  // with ?onboard=1 — lets us replay onboarding without wiping the .env license.
+  // Force the wizard regardless of the seen-flag or an already entitled license:
+  // the tray "Replay setup" calls this with force=true (no reload, so audio stays
+  // unlocked and Vee narrates instantly). Also honored via the test toggles
+  // (localStorage "valet_force_onboarding"=1 or ?onboard=1).
   const forced =
+    force ||
     localStorage.getItem("valet_force_onboarding") === "1" ||
     new URLSearchParams(location.search).get("onboard") === "1";
 
@@ -612,6 +753,7 @@ export async function maybeShowOnboarding(
     voice: cfg?.voice === "female" ? "female" : "male",
     speak,
     demo: startDemo,
+    ask,
   };
   const root = document.createElement("div");
   root.id = "valet-onboarding";
