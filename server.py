@@ -7854,7 +7854,12 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
             if task_id:
                 await emit_cursor_control(task_id, True, res.label or target)
             try:
-                glide = await _ax_executor.glide_to_target(_gx, _gy, ref=res.ref)
+                # In a browser, skip the post-glide AX hit-test: web rows have a
+                # deep tree where the element under the point is a child span, so
+                # the strict match false-aborts ("that moved, sir") even when the
+                # cursor is dead on the target. We click by mouse there anyway.
+                glide = await _ax_executor.glide_to_target(
+                    _gx, _gy, ref=res.ref, verify=not _is_browser_app(app))
             finally:
                 if task_id:
                     await emit_cursor_control(task_id, False)

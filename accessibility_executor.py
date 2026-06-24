@@ -681,12 +681,18 @@ class AccessibilityExecutor(ActionExecutor):
         return True
 
     async def glide_to_target(self, x: float, y: float, *, ref: Optional[str] = None,
-                              duration: float = 0.45) -> dict:
+                              duration: float = 0.45, verify: bool = True) -> dict:
         """Visibly glide the real cursor to (x, y) on a worker thread (so the
-        async voice loop can't jank it), then — when `ref` is given — AX hit-test
-        that the element under the cursor still matches. Does NOT click; the
-        caller's existing gated click_element fires the actual click, so the
-        safety gate (confirm card / kill switch) is preserved.
+        async voice loop can't jank it), then — when `ref` is given AND `verify`
+        — AX hit-test that the element under the cursor still matches. Does NOT
+        click; the caller's existing gated click_element fires the actual click,
+        so the safety gate (confirm card / kill switch) is preserved.
+
+        `verify=False` skips the post-glide hit-test: browser web content has a
+        deep AX tree where the element AT a point is often a child span of the
+        resolved row, so the strict role/title match false-aborts ('that moved,
+        sir') even though the cursor is dead on the target. The user_moved /
+        timeout aborts (physical mouse grab, stall) are always honored.
 
         Returns {'ok': bool, 'reason': None|'user_moved'|'timeout'|'moved_target'
         |'unavailable'}."""
@@ -695,7 +701,7 @@ class AccessibilityExecutor(ActionExecutor):
         res = await asyncio.to_thread(move_cursor, float(x), float(y), duration=duration)
         if res.get("aborted"):
             return {"ok": False, "reason": res["aborted"]}
-        if ref is not None and not await asyncio.to_thread(self._verify_under, ref, x, y):
+        if verify and ref is not None and not await asyncio.to_thread(self._verify_under, ref, x, y):
             return {"ok": False, "reason": "moved_target"}
         return {"ok": True, "reason": None}
 
