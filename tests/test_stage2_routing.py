@@ -185,6 +185,18 @@ def test_field_dictation_and_repo_hint():
     assert b["action"] == "send_to_claude_code" and b["repo"] == "", b
 
 
+def test_logout_login_routes_to_ui_loop():
+    # Log out/in flows → the supervised UI loop, NOT a brittle AppleScript.
+    for phrase in ("log out of my gmail", "sign out of gmail", "log back into gmail",
+                   "log into stripe", "sign in to stripe", "log back in"):
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "ui_task" and a.get("goal"), (phrase, a)
+    # Must not hijack lookalikes.
+    for phrase in ("open gmail", "logo design ideas", "log my workout"):
+        a = server.detect_action_fast(phrase)
+        assert a is None or a["action"] != "ui_task", (phrase, a)
+
+
 def test_stripe_speech_correction():
     from voice_text import apply_speech_corrections as fix
     assert fix("open the strip email") == "open the Stripe email"
