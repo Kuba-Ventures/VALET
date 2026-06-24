@@ -256,6 +256,7 @@ async def build_observation(executor, app: Optional[str] = None,
         "app": app_name,
         "elements": elements,
         "window_frame": win_frame,
+        "web_top": ax.data.get("web_top") if ax.ok else None,  # y where page content starts
         "image": image,                      # {b64, media_type, width, height} | None
         "screen_recording": screen_recording_trusted(),
         "ax_ok": ax.ok,

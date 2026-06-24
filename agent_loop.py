@@ -71,6 +71,29 @@ def _is_browser(app: Optional[str]) -> bool:
     return bool(app) and app.strip().lower() in _BROWSER_APPS
 
 
+def _page_elements(observation: dict) -> list:
+    """The candidate elements to show the model. For a browser, DROP everything
+    that sits entirely above the web-content top (the browser's own toolbar,
+    profile/avatar button, tab strip, address bar, extensions) so the loop can
+    only target the PAGE — never Chrome's chrome (which is why 'log out of Gmail'
+    kept hitting the Chrome profile button). No-op when not a browser or when the
+    web-content top is unknown."""
+    els = observation.get("elements") or []
+    if not _is_browser(observation.get("app")):
+        return els
+    web_top = observation.get("web_top")
+    if not web_top:
+        return els
+    kept = []
+    for e in els:
+        fr = e.get("frame")
+        if fr and len(fr) == 4 and (fr[1] + fr[3]) <= web_top + 4:
+            continue  # entirely in the toolbar band → browser chrome, not the page
+        kept.append(e)
+    # Safety: if the filter nuked everything (odd geometry), fall back to all.
+    return kept or els
+
+
 def _find_element(observation: dict, ref: Optional[str]) -> dict:
     """The observed element dict for `ref`, or {} if not found."""
     if not ref:
@@ -238,7 +261,9 @@ def _extract_decision(resp) -> dict:
 
 async def _decide(client, goal: str, observation: dict, history: list,
                   model: str = _DECIDE_MODEL) -> dict:
-    elements = observation.get("elements") or []
+    # In a browser, only the PAGE is offered as candidates — the toolbar/profile
+    # buttons are filtered out so the model can't pick Chrome's own chrome.
+    elements = _page_elements(observation)
     user = (
         f"GOAL: {goal}\n\n"
         f"FOCUSED APP: {observation.get('app','?')}\n"

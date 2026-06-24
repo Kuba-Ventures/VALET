@@ -254,6 +254,7 @@ def _enumerate_window(win_el, max_elements: int):
     queue = [(win_el, 0)]
     idx = 0
     seen = 0
+    web_top = None  # top-y where web CONTENT starts (below the browser's toolbar)
     while queue and len(elements) < max_elements:
         el, depth = queue.pop(0)
         seen += 1
@@ -262,6 +263,12 @@ def _enumerate_window(win_el, max_elements: int):
         role = _str_attr(el, _kRole)
         title = _str_attr(el, _kTitle) or _str_attr(el, _kDesc)
         value = _str_attr(el, _kValue)
+        # Record where the rendered page begins, so callers can tell page content
+        # apart from the browser's own chrome (toolbar/profile/tabs/address bar).
+        if role == "AXWebArea":
+            _wf = _frame_of(el)
+            if _wf and (web_top is None or _wf[1] < web_top):
+                web_top = _wf[1]
         if _is_interesting(role, title, value):
             ref = f"e{idx}"
             idx += 1
@@ -280,7 +287,7 @@ def _enumerate_window(win_el, max_elements: int):
             if kids:
                 for k in kids:
                     queue.append((k, depth + 1))
-    return elements, ref_map
+    return elements, ref_map, web_top
 
 
 def _enumerate_menu_bar(app_el, start_idx: int):
@@ -561,7 +568,7 @@ class AccessibilityExecutor(ActionExecutor):
         def _do():
             pid = _pid_for_app(app)
             if pid is None:
-                return None, None, "no_target_app"
+                return None, None, "no_target_app", None
             name = _app_name_for_pid(pid) or app or "frontmost"  # the REAL app observed
             app_el = _AX.AXUIElementCreateApplication(pid)
             # Force web/Electron apps (Chrome, Brave, Slack, VS Code, …) to build
@@ -585,8 +592,8 @@ class AccessibilityExecutor(ActionExecutor):
                 time.sleep(0.6)
             win = _focused_window(app_el)
             if win is None:
-                return None, name, "no_window"
-            els, ref_map = _enumerate_window(win, max_elements)
+                return None, name, "no_window", None
+            els, ref_map, web_top = _enumerate_window(win, max_elements)
             # Also expose the menu bar (Apple menu + top-level app menus). It lives
             # outside the window tree, so walkthroughs that point at / open a menu
             # ("click the Apple menu") depend on this being in the observation.
@@ -594,9 +601,9 @@ class AccessibilityExecutor(ActionExecutor):
             els.extend(mb_els)
             ref_map.update(mb_map)
             self._ref_map = ref_map
-            return els, name, None
+            return els, name, None, web_top
 
-        els, name, err = await asyncio.to_thread(_do)
+        els, name, err, web_top = await asyncio.to_thread(_do)
         if err == "no_target_app":
             return ActionResult.failure(Capability.OBSERVE_UI, error=err,
                                         message="I couldn't find that app, sir.")
@@ -605,7 +612,7 @@ class AccessibilityExecutor(ActionExecutor):
                                         message="That app has no window I can read, sir.")
         return ActionResult.success(
             Capability.OBSERVE_UI,
-            data={"app": name, "elements": [e.to_dict() for e in els]},
+            data={"app": name, "elements": [e.to_dict() for e in els], "web_top": web_top},
             message=f"{len(els)} elements on screen, sir.",
             backend=self.name,
         )
