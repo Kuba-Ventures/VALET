@@ -472,8 +472,9 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN check Desktop projects and their git status
 - You CAN plan complex tasks by asking smart questions before executing
 - You CAN see what's on {user_name}'s screen — open windows, active apps, and screenshot vision
+- You CAN open or click anything that's visible on screen — an email in an open inbox, a file in a Finder window, a link, a button, a list item. Use [ACTION:OPEN_ON_SCREEN] for these.
 - You CAN read {user_name}'s calendar — today's events, upcoming meetings, schedule overview
-- You CAN read {user_name}'s email (READ-ONLY) — unread count, recent messages, search by sender/subject. You CANNOT send, delete, or modify emails.
+- You CAN read {user_name}'s email (READ-ONLY) — unread count, recent messages, search by sender/subject. You can also OPEN an email that's visible in the inbox on screen via [ACTION:OPEN_ON_SCREEN]. You CANNOT send, delete, or modify emails.
 - You CAN read Apple Notes and create NEW notes — but you CANNOT edit or delete existing notes
 - You CAN manage tasks — create, complete, and list to-do items with priorities and due dates
 - You CAN help plan {user_name}'s day — combine calendar events, tasks, and priorities into an organized plan
@@ -552,6 +553,7 @@ ACTION SYSTEM:
 When you decide the user needs something DONE (not just discussed), include an action tag in your response:
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
 - [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
+- [ACTION:OPEN_ON_SCREEN] description — open or click ONE thing the user can see on screen, named in plain words: an email in the open inbox ("the email from Stripe"), a file in a Finder window ("the resume PDF"), a link, a button, a row. Vee clicks it where it sits; if it isn't on the current screen it navigates there first (e.g. opens the Downloads folder, then the file). Use this for "open/read/click the X" when X is on-screen content rather than an installed app or a website. Pass the description verbatim. For launching an app use OPEN_APP; for a website use the web route; for a genuine multi-step "do X then Y" use UI_TASK.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
 - [ACTION:RESEARCH] brief — when the user asks an informational question. You search the web natively (web_search + web_fetch on Opus) and the answer renders as result cards in the Process Panel plus a short spoken summary. NEVER produces a file, folder, project, or report document. Do NOT slugify the user's words into a folder name. Pass the question through as the brief.
@@ -799,7 +801,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|UI_TASK)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -4811,6 +4813,17 @@ _OPEN_FOLDER_RE = re.compile(
     r'^(?:open|show\s+me|go\s+to|take\s+me\s+to|reveal|pull\s+up)\s+'
     r'(?:my\s+|the\s+)?(?P<name>[a-z][a-z ]*?)(?:\s+folder|\s+directory)?\s*[.?!]*$',
     re.IGNORECASE)
+# Open an email/message that's visible in the inbox on screen ("open the email
+# from Stripe", "read that message", "open the Stripe thread"). The verb + the
+# email/message/thread anchor means this only fires on on-screen mail items —
+# launching the Mail app ("open my email") is matched earlier by
+# _OPEN_APP_LAUNCH_RE, and a website ("open my gmail") by the web route, so both
+# win first. The long tail of on-screen opens (files, links, buttons) is handled
+# by the LLM's [ACTION:OPEN_ON_SCREEN] tag, which has full screen context.
+_OPEN_ONSCREEN_MAIL_RE = re.compile(
+    r'^(?:open|read|click|pull\s+up|show\s+me)\s+(?:the\s+|that\s+|this\s+|my\s+)?'
+    r'(?P<target>.*?\b(?:e-?mail|message|thread|conversation)\b.*?)\s*[.?!]*$',
+    re.IGNORECASE)
 # Stage 3 — guided walkthroughs. Explicit "teach me" intents only ("how do I X"
 # stays conversational/LLM so it can answer in words).
 _WALKTHROUGH_RE = re.compile(
@@ -5060,6 +5073,17 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                 _url = f"https://www.google.com/search?q={quote(_wt)}"
             return {"action": "open_url", "target": _url,
                     "browser": _wb or "chrome", "label": _wt}
+
+    # Open an on-screen email/message by clicking it where it sits in the inbox
+    # ("open the email from Stripe"). Runs AFTER app-launch and the web route, so
+    # "open my email" (Mail app) and "open my gmail" (website) still win. Resolves
+    # against the frontmost window and escalates to the supervised loop if the
+    # item isn't visible — see _handle_ui_open.
+    _oem = _OPEN_ONSCREEN_MAIL_RE.match(t)
+    if _oem:
+        _emt = _oem.group("target").strip(" .?!")
+        if _emt and _emt not in ("email", "e-mail", "message", "thread", "conversation"):
+            return {"action": "ui_open", "target": _emt}
 
     # Calendar — explicit schedule requests
     if any(p in t for p in ["what's my schedule", "whats my schedule", "what's on my calendar",
@@ -6320,6 +6344,14 @@ async def voice_handler(ws: WebSocket):
                             # for the confirm reply).
                             response_text = "On it, sir."
                             _track_uc(ws, _timed_action(turn_timer, "ui_act", _handle_ui_act(action, ws)))
+                        elif action["action"] == "ui_open":
+                            # Open/click one thing visible on screen — one-shot
+                            # against the frontmost window, escalating to the
+                            # supervised loop if it isn't on screen yet.
+                            response_text = "Let me open that, sir."
+                            _track_uc(ws, _timed_action(
+                                turn_timer, "ui_open",
+                                _handle_ui_open(action.get("target", ""), ws)))
                         elif action["action"] == "run_command":
                             # UC6 — voice terminal command (Tier 0 auto / Tier 1 confirm).
                             response_text = "Let me run that, sir."
@@ -6679,6 +6711,13 @@ async def voice_handler(ws: WebSocket):
                                     if goal:
                                         response_text = "On it, sir — I'll work through it."
                                         _track_uc(ws, _handle_ui_task(goal, ws))
+                                elif embedded_action["action"] == "open_on_screen":
+                                    # Open/click one visible thing (email row, file,
+                                    # link). One-shot + escalate to the loop on miss.
+                                    desc = (embedded_action.get("target") or "").strip()
+                                    if desc:
+                                        response_text = "Let me open that, sir."
+                                        _track_uc(ws, _handle_ui_open(desc, ws))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "save_contact":
@@ -7744,7 +7783,7 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
         else:
             r = await _ax_executor.click_element(point=res.point, app=app, task_id=task_id)
 
-    return {"ok": r.ok, "status": res.status, "via": res.via,
+    return {"ok": r.ok, "status": res.status, "via": res.via, "app": app,
             "label": res.label, "message": r.message, "target": res.to_dict()}
 
 
@@ -7882,6 +7921,52 @@ async def _handle_ui_act(action: dict, ws) -> None:
         return
     msg = result.get("message") or ("Done, sir." if result.get("ok") else "I couldn't do that, sir.")
     await _speak(ws, msg)
+
+
+async def _handle_ui_open(target: str, ws) -> None:
+    """Open/click ONE thing the user named that's visible on screen.
+
+    Two-tier, matching the chosen behaviour: a fast one-shot click against the
+    frontmost window, escalating to the supervised multi-step loop when the
+    target isn't on screen yet (so "open the resume in Downloads" can open the
+    folder first, then the file). A single click opens an email row, link, or
+    button outright; in Finder a click only SELECTS a file, so we follow with
+    Cmd+O to actually open it. Runs on a background task so the (gated) escalation
+    loop's confirm replies and the kill switch stay live."""
+    if not target:
+        await _speak(ws, "What should I open, sir?")
+        return
+    try:
+        async with process_bus.task_context(f"Open {target}") as task_id:
+            result = await _resolve_and_act("click", target, task_id=task_id)
+            status = result.get("status")
+
+            # Not on the current screen → hand to the supervised observe→act loop,
+            # which can navigate (open the right app/folder) and then open it.
+            if status == "miss":
+                await emit_step(task_id, "Not on screen — working through it",
+                                detail="escalating to the UI loop", status="active")
+                loop_res = await _run_ui_task(f"open {target}", task_id=task_id)
+                await _speak(ws, loop_res.get("message") or "Done, sir.")
+                return
+
+            # Ambiguous / honest miss from the resolver → just report it.
+            if not result.get("ok"):
+                await _speak(ws, result.get("message")
+                             or f"I don't see {target} on screen, sir.")
+                return
+
+            # Finder: the click selected the file; Cmd+O opens it. (Email rows,
+            # links and buttons are already opened by the click itself.)
+            if (result.get("app") or "").lower() == "finder" and not kill_switch.is_engaged():
+                await emit_step(task_id, "Opening the selection", detail="Cmd+O",
+                                status="active")
+                await _ax_executor.key_combo("cmd+o", app="Finder", task_id=task_id)
+    except Exception as e:
+        log.error(f"ui_open error: {e}")
+        await _speak(ws, "I couldn't open that, sir.")
+        return
+    await _speak(ws, result.get("message") or "Opened, sir.")
 
 
 @app.post("/api/ui/act")
