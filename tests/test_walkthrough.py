@@ -42,6 +42,15 @@ def test_step_done_no_change_false():
     assert wt.step_done(obs, dict(obs), wt.Step("s", "n")) is False
 
 
+def test_step_done_change_when_verify_already_present():
+    # "Dark" already labels the Appearance picker, so its presence can't mark
+    # completion — but picking it changes other elements, which should count.
+    before = {"app": "System Settings", "elements": [{"title": "Dark"}, {"title": "Light"}]}
+    after = {"app": "System Settings",
+             "elements": [{"title": "Dark"}, {"title": "Auto"}, {"title": "Tinted"}]}
+    assert wt.step_done(before, after, wt.Step("s", "n", verify="dark")) is True
+
+
 # ── pure: curated matching ───────────────────────────────────────────────────
 def test_match_curated_bluetooth():
     steps = wt.match_curated("turn on bluetooth")
@@ -143,6 +152,17 @@ def test_loop_honest_miss_when_unresolved():
     res, spoken, glided, emitted = _run_loop([step], observe, resolve)
     assert not glided
     assert any("can't see" in s.lower() for s in spoken), spoken
+
+
+def test_loop_completes_on_last_step_timeout():
+    # If the last step's completion can't be detected, the loop wraps up as done
+    # (so the caption + panel clear) instead of hanging — it still pointed first.
+    step = wt.Step("Pick", "Click Dark.", target="the Dark option", verify="dark")
+    async def observe(): return {"app": "Settings", "elements": [{"title": "Dark"}]}  # never changes
+    async def resolve(obs, desc): return _Res(frame=[10, 10, 4, 4], ref="e1", label="the Dark option")
+    res, spoken, glided, emitted = _run_loop([step], observe, resolve)
+    assert res["status"] == "done", res
+    assert glided
 
 
 def test_loop_halts_on_kill():
