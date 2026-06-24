@@ -18,6 +18,7 @@ a caller-supplied `emit` callback — no direct WebSocket / process_events coupl
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Awaitable, Callable, Optional
@@ -30,6 +31,10 @@ log = logging.getLogger("valet.loop")
 _DEFAULT_MAX_STEPS = 8
 # Bail after this many consecutive non-veto failures (can't make progress).
 _MAX_CONSECUTIVE_FAILS = 2
+# Pause after an action before re-observing, so a just-opened menu/popup or a page
+# transition has time to RENDER before the next screenshot. Without this the loop
+# screenshots mid-animation and "can't see" a menu the user clearly can.
+_ACT_SETTLE = 0.5
 
 _ACTIONS = ("click", "type", "key", "open_app", "done", "fail")
 
@@ -506,6 +511,11 @@ async def run_loop(
                         "ok": ok, "msg": getattr(result, "message", "")})
         await _emit("act", getattr(result, "message", "") or act,
                     status="done" if ok else "error")
+
+        # Let the UI settle (menu open animation, page nav) before re-observing —
+        # otherwise the next screenshot catches it mid-render and the model can't
+        # see the menu item it just revealed.
+        await asyncio.sleep(_ACT_SETTLE)
 
         if ok:
             consecutive_fails = 0
