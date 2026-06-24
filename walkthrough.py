@@ -61,6 +61,17 @@ _CURATED: dict[str, list[Step]] = {
              "Click Turn On, sir, and keep your recovery key somewhere safe.",
              target="the Turn On button for FileVault", verify="on"),
     ],
+    # Dark mode lives in System Settings → Appearance. Deep-linking straight there
+    # (rather than walking the user through the Apple menu → System Settings) keeps
+    # the whole flow inside one observable window the cursor can glide within.
+    "dark_mode": [
+        Step("Open Appearance",
+             "I'm opening Appearance settings, sir.",
+             open="Appearance", verify="Appearance"),
+        Step("Choose Dark",
+             "Click Dark, sir, to switch your Mac to dark mode.",
+             target="the Dark appearance option", verify="Dark"),
+    ],
 }
 
 _CURATED_ALIASES: dict[str, str] = {
@@ -68,6 +79,8 @@ _CURATED_ALIASES: dict[str, str] = {
     "wifi": "wifi", "wi-fi": "wifi", "wi fi": "wifi", "wireless": "wifi",
     "filevault": "filevault", "file vault": "filevault", "disk encryption": "filevault",
     "encryption": "filevault",
+    "dark mode": "dark_mode", "darkmode": "dark_mode", "dark theme": "dark_mode",
+    "night mode": "dark_mode",
 }
 
 
@@ -125,7 +138,13 @@ _PLANNER_SYSTEM = (
     "their Mac. Produce a short ordered list of steps. Each narration is ONE brief "
     "sentence, calm and direct, no em-dashes. For each step, name the on-screen "
     "control to point at (target) and a word that will be visible once the step is "
-    "done (verify). You only TEACH and POINT; never instruct as if you clicked it."
+    "done (verify). You only TEACH and POINT; never instruct as if you clicked it. "
+    "Strongly prefer jumping STRAIGHT to the relevant System Settings pane via the "
+    "`open` field (e.g. open='Appearance', 'Displays', 'Sound', 'Wi-Fi') instead of "
+    "routing the user through the Apple menu or System Settings' own navigation — "
+    "fewer steps, and the control is then inside one window the cursor can glide to. "
+    "Only point at the menu bar (e.g. 'the Apple menu', 'the File menu') when the "
+    "task genuinely has no Settings pane and must be reached through a menu."
 )
 
 
@@ -247,8 +266,10 @@ async def run_walkthrough(
             res = await deps.resolve(before, step.target)
             pt = _point_of(res)
             if pt is not None:
+                # Banner text = the spoken instruction, so the bubble by the cursor
+                # reads like "Click the Apple menu" (Clicky-style), not a bare label.
                 await deps.glide(pt[0], pt[1], getattr(res, "ref", None),
-                                 getattr(res, "label", "") or step.target)
+                                 step.narration or getattr(res, "label", "") or step.target)
             else:
                 # Honest miss — never a wild point.
                 await deps.speak(f"I can't see {step.target} on screen, sir.")

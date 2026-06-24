@@ -178,7 +178,13 @@ let ctHideTimer: number | null = null;
 function showCursorTakeover(active: boolean, label?: string) {
   if (ctHideTimer) { clearTimeout(ctHideTimer); ctHideTimer = null; }
   if (active) {
-    ctLabel.textContent = label ? `Vee is steering your cursor → ${label}` : "Vee is steering your cursor";
+    // A walkthrough passes the spoken instruction as the label ("Click the Apple
+    // menu, sir") — show that verbatim as the bubble, Clicky-style. A bare target
+    // label from a UC glide ("Submit button") keeps the "steering →" framing.
+    const looksLikeInstruction = !!label && label.length > 20 && label.includes(" ");
+    ctLabel.textContent = looksLikeInstruction
+      ? (label as string)
+      : label ? `Vee is steering your cursor → ${label}` : "Vee is steering your cursor";
     cursorBanner.classList.remove("hidden");
   } else {
     // Linger briefly so a fast glide (~0.5s) still registers visually.
