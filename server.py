@@ -2172,8 +2172,37 @@ async def _execute_draft_email(target: str, ws):
                 pass
 
 
+async def _open_calendar_at(date_str: str) -> None:
+    """Bring Calendar.app to the front on `date_str` (YYYY-MM-DD), day view, so the
+    user SEES the day Vee is reading. Best-effort — a failure here never blocks the
+    spoken answer. Day is set to 1 before the month so changing month can't overflow
+    (e.g. setting month to Feb while day=31)."""
+    try:
+        y, m, d = (int(p) for p in date_str.split("-"))
+    except Exception:
+        return
+    script = f'''
+        set theDate to current date
+        set time of theDate to 0
+        set day of theDate to 1
+        set year of theDate to {y}
+        set month of theDate to {m}
+        set day of theDate to {d}
+        tell application "Calendar"
+            activate
+            switch view to day view
+            view calendar at theDate
+        end tell
+    '''
+    try:
+        await run_applescript(script)
+    except Exception as e:
+        log.warning(f"open calendar at {date_str} failed: {e}")
+
+
 async def _execute_check_date(target: str, ws):
-    """Look up calendar events for a specific date and read them back."""
+    """Look up calendar events for a specific date and read them back — and bring
+    Calendar.app to that day so the user sees the schedule, not just hears it."""
     import apple_calendar
     date_str = target.strip()
     if not date_str:
@@ -2183,6 +2212,8 @@ async def _execute_check_date(target: str, ws):
                "Permissions, Calendar, or connect Google in Settings.")
     else:
         try:
+            # Open the day visually alongside the spoken summary (best-effort).
+            await _open_calendar_at(date_str)
             events = await _read_calendar_merged(date_str)
             if not events:
                 msg = f"You have nothing on the calendar for {date_str}, sir."
