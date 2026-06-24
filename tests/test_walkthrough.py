@@ -182,6 +182,24 @@ def test_loop_completes_via_system_check():
     assert calls["n"] >= 1  # the system-state check actually ran
 
 
+def test_loop_captions_keyboard_step_without_target():
+    # A keyboard step ("Press Command+Shift+P") has no control to glide to, but the
+    # instruction should still ride by the cursor — set_caption fires for it.
+    step = wt.Step("A", "Press Command+Shift+P.", target="")
+    captioned = []
+    async def observe(): return {"app": "X", "elements": []}
+    deps = wt._LoopDeps(
+        observe=observe, resolve=lambda o, d: _aw(),
+        glide=lambda *a: _aw(), speak=lambda t: _aw(),
+        emit=lambda *a, **k: _aw(),
+        set_caption=lambda t: captioned.append(t) or _aw(),
+    )
+    asyncio.run(wt.run_walkthrough(
+        goal="g", steps=[step], deps=deps,
+        poll_interval=0, step_timeout=1, clock=_fake_clock(), sleep=_noop_sleep))
+    assert captioned == ["Press Command+Shift+P."]
+
+
 def test_loop_halts_on_kill():
     step = wt.Step("x", "n", target="t", verify="v")
     async def observe(): return {"app": "a", "elements": []}

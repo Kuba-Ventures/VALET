@@ -243,6 +243,9 @@ class _LoopDeps:
     # Reliable system-state completion check for a step's `system_check` key
     # (returns True when the real OS setting flipped — e.g. dark mode is on).
     check_system: Optional[Callable[[str], Awaitable[bool]]] = None
+    # Show the instruction in the cursor-follower caption bubble for EVERY step
+    # (keyboard / "look here" steps too, not only ones with a control to glide to).
+    set_caption: Optional[Callable[[str], Awaitable[None]]] = None
 
 
 async def run_walkthrough(
@@ -267,6 +270,11 @@ async def run_walkthrough(
             return {"status": "halted", "message": "Stopped, sir."}
         await deps.emit(f"Step {i + 1}/{total}: {step.title}",
                         detail=step.narration, status="active")
+        # Show the instruction in the cursor bubble for EVERY step — keyboard steps
+        # ("Press Command+Shift+P") and "look here" steps included, not only steps
+        # with a control to glide to. It rides by the cursor wherever it is.
+        if deps.set_caption is not None:
+            await deps.set_caption(step.narration)
         # Announce the step IMMEDIATELY — Vee speaks before the (silent) observe /
         # open / resolve work, so there's no dead air between "processing" and the
         # first words. The pane-open and cursor glide follow the narration.
