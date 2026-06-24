@@ -128,6 +128,41 @@ def test_summarize_screen_routes():
         assert a and a["action"] == "summarize_screen", (phrase, a)
 
 
+def test_go_to_clicks_on_screen_target():
+    # "go to / navigate to / select X" with no app/web/settings match → click X
+    # on the current screen (e.g. the "Developers" card on a Stripe page).
+    for phrase, tgt in [("go to developers", "developers"),
+                        ("navigate to developers", "developers"),
+                        ("select developers", "developers"),
+                        ("go to the developers section", "developers"),
+                        ("go to billing", "billing")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "ui_act" and a["ui_action"] == "click" \
+            and a["target"] == tgt, (phrase, a)
+
+
+def test_set_value_clicks_on_screen_option():
+    # "set/change/switch <setting> to <value>" → click the VALUE on screen
+    # (e.g. the Dark button under Appearance on the Stripe Developers page).
+    for phrase, val in [("set appearance to dark", "dark"),
+                        ("change appearance to dark", "dark"),
+                        ("switch to dark mode", "dark"),
+                        ("change the theme to light", "light"),
+                        ("set the SDK language to python", "python")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "ui_act" and a["ui_action"] == "click" \
+            and a["target"] == val, (phrase, a)
+
+
+def test_go_to_does_not_hijack_real_routes():
+    # System actions and known web destinations still win; conversational
+    # "go to bed" isn't a click.
+    assert server.detect_action_fast("open gmail")["action"] == "open_url"
+    assert server.detect_action_fast("go to sleep")["action"] == "system_action"
+    b = server.detect_action_fast("go to bed")
+    assert b is None or b["action"] != "ui_act", b
+
+
 def test_summarize_does_not_hijack_describe_or_research():
     # "what's on my screen" stays describe; an arbitrary "summarize the <topic>"
     # is NOT a screen summary — it falls through to the LLM (research vs screen).
