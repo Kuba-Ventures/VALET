@@ -64,6 +64,7 @@ _kEnabled = "AXEnabled"
 _kFocusedWindow = "AXFocusedWindow"
 _kMainWindow = "AXMainWindow"
 _kWindows = "AXWindows"
+_kMenuBar = "AXMenuBar"
 _kPressAction = "AXPress"
 
 # How deep / wide we walk an AX tree. Bounds latency and token cost downstream.
@@ -279,6 +280,46 @@ def _enumerate_window(win_el, max_elements: int):
             if kids:
                 for k in kids:
                     queue.append((k, depth + 1))
+    return elements, ref_map
+
+
+def _enumerate_menu_bar(app_el, start_idx: int):
+    """Top-level menu-bar items (Apple menu, the app menu, File, Edit, View, …) for
+    the app, as (elements, ref_map). The menu bar is NOT inside any window subtree,
+    so the window walk misses it entirely — without this, "point at the Apple menu"
+    or "open the View menu" can never resolve, which is exactly why menu-bar
+    walkthrough steps failed. Shallow by design: only the bar items themselves
+    (descending into a menu requires pressing it open first). Refs are prefixed `m`
+    so they never collide with the window walk's `e` refs."""
+    elements: list[UIElement] = []
+    ref_map: dict = {}
+    bar = _copy_attr(app_el, _kMenuBar)
+    if bar is None:
+        return elements, ref_map
+    items = _copy_attr(bar, _kChildren) or []
+    idx = start_idx
+    for i, it in enumerate(items):
+        role = _str_attr(it, _kRole) or "AXMenuBarItem"
+        title = _str_attr(it, _kTitle) or _str_attr(it, _kDesc)
+        # The first bar item is the Apple menu; its AXTitle is usually "Apple" or
+        # empty — name it the way the resolver and the user both refer to it.
+        if i == 0 and (not title or title.strip().lower() == "apple"):
+            title = "Apple menu"
+        frame = _frame_of(it)
+        if not frame:
+            continue  # off-screen / no geometry → can't point at it honestly
+        ref = f"m{idx}"
+        idx += 1
+        enabled_v = _copy_attr(it, _kEnabled)
+        elements.append(UIElement(
+            ref=ref,
+            role=role,
+            title=title[:200],
+            value="",
+            enabled=bool(enabled_v) if enabled_v is not None else True,
+            frame=frame,
+        ))
+        ref_map[ref] = it
     return elements, ref_map
 
 
@@ -532,6 +573,12 @@ class AccessibilityExecutor(ActionExecutor):
             if win is None:
                 return None, name, "no_window"
             els, ref_map = _enumerate_window(win, max_elements)
+            # Also expose the menu bar (Apple menu + top-level app menus). It lives
+            # outside the window tree, so walkthroughs that point at / open a menu
+            # ("click the Apple menu") depend on this being in the observation.
+            mb_els, mb_map = _enumerate_menu_bar(app_el, len(els))
+            els.extend(mb_els)
+            ref_map.update(mb_map)
             self._ref_map = ref_map
             return els, name, None
 
