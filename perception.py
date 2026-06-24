@@ -327,3 +327,57 @@ async def describe_observation(observation: dict, anthropic_client) -> str:
         return f"You're in {app} — {title}, sir. I count {len(elements)} elements on screen."
     return ("I couldn't read the screen, sir. Screen Recording or Accessibility "
             "permission may be needed.")
+
+
+async def summarize_observation(observation: dict, anthropic_client) -> str:
+    """Read the FOCUSED content (window screenshot + AX text) and return a tight,
+    spoken summary that leads with the gist and calls out what the user needs to
+    do. App-agnostic: an email, a doc, a dashboard, an article — whatever's in
+    front. Falls back to the AX text alone when there's no image or no client."""
+    elements = observation.get("elements", [])
+    app = observation.get("app", "the focused app")
+    ax_text = elements_as_text(elements)
+
+    system = (
+        "You are VALET reading the user's FOCUSED window aloud. Summarize what's in "
+        "front of them and, crucially, what they need to DO about it. Lead with one "
+        "plain-sentence gist, then the action items as a short spoken run ('Two "
+        "things, sir: first … then …') — at most three, only the ones that are "
+        "actually there. If there's nothing to act on, say so and give the gist "
+        "only. British butler tone, dry and economical. No markdown, no bullet "
+        "characters, no headings — this is spoken. Keep it under about 60 words."
+    )
+    user_text = (f"Focused app: {app}.\nVisible text / elements:\n{ax_text}\n\n"
+                 "Summarize this and tell me what I need to do.")
+
+    if observation.get("image") and anthropic_client:
+        img = observation["image"]
+        try:
+            resp = await anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=400,
+                system=system,
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": img["media_type"], "data": img["b64"]}},
+                    {"type": "text", "text": user_text},
+                ]}],
+            )
+            return resp.content[0].text
+        except Exception as e:
+            log.warning("vision summary failed, falling back to AX: %s", e)
+
+    # No image (permission off) or no client — summarize from the AX snapshot alone.
+    if elements and anthropic_client:
+        try:
+            resp = await anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                system=system,
+                messages=[{"role": "user", "content": user_text}],
+            )
+            return resp.content[0].text
+        except Exception:
+            pass
+    return ("I couldn't read the screen well enough to summarize, sir. Screen "
+            "Recording or Accessibility permission may be needed.")

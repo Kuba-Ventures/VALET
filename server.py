@@ -552,6 +552,7 @@ INSTEAD SAY:
 ACTION SYSTEM:
 When you decide the user needs something DONE (not just discussed), include an action tag in your response:
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
+- [ACTION:SUMMARIZE_SCREEN] — read the FOCUSED content (the open email, doc, dashboard, article…) and speak a tight summary plus what the user needs to DO. Use when the user asks to summarize / TL;DR / "give me the gist" / "what do I need to do here" / "what does this say" about what's in front of them. Distinct from SCREEN, which just names what's open; this reads the content and extracts action items.
 - [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
 - [ACTION:OPEN_ON_SCREEN] description — open or click ONE thing the user can see on screen, named in plain words: an email in the open inbox ("the email from Stripe"), a file in a Finder window ("the resume PDF"), a link, a button, a row. Vee clicks it where it sits; if it isn't on the current screen it navigates there first (e.g. opens the Downloads folder, then the file). Use this for "open/read/click the X" when X is on-screen content rather than an installed app or a website. Pass the description verbatim. For launching an app use OPEN_APP; for a website use the web route; for a genuine multi-step "do X then Y" use UI_TASK.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
@@ -801,7 +802,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -4824,6 +4825,31 @@ _OPEN_ONSCREEN_MAIL_RE = re.compile(
     r'^(?:open|read|click|pull\s+up|show\s+me)\s+(?:the\s+|that\s+|this\s+|my\s+)?'
     r'(?P<target>.*?\b(?:e-?mail|message|thread|conversation)\b.*?)\s*[.?!]*$',
     re.IGNORECASE)
+# "Summarize what I need to do" / "summarize this" / "tldr this page" / "what do
+# I need to do here" / "what does this say" — read the FOCUSED content and speak
+# a gist + action items. Anchored on summarize/gist/tldr verbs (or the explicit
+# "what do I need to do") so it never swallows a general question. Works in any
+# app; the long tail routes through the LLM's [ACTION:SUMMARIZE_SCREEN] tag.
+# Screen-content nouns a deictic ("this/the …") may attach to. Deliberately a
+# closed set: "summarize the email/page/doc" is a screen summary, but "summarize
+# the news about OpenAI" is NOT — it falls through to the LLM to judge (research
+# vs. on-screen), since "the <arbitrary noun phrase>" shouldn't be hijacked here.
+_SCREEN_NOUN = (
+    r'(?:e-?mails?|messages?|threads?|conversations?|pages?|docs?|documents?|'
+    r'articles?|screens?|dashboards?|pdfs?|posts?|notes?|windows?|chats?|'
+    r'reports?|invoices?|receipts?|tickets?)')
+_SUMMARIZE_SCREEN_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:'
+    r'(?:summari[sz]e|sum\s+up|tl;?dr|recap)'
+    r'(?:\s+(?:this|that|it|(?:this|that|the|my)\s+' + _SCREEN_NOUN + r'|what\s+i\s+need\s+to\s+do))?'
+    r'|give\s+me\s+(?:the\s+)?(?:gist|rundown|tldr|summary)'
+    r'(?:\s+of\s+(?:this|it|(?:this|the|my)\s+' + _SCREEN_NOUN + r'))?'
+    r'|what\s+do\s+i\s+need\s+to\s+do(?:\s+here)?'
+    r'|what(?:\'s|\s+is|\s+are)\s+(?:my\s+)?(?:action\s+items?|to-?dos?|next\s+steps?)(?:\s+here)?'
+    r'|what\s+does\s+(?:this|it)\s+say'
+    r')\s*[.?!]*$',
+    re.IGNORECASE)
 # Stage 3 — guided walkthroughs. Explicit "teach me" intents only ("how do I X"
 # stays conversational/LLM so it can answer in words).
 _WALKTHROUGH_RE = re.compile(
@@ -5010,6 +5036,12 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         "hide it", "hide that", "hide the panel",
     ]):
         return {"action": "close_panel"}
+
+    # Summarize the focused content + action items ("summarize what I need to
+    # do", "tldr this", "what does this say"). Before describe_screen so a
+    # "summarize" never collapses to a generic "what's on screen".
+    if _SUMMARIZE_SCREEN_RE.match(t):
+        return {"action": "summarize_screen"}
 
     # Screen requests — checked BEFORE project matching to prevent misrouting
     if any(p in t for p in ["look at my screen", "what's on my screen", "whats on my screen",
@@ -5656,6 +5688,38 @@ async def _handle_screen(ws, voice_state: dict = None) -> None:
     if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
         return
     await _speak(ws, desc)
+
+
+async def _handle_summarize(ws, voice_state: dict = None) -> None:
+    """'Summarize what I need to do' — read the FOCUSED window (screenshot + AX
+    text) and speak a tight gist + action items. App-agnostic (email, doc,
+    dashboard…). Panel-first like _handle_screen: show the captured thumbnail,
+    then speak the summary."""
+    dispatch_time = time.time()
+    summary = "I couldn't read the screen well enough to summarize, sir."
+    async with process_bus.task_context("Summarizing the screen") as task_id:
+        try:
+            import perception
+            obs = await perception.build_observation(executor)
+            img = obs.get("image")
+            if img:
+                try:
+                    shot_dir = SCREENSHOTS_DIR / task_id
+                    shot_dir.mkdir(parents=True, exist_ok=True)
+                    (shot_dir / "window.png").write_bytes(base64.b64decode(img["b64"]))
+                    await emit_screenshot(task_id, f"{task_id}/window.png",
+                                          caption=obs.get("app") or "screen")
+                except Exception as e:
+                    log.warning(f"summarize thumbnail save failed: {e}")
+            if obs.get("image") or obs.get("elements"):
+                summary = await perception.summarize_observation(obs, anthropic_client)
+            await emit_step(task_id, summary, status="done")
+        except Exception as e:
+            log.error(f"summarize failed: {e}")
+    # Speak the result — unless the user already moved on (barge-in).
+    if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
+        return
+    await _speak(ws, summary)
 
 
 def get_lookup_status() -> str:
@@ -6338,6 +6402,9 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "describe_screen":
                             response_text = ""  # _handle_screen shows the panel + speaks the result
                             _track_uc(ws, _handle_screen(ws, voice_state))
+                        elif action["action"] == "summarize_screen":
+                            response_text = ""  # _handle_summarize shows the panel + speaks the result
+                            _track_uc(ws, _handle_summarize(ws, voice_state))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
@@ -6564,6 +6631,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = "Looking into that now, sir."
                                     elif action_type == "screen":
                                         response_text = ""  # _handle_screen shows the panel + speaks
+                                    elif action_type == "summarize_screen":
+                                        response_text = ""  # _handle_summarize shows the panel + speaks
                                     else:
                                         response_text = "Right away, sir."
 
@@ -6781,6 +6850,8 @@ async def voice_handler(ws: WebSocket):
                                         asyncio.create_task(create_apple_note("VALET Note", target))
                                 elif embedded_action["action"] == "screen":
                                     _track_uc(ws, _handle_screen(ws, voice_state))
+                                elif embedded_action["action"] == "summarize_screen":
+                                    _track_uc(ws, _handle_summarize(ws, voice_state))
                                 elif embedded_action["action"] == "read_note":
                                     # Read note in background and report back
                                     async def _read_and_report(search_term, _ws):
