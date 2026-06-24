@@ -4838,6 +4838,25 @@ _SCREEN_NOUN = (
     r'(?:e-?mails?|messages?|threads?|conversations?|pages?|docs?|documents?|'
     r'articles?|screens?|dashboards?|pdfs?|posts?|notes?|windows?|chats?|'
     r'reports?|invoices?|receipts?|tickets?)')
+# Last-resort on-screen navigation: "go to / navigate to / select <thing>" that
+# matched NO app / web / settings / project route above → click it where it sits
+# on the current screen (e.g. the "Developers" card on the Stripe settings page).
+# One-shot, honest miss — never escalates — so a stray "go to the gym" just says
+# "I don't see that, sir". "click/tap/press X" is handled earlier by _UI_CLICK_RE.
+_UI_NAV_RE = re.compile(
+    r'^(?:go\s+to|navigate\s+to|head\s+(?:over\s+)?to|take\s+me\s+to|jump\s+to|'
+    r'select|choose|click\s+into)\s+(?:the\s+)?(?P<target>.+?)'
+    r'(?:\s+(?:section|tab|page|link|option|menu|item|card|button))?\s*[.?!]*$',
+    re.IGNORECASE)
+# "set/change/switch [<setting>] to <value>" → click the VALUE option on the
+# current screen (e.g. the "Dark" button under Appearance). The value is the
+# click target. Late fallback + honest miss, like _UI_NAV_RE. "turn/toggle on X"
+# is intentionally NOT here — those are system toggles, not on-screen options.
+_UI_SET_RE = re.compile(
+    r'^(?:set|change|switch)\s+(?:the\s+)?(?:[a-z][a-z ]*?\s+)?'
+    r'(?:to|into)\s+(?:the\s+)?(?P<value>.+?)'
+    r'(?:\s+(?:mode|option|setting|theme|view|style))?\s*[.?!]*$',
+    re.IGNORECASE)
 _SUMMARIZE_SCREEN_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:'
@@ -5308,6 +5327,25 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if _sa:
         return {"action": "system_action", "name": _sa.name,
                 "label": _sa.label, "tier": _sa.tier}
+
+    # On-screen navigation fallback — LAST, so every specific route above wins
+    # first. "go to developers" / "select billing" with nothing else matching →
+    # click that thing on the current screen.
+    _navm = _UI_NAV_RE.match(t)
+    if _navm:
+        _navt = _navm.group("target").strip(" .?!")
+        if (_navt and len(_navt.split()) <= 6
+                and _navt not in ("it", "that", "this", "back", "there", "here", "sleep", "bed")):
+            return {"action": "ui_act", "ui_action": "click", "target": _navt}
+
+    # "set/change/switch <setting> to <value>" → click the value on screen
+    # ("set appearance to dark" → click the Dark button). Honest miss if absent.
+    _setm2 = _UI_SET_RE.match(t)
+    if _setm2:
+        _val = _setm2.group("value").strip(" .?!")
+        if (_val and len(_val.split()) <= 3
+                and _val not in ("it", "that", "this", "default", "on", "off", "sleep")):
+            return {"action": "ui_act", "ui_action": "click", "target": _val}
 
     return None  # Everything else goes to the LLM for conversational routing
 
@@ -7805,17 +7843,18 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
     intent = "type into" if action == "type" else "click"
     res = await target_resolver.resolve(obs, target, anthropic_client, intent=intent)
 
-    # "click Verde in Pinterest" → the parser keeps "Verde in Pinterest" as the
-    # literal target; if that misses, retry with the part before " in " ("Verde"),
-    # since "in <app>" is usually context, not part of the label.
+    # "click Developers in Stripe" → the parser keeps "Developers in Stripe" as
+    # the literal target; if that misses, retry with the part before " in "
+    # ("Developers"), since "in <app/site>" is usually context, not the label.
     if res.status == "miss" and " in " in target:
         short = target.rsplit(" in ", 1)[0].strip()
         if short and short != target:
-            # AX-only retry (vision=False): vision already failed on this same
-            # screenshot for the full target, so a second vision pass just adds
-            # ~1-2s for nothing. This is most of the "5s to fail" the user saw.
+            # Keep vision ON for the retry: the first pass failed on the FULL
+            # phrase ("Developers in Stripe"), but vision may well find the bare
+            # label ("Developers") that's plainly on the page — which is exactly
+            # the case that was missing the visible Stripe "Developers" card.
             retry = await target_resolver.resolve(obs, short, anthropic_client,
-                                                  intent=intent, vision=False)
+                                                  intent=intent)
             if retry.status in ("ref", "point", "ambiguous"):
                 res, target = retry, short
 
