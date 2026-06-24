@@ -4897,6 +4897,14 @@ _DICTATION_STOP_PHRASES = ("stop dictating", "stop dictation", "done dictating",
                            "im done", "stop typing", "that's all", "thats all")
 _DICTATION_NEWLINE_PHRASES = ("new line", "newline", "next line")
 _DICTATION_SEND_PHRASES = ("send it", "hit enter", "press enter", "submit that", "go ahead and send")
+# "log out of Gmail" / "sign out" / "log into Stripe" / "log back in" — a
+# multi-step UI flow (click the avatar → Sign out; on the way back, hit the
+# login hand-off). Route to the supervised agent loop, NOT a brittle AppleScript.
+_WEB_FLOW_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+|now\s+)?'
+    r'(?P<goal>(?:log|sign)\s+(?:me\s+)?'
+    r'(?:out\s+of|back\s+into|back\s+in\s+to|back\s+in|into|in\s+to|out|in)\b.*)$',
+    re.IGNORECASE)
 _SUMMARIZE_SCREEN_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:'
@@ -5107,6 +5115,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # mode that types each following utterance into the focused field.
     if _DICTATE_FIELD_RE.match(t):
         return {"action": "start_field_dictation"}
+
+    # Log out / log in flows → the supervised, hands-off UI loop (clicks the
+    # avatar, Sign out, etc.) instead of a brittle AppleScript that needs a
+    # scary approval. The loop's login hand-off covers signing back in.
+    _wf = _WEB_FLOW_RE.match(t)
+    if _wf:
+        return {"action": "ui_task", "goal": _wf.group("goal").strip(" .?!")}
 
     # "Send this to Claude Code to fix" — read the screen, brief it, dispatch.
     # Before summarize/describe so "send this to Claude to fix" isn't read as a
@@ -6744,6 +6759,11 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "start_field_dictation":
                             response_text = ""
                             asyncio.create_task(_execute_start_field_dictation(ws))
+                        elif action["action"] == "ui_task":
+                            # Multi-step UI flow (log out/in, etc.) via the
+                            # supervised, hands-off observe→act loop.
+                            response_text = "On it, sir — I'll work through it."
+                            _track_uc(ws, _handle_ui_task(action.get("goal", ""), ws))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
