@@ -18,33 +18,72 @@
        dot trails just below-right of the pointer tip and never covers what you're
        about to click. Custom shape/color lives entirely here, so restyling is a
        CSS edit. */
-    #dot {
+    /* The follower (dot + caption) rides as one transform so the caption tracks
+       the cursor with the dot — one GPU-composited move per frame, no window moves. */
+    #follow {
       position: fixed; top: 0; left: 0;
-      width: 8px; height: 8px; margin: 3px 0 0 3px;
+      transform: translate(-100px, -100px);
+      will-change: transform;
+      pointer-events: none;
+    }
+    #dot {
+      position: absolute; top: 3px; left: 3px;
+      width: 8px; height: 8px;
       border-radius: 50%;
       background: radial-gradient(circle at 35% 35%, #8fd0ff 0%, #2a86ff 58%, rgba(42,134,255,0) 72%);
       box-shadow: 0 0 5px 1px rgba(58,160,255,0.85), 0 0 2px 1px rgba(160,210,255,0.9);
-      transform: translate(-100px, -100px);
-      will-change: transform;
       transition: opacity 0.16s ease;
       pointer-events: none;
     }
     #dot.hidden { opacity: 0; }
+    /* Clicky-style instruction bubble, offset down-right of the cursor so it never
+       covers what you're about to click. Shown only during a walkthrough glide. */
+    #caption {
+      position: absolute; top: 16px; left: 18px;
+      max-width: 280px; white-space: normal;
+      padding: 7px 12px; border-radius: 13px;
+      background: linear-gradient(180deg, #2f8bff, #2a6cff);
+      color: #fff; font-size: 13.5px; line-height: 1.25; font-weight: 600;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.32), 0 0 0 0.5px rgba(255,255,255,0.18);
+      transition: opacity 0.16s ease;
+      pointer-events: none;
+    }
+    #caption.hidden { opacity: 0; }
   </style>
 </head>
 <body>
-  <div id="dot"></div>
+  <div id="follow">
+    <div id="dot"></div>
+    <div id="caption" class="hidden"></div>
+  </div>
   <script>
-    // Rust calls these via window.eval() each frame — no Tauri JS API / capabilities
-    // needed. moveDot positions the dot; setDotVisible toggles it (used by the
-    // next slice to show it only while Vee is steering).
+    // Rust calls these via window.eval() each frame / on cursor-control — no Tauri
+    // JS API / capabilities needed. moveDot positions the follower; setDotVisible
+    // toggles the dot (cursor on/off this display); setCaption sets the instruction
+    // bubble (the walkthrough glide). The caption shows only when it has text AND
+    // the cursor is on this display.
     (function () {
+      var follow = document.getElementById("follow");
       var dot = document.getElementById("dot");
+      var caption = document.getElementById("caption");
+      var capText = "";
+      var dotVisible = false;
+      function render() {
+        dot.classList.toggle("hidden", !dotVisible);
+        caption.classList.toggle("hidden", !(capText && dotVisible));
+      }
       window.moveDot = function (x, y) {
-        dot.style.transform = "translate(" + x + "px," + y + "px)";
+        follow.style.transform = "translate(" + x + "px," + y + "px)";
       };
       window.setDotVisible = function (visible) {
-        dot.classList.toggle("hidden", !visible);
+        dotVisible = !!visible;
+        render();
+      };
+      window.setCaption = function (text) {
+        capText = text || "";
+        caption.textContent = capText;
+        render();
       };
     })();
   </script>

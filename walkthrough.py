@@ -255,15 +255,25 @@ async def run_walkthrough(
             return {"status": "halted", "message": "Stopped, sir."}
         await deps.emit(f"Step {i + 1}/{total}: {step.title}",
                         detail=step.narration, status="active")
+        # Snapshot the screen BEFORE opening anything, so opening a pane (the app
+        # switching / the verify word appearing) registers as a real change in
+        # _await_step. Taking the baseline AFTER the open made navigation-only steps
+        # ("Open Appearance", no target) impossible to complete — the change had
+        # already happened — so they stalled on step 1 and the loop never reached
+        # the step that glides the cursor.
+        before = await deps.observe()
         # Bring the target on-screen first (open a settings pane / app) so the
-        # cursor can actually glide to the control this step is about.
+        # cursor can actually glide to the control this step is about. Re-observe
+        # after: `now` (the just-opened pane) is what the target resolves against.
         if step.open and deps.open_target is not None:
             await deps.open_target(step.open)
             await sleep(1.2)  # let the pane render before observing
-        before = await deps.observe()
+            now = await deps.observe()
+        else:
+            now = before
 
         if step.target:
-            res = await deps.resolve(before, step.target)
+            res = await deps.resolve(now, step.target)
             pt = _point_of(res)
             if pt is not None:
                 # Banner text = the spoken instruction, so the bubble by the cursor

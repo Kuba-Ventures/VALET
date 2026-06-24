@@ -175,6 +175,28 @@ cursorBanner.innerHTML = `<span class="ct-dot"></span><span class="ct-label">Vee
 document.body.appendChild(cursorBanner);
 const ctLabel = cursorBanner.querySelector(".ct-label") as HTMLElement;
 let ctHideTimer: number | null = null;
+// Drive the NATIVE cursor-follower caption (overlay.html bubble) so a walkthrough
+// instruction rides next to the real cursor over ANY app — the in-app banner above
+// only renders inside the orb window. The native overlay loop is Rust-driven and
+// isn't on the WS, so the orb webview relays the text through a Tauri command.
+// On clear we linger a few seconds so the instruction stays readable while the user
+// performs the step (the glide itself is only ~0.5s).
+let nativeCaptionClearTimer: number | null = null;
+function setNativeCaption(active: boolean, label?: string) {
+  const invoke = (window as unknown as {
+    __TAURI__?: { core?: { invoke?: (cmd: string, args: Record<string, unknown>) => Promise<unknown> } };
+  }).__TAURI__?.core?.invoke;
+  if (!invoke) return;
+  if (nativeCaptionClearTimer) { clearTimeout(nativeCaptionClearTimer); nativeCaptionClearTimer = null; }
+  if (active && label) {
+    try { void invoke("set_cursor_caption", { text: label }); } catch { /* ignore */ }
+  } else {
+    nativeCaptionClearTimer = window.setTimeout(() => {
+      try { void invoke("set_cursor_caption", { text: "" }); } catch { /* ignore */ }
+    }, 6000);
+  }
+}
+
 function showCursorTakeover(active: boolean, label?: string) {
   if (ctHideTimer) { clearTimeout(ctHideTimer); ctHideTimer = null; }
   if (active) {
@@ -435,6 +457,7 @@ socket.onMessage((msg) => {
     if (event?.type === "cursor_control") {
       const p = (event as { payload?: { active?: boolean; label?: string } }).payload;
       showCursorTakeover(!!p?.active, p?.label);
+      setNativeCaption(!!p?.active, p?.label);
     }
     if (event) processPanel.handleEvent(event);
   } else if (type === "close_panel") {
