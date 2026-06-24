@@ -185,11 +185,13 @@ class WorkSession:
         log.info(f"Work mode started: {self._project_name} ({working_dir})")
 
     async def send(self, user_text: str, task_id: str | None = None,
-                   anthropic_client: Any = None) -> str:
+                   anthropic_client: Any = None, resume: bool = False) -> str:
         """Send a message to claude -p and get the full response.
 
         First message in a session: fresh claude -p
         Subsequent messages: claude -p --continue (resumes last session in dir)
+        resume=True forces --continue even on a fresh WorkSession, so a separate
+        dispatch can pick up the last Claude Code session left in that directory.
 
         If `task_id` is given, stdout is streamed as tool.* events on the
         process bus (plus fallback code_task for unparsed lines).
@@ -210,8 +212,9 @@ class WorkSession:
             "--dangerously-skip-permissions",
         ]
 
-        # Use --continue for subsequent messages to maintain context
-        if self._message_count > 0:
+        # Use --continue for subsequent messages to maintain context (or when a
+        # caller explicitly resumes the last session left in this directory).
+        if self._message_count > 0 or resume:
             cmd.append("--continue")
 
         self._status = "working"

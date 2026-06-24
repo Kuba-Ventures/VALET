@@ -27,6 +27,11 @@ STT_CORRECTIONS = {
     r"\bquad\b": "Claude",
     r"\bvee\b": "Vee",
     r"\bbee\b": "Vee",
+    # "strip"/"strike"/"striped" → "Stripe", but ONLY before a Stripe-ish noun, so
+    # general speech ("strike that", "strip the path" in dictation) is untouched.
+    (r"\b(?:strip|striped|stripped|strike|strikes|striked)\b"
+     r"(?=\s+(?:e-?mails?|dashboards?|webhooks?|accounts?|payments?|invoices?|"
+     r"settings|checkout|subscriptions?|customers?|api|tab|page|portal))"): "Stripe",
 }
 
 

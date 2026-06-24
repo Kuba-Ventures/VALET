@@ -4873,6 +4873,30 @@ _SEND_TO_CC_RE = re.compile(
     r')'
     r'(?:\s+.*)?$',
     re.IGNORECASE)
+# Optional "… in/for the <repo> repo/project" target on a send-to-Claude-Code
+# command. Requires the word repo/project/repository so it can't false-match the
+# "to claude code" in the trigger. Captures the repo name to override inference.
+_CC_REPO_HINT_RE = re.compile(
+    r'\b(?:in|into|on|for|to)\s+(?:the\s+)?(?P<repo>[\w.\-]+)\s+'
+    r'(?:repo|repository|project|codebase)\b', re.IGNORECASE)
+# Live field dictation: "dictate into here" / "type into this" / "let me
+# dictate" / "start dictating" → enter a mode where each following utterance is
+# TYPED into the focused field verbatim, until "stop dictating".
+_DICTATE_FIELD_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+|let\s+me\s+|i\s+want\s+to\s+|i\s+wanna\s+)?'
+    r'(?:'
+    r'(?:start\s+)?dictat(?:e|ing)(?:\s+(?:in(?:to)?\s+)?(?:here|this|the\s+\w+))?'
+    r'|type\s+(?:in(?:to)?\s+)?(?:here|this)'
+    r'|type\s+what\s+i\s+say'
+    r'|take\s+(?:this\s+)?dictation'
+    r')\s*[.?!]*$',
+    re.IGNORECASE)
+# In-dictation controls.
+_DICTATION_STOP_PHRASES = ("stop dictating", "stop dictation", "done dictating",
+                           "that's it", "thats it", "end dictation", "i'm done",
+                           "im done", "stop typing", "that's all", "thats all")
+_DICTATION_NEWLINE_PHRASES = ("new line", "newline", "next line")
+_DICTATION_SEND_PHRASES = ("send it", "hit enter", "press enter", "submit that", "go ahead and send")
 _SUMMARIZE_SCREEN_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:'
@@ -5079,11 +5103,18 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     ]):
         return {"action": "close_panel"}
 
+    # Live field dictation: "dictate into here" / "type what I say" → enter a
+    # mode that types each following utterance into the focused field.
+    if _DICTATE_FIELD_RE.match(t):
+        return {"action": "start_field_dictation"}
+
     # "Send this to Claude Code to fix" — read the screen, brief it, dispatch.
     # Before summarize/describe so "send this to Claude to fix" isn't read as a
-    # summary request.
+    # summary request. Capture an optional "in the <repo> repo" target.
     if _SEND_TO_CC_RE.match(t):
-        return {"action": "send_to_claude_code"}
+        _rh = _CC_REPO_HINT_RE.search(t)
+        return {"action": "send_to_claude_code",
+                "repo": (_rh.group("repo") if _rh else "")}
 
     # Summarize the focused content + action items ("summarize what I need to
     # do", "tldr this", "what does this say"). Before describe_screen so a
@@ -5789,6 +5820,40 @@ async def _handle_summarize(ws, voice_state: dict = None) -> None:
     await _speak(ws, summary)
 
 
+def _match_repo_name(hint: str, projects: list[dict]) -> Optional[str]:
+    """Best known-project name for a spoken repo hint (exact → prefix → substring)."""
+    h = (hint or "").strip().lower()
+    if not h:
+        return None
+    names = [p["name"] for p in projects if p.get("name")]
+    for n in names:
+        if n.lower() == h:
+            return n
+    for n in names:
+        if n.lower().startswith(h) or h in n.lower():
+            return n
+    return None
+
+
+async def _execute_start_field_dictation(ws) -> None:
+    """Enter live field dictation — capture the app behind Vee as the typing
+    target, then each following utterance is typed into it (see the loop
+    intercept) until the user says 'stop dictating'."""
+    app = ""
+    try:
+        import perception
+        obs = await perception.build_observation(executor)
+        app = obs.get("app") or ""
+        if app == "frontmost":
+            app = ""
+    except Exception as e:
+        log.warning("field dictation: couldn't read focused app: %s", e)
+    ws.field_dictation = {"app": app}
+    where = f"into {app}" if app else "into the focused field"
+    await _speak(ws, f"Go ahead, sir — I'll type what you say {where}. "
+                     "Say 'stop dictating' when you're done.")
+
+
 async def _infer_target_project(brief: dict, projects: list[dict]) -> Optional[str]:
     """Pick the most likely repo for a fix brief from the known projects, or None
     if there's no confident match (caller then asks). Single Haiku call."""
@@ -5811,10 +5876,13 @@ async def _infer_target_project(brief: dict, projects: list[dict]) -> Optional[s
         return None
 
 
-async def _handle_send_to_claude_code(ws, voice_state: dict = None) -> None:
-    """Read the focused screen → concrete fix brief → infer the repo → confirm
+async def _handle_send_to_claude_code(ws, voice_state: dict = None, repo_hint: str = "") -> None:
+    """Read the focused screen → concrete fix brief → pick the repo → confirm
     card (shows brief + target) → dispatch to Claude Code. Runs on a background
-    task, so awaiting the confirm reply never parks the WS receive loop."""
+    task, so awaiting the confirm reply never parks the WS receive loop.
+
+    repo_hint (from "… in the <repo> repo") takes precedence over inference when
+    it fuzzy-matches a known project."""
     import perception
     async with process_bus.task_context("Send to Claude Code") as task_id:
         obs = await perception.build_observation(executor)
@@ -5828,7 +5896,10 @@ async def _handle_send_to_claude_code(ws, voice_state: dict = None) -> None:
             return
 
         projects = list_projects()
-        repo = await _infer_target_project(brief, projects)
+        # User named the repo ("… in the valet repo") → match it; else infer.
+        repo = _match_repo_name(repo_hint, projects) if repo_hint else None
+        if not repo:
+            repo = await _infer_target_project(brief, projects)
         if not repo:
             # Honest ask rather than guessing — keeps the user in control of WHERE.
             await _speak(ws, f"I've got the task — {brief['title']} — but I'm not sure "
@@ -5877,10 +5948,28 @@ async def _dispatch_fix_brief(repo: str, prompt: str, title: str, ws) -> None:
     asyncio.create_task(_run_fix_in_background(repo, project_dir, prompt, title, ws))
 
 
+def _trailing_question(text: str) -> Optional[str]:
+    """If Claude Code's reply ends by offering a next step ("Want me to …?"),
+    return that question (for the spoken follow-up offer), else None."""
+    t = (text or "").replace("\n", " ").strip()
+    if not t:
+        return None
+    qs = re.findall(r'[^.?!]*\?', t)
+    if not qs:
+        return None
+    q = qs[-1].strip()
+    if len(q) <= 180 and any(k in q.lower() for k in (
+            "want me", "shall i", "would you", "should i", "do you want",
+            "can i", "may i", "like me to")):
+        return q
+    return None
+
+
 async def _run_fix_in_background(repo: str, project_dir: Optional[str], prompt: str,
-                                 title: str, ws) -> None:
+                                 title: str, ws, resume: bool = False) -> None:
     """Run the fix brief headless and quietly, then speak a single completion
-    line. Deliberately passes NO task_id to WorkSession.send so the per-tool
+    line — and if Claude Code ended with a question, offer to have it continue.
+    Deliberately passes NO task_id to WorkSession.send so the per-tool
     Read/Bash/grep stream never floods the process panel."""
     if not project_dir:
         await _speak(ws, f"I couldn't find the {repo} project to send that to, sir.")
@@ -5890,7 +5979,7 @@ async def _run_fix_in_background(repo: str, project_dir: Optional[str], prompt: 
     sess = WorkSession()
     try:
         await sess.start(project_dir, repo)
-        full = await sess.send(prompt, anthropic_client=anthropic_client)  # quiet: no task_id
+        full = await sess.send(prompt, anthropic_client=anthropic_client, resume=resume)  # quiet
         await sess.stop()
     except Exception as e:
         log.error("background fix dispatch failed: %s", e)
@@ -5901,7 +5990,13 @@ async def _run_fix_in_background(repo: str, project_dir: Optional[str], prompt: 
                                     summary=title[:200])
     # One spoken line, not a wall of tool output. The full result is in the
     # dispatch registry if the user asks "what did Claude Code find?".
-    await _speak(ws, f"Claude Code's done on {repo}, sir — {title}.")
+    followup = _trailing_question(full or "")
+    if followup:
+        ws.pending_cc_followup = {"repo": repo, "dir": project_dir}
+        await _speak(ws, f"Claude Code's done on {repo}, sir. It asks: {followup} "
+                         "Shall I have it continue?")
+    else:
+        await _speak(ws, f"Claude Code's done on {repo}, sir — {title}.")
 
 
 def get_lookup_status() -> str:
@@ -6072,6 +6167,16 @@ async def voice_handler(ws: WebSocket):
     # normally.
     dictation_phase: Optional[str] = None
     dictation_captured_prompt: str = ""
+
+    # Live field dictation (feature: "dictate into here"). When set, each
+    # utterance is TYPED into the captured target app/field instead of being
+    # routed as a command — until the user says "stop dictating". Shape:
+    # {"app": <frontmost app name>} or None.
+    ws.field_dictation = None
+    # Pending Claude-Code follow-up: after a background fix completes with a
+    # question ("want me to walk you through…?"), this holds {"repo","dir"} so a
+    # "yes" resumes that Claude Code session. Cleared on any non-affirmative.
+    ws.pending_cc_followup = None
 
     # Audio collision prevention — track when user last spoke
     voice_state = {"last_user_time": 0.0}
@@ -6308,6 +6413,49 @@ async def voice_handler(ws: WebSocket):
             # never the whole reply again.
             streamed = False
             pending_speech = ""
+
+            # ── Live field dictation intercept. While active, each utterance is
+            # TYPED into the captured target field, not routed as a command —
+            # until "stop dictating". "new line" / "send it" map to keys.
+            _fd = getattr(ws, "field_dictation", None)
+            if _fd is not None:
+                _tl = user_text.lower().strip().rstrip(" .?!")
+                _app = _fd.get("app") or ""
+                if any(p in _tl for p in _DICTATION_STOP_PHRASES):
+                    ws.field_dictation = None
+                    await _speak(ws, "Done dictating, sir.")
+                    continue
+                if _tl in _DICTATION_NEWLINE_PHRASES:
+                    await _ax_executor.key_combo("shift+return", app=_app or None)
+                    continue
+                if any(_tl == p or _tl.startswith(p) for p in _DICTATION_SEND_PHRASES):
+                    await _ax_executor.key_combo("return", app=_app or None)
+                    continue
+                # Type the verbatim utterance (+ trailing space) into the field.
+                payload = f"{_app} ||| {user_text} " if _app else f"{user_text} "
+                try:
+                    await type_into_app(payload, press_enter=False)
+                except Exception as e:
+                    log.error("field dictation type failed: %s", e)
+                continue
+
+            # ── Pending Claude-Code follow-up: a background fix finished with a
+            # question; an affirmative resumes that session, anything else clears.
+            _fu = getattr(ws, "pending_cc_followup", None)
+            if _fu is not None:
+                ws.pending_cc_followup = None
+                _tl = user_text.lower().strip().rstrip(" .?!")
+                if any(w in _tl for w in ("yes", "yeah", "yep", "go ahead", "do it",
+                                          "please do", "sure", "continue", "go for it")):
+                    await _speak(ws, "Right — having Claude Code continue, sir.")
+                    asyncio.create_task(_run_fix_in_background(
+                        _fu["repo"], _fu.get("dir"), "Yes, please go ahead with that.",
+                        "the follow-up", ws, resume=True))
+                    continue
+                if any(w in _tl for w in ("no", "nope", "not now", "leave it", "don't", "stop")):
+                    await _speak(ws, "Understood, sir.")
+                    continue
+                # Anything else → fall through and route normally (not a reply).
 
             # ── Dictation mode capture/confirm intercept (chunk 21 Mode 2).
             # When ws is in a dictation phase, the user's utterance is the
@@ -6591,7 +6739,11 @@ async def voice_handler(ws: WebSocket):
                             # Read the screen → fix brief → infer repo → confirm
                             # card → dispatch. Runs on a bg task (confirm-safe).
                             response_text = ""
-                            _track_uc(ws, _handle_send_to_claude_code(ws, voice_state))
+                            _track_uc(ws, _handle_send_to_claude_code(
+                                ws, voice_state, repo_hint=action.get("repo", "")))
+                        elif action["action"] == "start_field_dictation":
+                            response_text = ""
+                            asyncio.create_task(_execute_start_field_dictation(ws))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
