@@ -8211,12 +8211,31 @@ async def _handle_walkthrough(goal: str, ws) -> None:
                     except Exception:
                         pass
 
+            async def _check_system(key):
+                # Reliable OS-state completion checks where an on-screen diff can't
+                # tell the step is done (toggles/selections). Fast, non-prompting.
+                if key == "dark_mode_on":
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            "defaults", "read", "-g", "AppleInterfaceStyle",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        out, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+                        # The key exists and reads "Dark" only when dark mode is on
+                        # (it's absent — nonzero rc — in light mode).
+                        return proc.returncode == 0 and b"Dark" in out
+                    except Exception:
+                        return False
+                return False
+
             deps = wt._LoopDeps(
                 observe=_observe, resolve=_resolve, glide=_glide,
                 speak=_speak_cb, emit=_emit_cb,
                 should_cancel=lambda: getattr(ws, "_wt_stop", False),
                 kill_engaged=kill_switch.is_engaged,
                 wait_signal=_wait_signal, do_it=_do_it, open_target=_open_target,
+                check_system=_check_system,
             )
             result = await wt.run_walkthrough(goal=goal, steps=steps, deps=deps)
             msg = result.get("message") or "Done, sir."

@@ -33,6 +33,9 @@ class Step:
     verify: str = ""           # text/label that appears once the step is done (optional)
     open: str = ""             # settings pane / app to open FIRST so the target is
                                # on-screen and the cursor can glide to it (optional)
+    system_check: str = ""     # key for a RELIABLE system-state completion check
+                               # (e.g. "dark_mode_on") when an on-screen diff can't
+                               # tell the step's done — resolved via deps.check_system
 
 
 # ── Curated seeds — hand-tuned for demo reliability. The LLM handles the rest. ──
@@ -70,7 +73,8 @@ _CURATED: dict[str, list[Step]] = {
              open="Appearance", verify="Appearance"),
         Step("Choose Dark",
              "Click Dark, sir, to switch your Mac to dark mode.",
-             target="the Dark appearance option", verify="Dark"),
+             target="the Dark appearance option", verify="Dark",
+             system_check="dark_mode_on"),
     ],
 }
 
@@ -236,6 +240,9 @@ class _LoopDeps:
     wait_signal: Callable[[], Optional[str]] = lambda: None
     do_it: Optional[Callable[[str], Awaitable[None]]] = None  # gated click for "do it for me"
     open_target: Optional[Callable[[str], Awaitable[None]]] = None  # open a pane/app first
+    # Reliable system-state completion check for a step's `system_check` key
+    # (returns True when the real OS setting flipped — e.g. dark mode is on).
+    check_system: Optional[Callable[[str], Awaitable[bool]]] = None
 
 
 async def run_walkthrough(
@@ -260,6 +267,10 @@ async def run_walkthrough(
             return {"status": "halted", "message": "Stopped, sir."}
         await deps.emit(f"Step {i + 1}/{total}: {step.title}",
                         detail=step.narration, status="active")
+        # Announce the step IMMEDIATELY — Vee speaks before the (silent) observe /
+        # open / resolve work, so there's no dead air between "processing" and the
+        # first words. The pane-open and cursor glide follow the narration.
+        await deps.speak(step.narration)
         # Snapshot the screen BEFORE opening anything, so opening a pane (the app
         # switching / the verify word appearing) registers as a real change in
         # _await_step. Taking the baseline AFTER the open made navigation-only steps
@@ -288,7 +299,6 @@ async def run_walkthrough(
             else:
                 # Honest miss — never a wild point.
                 await deps.speak(f"I can't see {step.target} on screen, sir.")
-        await deps.speak(step.narration)
 
         outcome = await _await_step(step, before, deps, poll_interval, step_timeout,
                                     clock, sleep)
@@ -328,6 +338,14 @@ async def _await_step(step, before, deps, interval, timeout, clock, sleep) -> st
             return "advance"
         if sig == "doit":
             return "doit"
+        # Reliable system-state check first (e.g. dark mode actually turned on) —
+        # an on-screen diff can't always tell a selection/toggle changed.
+        if step.system_check and deps.check_system is not None:
+            try:
+                if await deps.check_system(step.system_check):
+                    return "advance"
+            except Exception:
+                pass
         cur = await deps.observe()
         if step_done(before, cur, step):
             return "advance"
