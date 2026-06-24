@@ -191,19 +191,24 @@ def step_done(before: dict, after: dict, step: Step) -> bool:
     auto-advance. Uses the step's `verify` hint when present, else a meaningful
     on-screen change."""
     bt, at = _texts(before), _texts(after)
+    app_switched = (str(after.get("app") or "").lower()
+                    != str(before.get("app") or "").lower())
     v = (step.verify or "").strip().lower()
     if v:
         in_after = any(v in t for t in at)
         in_before = any(v in t for t in bt)
         if in_after and not in_before:
             return True
-        # app switched AND the verify word is now visible (e.g. opened the pane)
-        return in_after and (str(after.get("app") or "").lower()
-                             != str(before.get("app") or "").lower())
-    # no explicit verify → require a meaningful change
-    if str(after.get("app") or "") != str(before.get("app") or ""):
+        if in_after and app_switched:
+            return True
+        # The verify word was ALREADY on screen (e.g. "Dark" always labels the
+        # Appearance picker), so its presence can't mark completion — fall through
+        # to the generic "the user changed something" check below.
+    if app_switched:
         return True
-    return len(at - bt) >= 2
+    # A meaningful on-screen change — elements added OR removed (symmetric diff) —
+    # means the user acted (e.g. picked Dark, flipping selection/labels).
+    return len(at ^ bt) >= 2
 
 
 def _point_of(res) -> Optional[tuple[float, float]]:
@@ -238,8 +243,8 @@ async def run_walkthrough(
     goal: str,
     steps: list[Step],
     deps: _LoopDeps,
-    poll_interval: float = 1.5,
-    step_timeout: float = 30.0,
+    poll_interval: float = 1.0,
+    step_timeout: float = 8.0,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> dict:
@@ -267,7 +272,7 @@ async def run_walkthrough(
         # after: `now` (the just-opened pane) is what the target resolves against.
         if step.open and deps.open_target is not None:
             await deps.open_target(step.open)
-            await sleep(1.2)  # let the pane render before observing
+            await sleep(0.7)  # brief settle for the pane to render before observing
             now = await deps.observe()
         else:
             now = before
@@ -289,8 +294,14 @@ async def run_walkthrough(
                                     clock, sleep)
         if outcome == "halt":
             return {"status": "halted", "message": "Stopped, sir."}
-        if outcome == "stall":
-            await deps.speak("We can pick this up when you're ready, sir.")
+        if outcome == "timeout":
+            # Couldn't confirm the step within the window. Wrap up rather than hang
+            # (the caption + process panel clear on return). On the last step the
+            # user has likely just done it; mid-walkthrough, get out of their way.
+            if i == total - 1:
+                await deps.speak("That should do it, sir.")
+                return {"status": "done", "message": "All set, sir."}
+            await deps.speak("I'll leave you to it, sir. Say the step again if you'd like another pass.")
             return {"status": "stalled", "message": "Paused the walkthrough, sir."}
         if outcome == "doit" and deps.do_it is not None and step.target:
             await deps.do_it(step.target)  # routes through the Tier-1 gate
@@ -301,11 +312,12 @@ async def run_walkthrough(
 
 
 async def _await_step(step, before, deps, interval, timeout, clock, sleep) -> str:
-    """Wait until the step is done, a voice signal arrives, or we give up.
-    Returns 'advance' | 'halt' | 'doit' | 'stall'. Re-narrates once at `timeout`;
-    a hard cap (4× timeout) stops the loop ever running away if the user wanders off."""
+    """Wait until the step is done, a voice signal arrives, or `timeout` elapses.
+    Returns 'advance' | 'halt' | 'doit' | 'timeout'. We detect completion as fast as
+    a re-observe allows (instant once the user acts); if it can't be detected within
+    `timeout`, we return 'timeout' so the loop wraps up promptly rather than hanging
+    — teaching is done, and the caption/panel should clear, not linger for minutes."""
     start = clock()
-    renarrated = False
     while True:
         if deps.kill_engaged() or deps.should_cancel():
             return "halt"
@@ -319,11 +331,6 @@ async def _await_step(step, before, deps, interval, timeout, clock, sleep) -> st
         cur = await deps.observe()
         if step_done(before, cur, step):
             return "advance"
-        elapsed = clock() - start
-        if not renarrated and elapsed > timeout:
-            renarrated = True
-            await deps.speak("Take your time, sir. Say next when you're ready, "
-                             "or do it for me.")
-        if elapsed > timeout * 4:  # hard cap — never spin forever
-            return "stall"
+        if clock() - start > timeout:
+            return "timeout"
         await sleep(interval)
