@@ -106,9 +106,17 @@ def is_trusted_prompt() -> bool:
 # pyobjc / AX helpers (all synchronous — call via asyncio.to_thread)
 # --------------------------------------------------------------------------- #
 def _activate_app(app: str) -> bool:
-    """Bring `app` to the front so synthetic events land in it. Best-effort."""
+    """Bring `app` to the front so synthetic events land in it. Best-effort.
+
+    Skips activation when `app` is ALREADY frontmost: re-activating fires a focus
+    event that dismisses transient popovers/menus (e.g. Google's account menu),
+    which made multi-step menu flows oscillate — click avatar → menu opens → next
+    click re-activates → menu closes → click lands on the wrong thing."""
     try:
         ws = NSWorkspace.sharedWorkspace()
+        front = ws.frontmostApplication()
+        if front and (front.localizedName() or "").strip().lower() == app.strip().lower():
+            return True  # already frontmost — don't re-activate and kill the popup
         for running in ws.runningApplications():
             name = running.localizedName() or ""
             if name.lower() == app.lower():
