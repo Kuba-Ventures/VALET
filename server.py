@@ -4973,11 +4973,18 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # the gate — a non-app "open X" returns None here and falls through.
     _om = _OPEN_APP_RE.match(text.strip())
     if _om:
-        import app_index
-        app = app_index.match_app(_om.group("target").strip(" .?!"),
-                                  app_index.installed_apps())
-        if app:
-            return {"action": "open_app", "target": app}
+        _omt = _om.group("target").strip(" .?!")
+        # A known web destination ("gmail", "stripe", "github"…) must NOT be
+        # grabbed by a fuzzy app match — "gmail" is ~0.89 similar to "Mail", so
+        # the matcher would open Apple Mail. Let it fall through to the web route
+        # below (which opens it in the browser). Browser names ("chrome",
+        # "safari") resolve to a non-http sentinel, so they still open the app.
+        _omw = _resolve_web_url(_omt)
+        if not (_omw and _omw.startswith("http")):
+            import app_index
+            app = app_index.match_app(_omt, app_index.installed_apps())
+            if app:
+                return {"action": "open_app", "target": app}
 
     # Standard home folders ("open my downloads folder", "open Desktop"). Only the
     # known set returns here; anything else falls through (file search / project).
@@ -7758,6 +7765,21 @@ async def api_perception_observe(request: Request):
     }
 
 
+# Frontmost-app names that are web browsers. AXPress no-ops on most web content
+# (a Gmail row, a link, a button rendered by the page), so a click there must be
+# a real synthetic mouse click at the element's location, not an accessibility
+# press — otherwise the cursor glides to the row but nothing opens.
+_BROWSER_APPS = {
+    "google chrome", "chrome", "chromium", "safari", "safari technology preview",
+    "firefox", "firefox developer edition", "microsoft edge", "edge", "arc",
+    "brave browser", "brave", "opera", "vivaldi", "duckduckgo",
+}
+
+
+def _is_browser_app(app: Optional[str]) -> bool:
+    return bool(app) and app.strip().lower() in _BROWSER_APPS
+
+
 async def _resolve_and_act(action: str, target: str, text: str = "",
                            app: Optional[str] = None, *, task_id: Optional[str] = None) -> dict:
     """UC3: resolve a natural-language target against a fresh observation, then
@@ -7849,10 +7871,15 @@ async def _resolve_and_act(action: str, target: str, text: str = "",
         if kill_switch.is_engaged():
             return {"ok": False, "status": "blocked", "via": res.via,
                     "label": res.label, "message": "I'm stopped, sir."}
-        if res.status == "ref":
+        # In a browser, AXPress usually doesn't fire a web element's click handler
+        # (the cursor glides onto the Gmail row but the email never opens), so use
+        # a real mouse click at the glided location. Native apps keep AXPress —
+        # it presses the actual control regardless of what's frontmost.
+        if res.status == "ref" and not _is_browser_app(app):
             r = await _ax_executor.click_element(ref=res.ref, app=app, task_id=task_id)
         else:
-            r = await _ax_executor.click_element(point=res.point, app=app, task_id=task_id)
+            _pt = (_gx, _gy) if _gx is not None else res.point
+            r = await _ax_executor.click_element(point=_pt, app=app, task_id=task_id)
 
     return {"ok": r.ok, "status": res.status, "via": res.via, "app": app,
             "label": res.label, "message": r.message, "target": res.to_dict()}
