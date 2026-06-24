@@ -7547,6 +7547,18 @@ async def api_permissions_trigger(request: Request):
             return {"ok": True, "granted": bool(granted)}
         except Exception as e:
             return {"ok": False, "error": str(e)[:160]}
+    if target == "input_monitoring":
+        # Fire the native Input Monitoring prompt (CGRequestListenEventAccess),
+        # which adds VALET to the Input Monitoring list and gates the global ⌃⌥
+        # push-to-talk chord. Same as Accessibility/Screen Recording: the grant
+        # lands in System Settings and the chord's CGEventTap only attaches on the
+        # next launch, so `granted` is the current state (usually still False here).
+        try:
+            import Quartz
+            granted = await asyncio.to_thread(Quartz.CGRequestListenEventAccess)
+            return {"ok": True, "granted": bool(granted)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:160]}
     if target != "automation":
         return {"ok": False, "error": "no inline prompt for this target"}
     try:
