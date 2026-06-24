@@ -77,11 +77,14 @@ Copy the `whsec_...` it prints into `STRIPE_WEBHOOK_SECRET`.
 1. Import the repo into Vercel.
 2. Add every variable from `.env.example` in the Vercel project settings.
 3. In the Stripe dashboard, add a webhook endpoint at
-   `https://YOUR_DOMAIN/api/stripe/webhook` subscribed to
+   `https://www.valet-voice.com/api/stripe/webhook` subscribed to
    `checkout.session.completed`, `customer.subscription.created`,
    `customer.subscription.updated`, and `customer.subscription.deleted`. Put its
-   signing secret in `STRIPE_WEBHOOK_SECRET`.
-4. Set `NEXT_PUBLIC_SITE_URL` to the production URL.
+   signing secret in `STRIPE_WEBHOOK_SECRET`. Use the canonical `www` host: the
+   apex `valet-voice.com` 308-redirects and Stripe does **not** follow redirects,
+   so registering the bare apex (or any stale deployment alias) silently fails
+   every delivery.
+4. Set `NEXT_PUBLIC_SITE_URL` to the production URL (`https://www.valet-voice.com`).
 
 ## Swapping in the real installer
 
