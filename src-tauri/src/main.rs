@@ -467,6 +467,23 @@ fn tray_action(app: AppHandle, id: String) {
     handle_tray_action(&app, &id);
 }
 
+/// Set the cursor-follower caption — the Clicky-style bubble that rides next to the
+/// cursor during a walkthrough glide. Empty string clears it. Evaluated on every
+/// per-display overlay window; only the one under the cursor (dot visible) actually
+/// shows it, so the caption appears wherever the cursor is. The native overlay loop
+/// is Rust-driven and not on the backend WebSocket, so the orb webview relays the
+/// `cursor_control` label here. App commands aren't ACL-gated, so no capability entry.
+#[tauri::command]
+fn set_cursor_caption(app: AppHandle, text: String) {
+    // Escape for safe embedding in the eval string literal (instruction text only).
+    let safe = text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ");
+    for i in 0..16 {
+        if let Some(win) = app.get_webview_window(&format!("overlay-{i}")) {
+            let _ = win.eval(&format!("window.setCaption&&window.setCaption(\"{safe}\")"));
+        }
+    }
+}
+
 /// Show the custom HTML tray popover anchored directly under the menu-bar icon,
 /// on whichever monitor the user clicked. Toggles: a second click while visible
 /// hides it (native-menu behavior).
@@ -577,7 +594,7 @@ fn main() {
             shutting_down: AtomicBool::new(false),
             popover_hidden_at: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![tray_action])
+        .invoke_handler(tauri::generate_handler![tray_action, set_cursor_caption])
         .setup(|app| {
             // Menu-bar product: no Dock icon. The orb lives as an always-on-top
             // popover summoned via ⌃⌥ and toggled from the tray.
