@@ -33,6 +33,80 @@ _MAX_CONSECUTIVE_FAILS = 2
 
 _ACTIONS = ("click", "type", "key", "open_app", "done", "fail")
 
+# ── Hybrid autonomy (risk tiers per step) ───────────────────────────────────
+# In hands-off mode each decided step is classified before it runs:
+#   "auto"    → run straight through the raw executor (no confirm card) so a
+#               chain of clicks/navigation feels hands-off. Kill switch still
+#               checked immediately before the act.
+#   "confirm" → run through the gating executor (Tier-1 confirm card) — used for
+#               anything destructive or money-moving.
+#   "login"   → DON'T act. Hand the credential entry to the human, wait for the
+#               login form to clear, then resume the chain (user's choice:
+#               "hand off to you"). VALET never types secrets.
+# Over-classifying toward confirm/login is safe; the cost is one extra tap.
+_DESTRUCTIVE_HINTS = (
+    "delete", "remove", "trash", "discard", "erase", "uninstall", "wipe",
+    "destroy", "clear all", "empty trash", "permanently",
+)
+_PAYMENT_HINTS = (
+    "pay ", "payment", "buy ", "purchase", "checkout", "check out", "place order",
+    "subscribe", "billing", "card number", "cvv", "cvc", "complete order",
+    "complete purchase", "confirm and pay", "submit payment", "upgrade plan",
+)
+# Secure-field role + label cues that mean "credentials go here".
+_LOGIN_ROLE_HINTS = ("securetextfield", "secure text field")
+_LOGIN_LABEL_HINTS = ("password", "passcode", "passphrase", "one-time code", "verification code")
+
+
+def _find_element(observation: dict, ref: Optional[str]) -> dict:
+    """The observed element dict for `ref`, or {} if not found."""
+    if not ref:
+        return {}
+    for e in observation.get("elements", []) or []:
+        if e.get("ref") == ref:
+            return e
+    return {}
+
+
+def _classify_step(decision: dict, observation: dict) -> str:
+    """Risk tier for one decided step: 'auto' | 'confirm' | 'login'.
+
+    Looks at the decided action, the target element's role/label, and the model's
+    own stated reason. Conservative: a credential field → 'login'; any destructive
+    or payment cue → 'confirm'; everything else → 'auto'."""
+    act = decision.get("action")
+    el = _find_element(observation, decision.get("ref"))
+    role = (el.get("role") or "").lower()
+    label = " ".join(filter(None, [
+        el.get("title"), el.get("value"), role,
+        decision.get("reason"), decision.get("combo"), decision.get("target"),
+    ])).lower()
+
+    # Credentials — clicking into or typing a secure field hands off to the human.
+    if act in ("click", "type"):
+        if any(h in role for h in _LOGIN_ROLE_HINTS) or any(h in label for h in _LOGIN_LABEL_HINTS):
+            return "login"
+
+    # Destructive key chord (⌘⌫ and friends), or destructive/payment wording.
+    combo = (decision.get("combo") or "").lower()
+    if act == "key" and "cmd" in combo and ("delete" in combo or "backspace" in combo):
+        return "confirm"
+    if any(h in label for h in _DESTRUCTIVE_HINTS) or any(h in label for h in _PAYMENT_HINTS):
+        return "confirm"
+
+    return "auto"
+
+
+def _has_login_field(observation: dict) -> bool:
+    """True while a credential field is still on screen (used to detect when the
+    user has finished logging in so the chain can resume)."""
+    for e in observation.get("elements", []) or []:
+        role = (e.get("role") or "").lower()
+        label = " ".join(filter(None, [e.get("title"), e.get("value")])).lower()
+        if any(h in role for h in _LOGIN_ROLE_HINTS) or any(h in label for h in _LOGIN_LABEL_HINTS):
+            return True
+    return False
+
 
 def _parse_json(text: str) -> Optional[dict]:
     if not text:
@@ -165,13 +239,17 @@ async def _decide(client, goal: str, observation: dict, history: list,
     return data
 
 
-async def _execute(executor, ax_executor, decision: dict, app: Optional[str]):
-    """Run one decided action through the gated executor. Returns an ActionResult."""
+async def _execute(actor, ax_executor, decision: dict, app: Optional[str]):
+    """Run one decided action through `actor`. Returns an ActionResult.
+
+    `actor` is the executor that performs the act: the gating SafeExecutor for a
+    'confirm' step (pops a card) or the raw executor for an 'auto' step (hands-off,
+    no card). `ax_executor` is always the raw one, used only for benign focus."""
     act = decision.get("action")
     if act == "open_app":
-        return await executor.open_app(decision.get("app") or "")
+        return await actor.open_app(decision.get("app") or "")
     if act == "key":
-        return await executor.key_combo(decision.get("combo") or "", app=app)
+        return await actor.key_combo(decision.get("combo") or "", app=app)
     if act == "type":
         ref = decision.get("ref")
         if ref and ax_executor is not None:
@@ -179,12 +257,32 @@ async def _execute(executor, ax_executor, decision: dict, app: Optional[str]):
         # send_keystroke activates the target app first, so the text lands there
         # (synthetic input always goes to the focused app — the per-step confirm
         # keeps the user in the loop if focus is somewhere unexpected).
-        return await executor.send_keystroke(app or "", decision.get("text") or "")
+        return await actor.send_keystroke(app or "", decision.get("text") or "")
     if act == "click":
-        return await executor.click_element(ref=decision.get("ref"), app=app)
+        return await actor.click_element(ref=decision.get("ref"), app=app)
     # done / fail never reach here
     from action_executor import ActionResult, Capability
     return ActionResult.failure(Capability.CLICK_ELEMENT, error="noop", message="nothing to do")
+
+
+async def _await_login(executor, app, kill_switch, emit, *,
+                       poll_s: float = 2.0, timeout_s: float = 150.0) -> str:
+    """Hand credential entry to the human, then wait for the login form to clear.
+
+    Returns 'resume' once the credential field is gone (user logged in), 'halted'
+    if the kill switch fires, or 'timeout' if they don't finish in time. VALET
+    never touches the secret — it just watches for the field to disappear."""
+    import asyncio
+    waited = 0.0
+    while waited < timeout_s:
+        if kill_switch is not None and kill_switch.is_engaged():
+            return "halted"
+        await asyncio.sleep(poll_s)
+        waited += poll_s
+        obs = await perception.build_observation(executor, app=app)
+        if not _has_login_field(obs):
+            return "resume"
+    return "timeout"
 
 
 async def run_loop(
@@ -194,12 +292,19 @@ async def run_loop(
     kill_switch=None,
     ax_executor=None,
     emit: Optional[Callable[..., Awaitable[None]]] = None,
+    hands_off: bool = False,
 ) -> dict:
     """Run the supervised observe→decide→act loop for `goal`.
 
     Returns {status, steps, history, message}. status ∈ {done, failed, vetoed,
-    halted, capped}. Each mutating action is gated (confirm card) by the executor;
-    the kill switch is checked every iteration and honored by the gate too."""
+    halted, capped, paused}. The kill switch is checked every iteration.
+
+    When `hands_off` is False (default) every mutating step goes through the
+    confirm card. When True, each step is risk-classified (`_classify_step`):
+    safe steps (clicks/navigation) run straight through for a hands-off chain,
+    destructive/payment steps still pop the confirm card, and a credential field
+    hands off to the human (VALET waits, then resumes). The kill switch is
+    re-checked immediately before every auto (un-carded) act."""
     async def _emit(kind, title, detail="", status="active"):
         if emit:
             try:
@@ -234,7 +339,33 @@ async def run_loop(
             return {"status": "failed", "steps": step - 1, "history": history,
                     "message": summary or "I couldn't complete that, sir."}
 
-        result = await _execute(executor, ax_executor, decision, app)
+        # Hybrid autonomy: pick the actor (raw = no card, safe = card) per step,
+        # and hand a credential field to the human instead of acting on it.
+        actor = executor
+        if hands_off:
+            risk = _classify_step(decision, observation)
+            if risk == "login":
+                await _emit("act", "Over to you for the login, sir.",
+                            detail="I'll continue once you're signed in.", status="active")
+                outcome = await _await_login(executor, app, kill_switch, emit)
+                if outcome == "halted":
+                    return {"status": "halted", "steps": step - 1, "history": history,
+                            "message": "Halted, sir."}
+                if outcome == "timeout":
+                    return {"status": "paused", "steps": step - 1, "history": history,
+                            "message": "I'll leave the login with you, sir — say 'continue' when you're in."}
+                await _emit("act", "Signed in — carrying on, sir.", status="done")
+                history.append({"step": step, "action": "login", "target": "credentials",
+                                "ok": True, "msg": "handed off to user"})
+                continue
+            if risk == "auto" and ax_executor is not None:
+                # Un-carded — re-check the kill switch right before acting.
+                if kill_switch is not None and kill_switch.is_engaged():
+                    await _emit("act", "Stopped.", status="error")
+                    return {"status": "halted", "steps": step - 1, "history": history, "message": "Halted, sir."}
+                actor = ax_executor
+
+        result = await _execute(actor, ax_executor, decision, app)
         ok = bool(getattr(result, "ok", False))
         history.append({"step": step, "action": act,
                         "target": decision.get("ref") or decision.get("app") or decision.get("combo"),

@@ -156,5 +156,89 @@ def test_model_fail_is_honest(monkeypatch):
     assert ex.actions == []
 
 
+# ── Hybrid autonomy (hands_off) ─────────────────────────────────────────────
+
+_SECURE = {"ref": "e3", "role": "AXSecureTextField", "title": "Password",
+           "value": "", "enabled": True, "frame": [10, 100, 200, 24]}
+
+
+def test_classify_step_tiers():
+    obs = {"elements": ELS + [_SECURE]}
+    # Safe click → auto.
+    assert agent_loop._classify_step({"action": "click", "ref": "e1"}, obs) == "auto"
+    # Credential field (click or type) → login handoff.
+    assert agent_loop._classify_step({"action": "click", "ref": "e3"}, obs) == "login"
+    assert agent_loop._classify_step({"action": "type", "ref": "e3", "text": "x"}, obs) == "login"
+    # Destructive ⌘⌫ and destructive/payment wording → confirm.
+    assert agent_loop._classify_step({"action": "key", "combo": "cmd+delete"}, obs) == "confirm"
+    assert agent_loop._classify_step(
+        {"action": "click", "ref": "e1", "reason": "delete the project"}, obs) == "confirm"
+    assert agent_loop._classify_step(
+        {"action": "click", "ref": "e1", "reason": "place order and pay"}, obs) == "confirm"
+
+
+def test_hands_off_auto_routes_to_raw_executor(monkeypatch):
+    # In hands_off mode a safe click runs through the RAW executor (no confirm
+    # card). Route both roles to one recorder and assert it acted.
+    _no_capture(monkeypatch)
+    client = FakeClient(['{"action":"click","ref":"e1","reason":"the Save button"}',
+                         '{"action":"done","reason":"saved"}'])
+    ex = FakeExec()
+    res = run(agent_loop.run_loop(ex, "save it", client, ax_executor=ex, hands_off=True))
+    assert res["status"] == "done"
+    assert ("click", "e1") in ex.actions
+
+
+def test_hands_off_login_hands_off_then_resumes(monkeypatch):
+    # Clicking a credential field hands off to the human; once the field clears,
+    # the chain resumes and finishes. asyncio.sleep is stubbed so it's instant.
+    _no_capture(monkeypatch)
+    import asyncio as _aio
+    async def _no_sleep(*a, **k): return None
+    monkeypatch.setattr(_aio, "sleep", _no_sleep)
+
+    class FakeExecLogin(FakeExec):
+        def __init__(self):
+            super().__init__()
+            self.obs_calls = 0
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            self.obs_calls += 1
+            # Login field present for the first two observations (initial + first
+            # poll), then the user has signed in and it's gone.
+            els = ELS + ([_SECURE] if self.obs_calls <= 2 else [])
+            return ActionResult.success(Capability.OBSERVE_UI, data={"app": "App", "elements": els})
+
+    client = FakeClient(['{"action":"click","ref":"e3","reason":"the password field"}',
+                         '{"action":"done","reason":"appearance set"}'])
+    ex = FakeExecLogin()
+    emitted = []
+    async def emit(k, t, detail="", status="active"): emitted.append((k, t))
+    res = run(agent_loop.run_loop(ex, "log in then continue", client,
+                                  ax_executor=ex, hands_off=True, emit=emit))
+    assert res["status"] == "done"
+    # Never clicked the secure field — VALET handed it off instead.
+    assert ("click", "e3") not in ex.actions
+    assert any("login" in t.lower() or "over to you" in t.lower() for _, t in emitted)
+
+
+def test_hands_off_login_timeout_pauses(monkeypatch):
+    # If the login never clears, the loop pauses cleanly (no runaway, no act).
+    _no_capture(monkeypatch)
+    import asyncio as _aio
+    async def _no_sleep(*a, **k): return None
+    monkeypatch.setattr(_aio, "sleep", _no_sleep)
+
+    class FakeExecStuck(FakeExec):
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "App", "elements": ELS + [_SECURE]})
+
+    client = FakeClient(['{"action":"click","ref":"e3","reason":"password"}'])
+    ex = FakeExecStuck()
+    res = run(agent_loop.run_loop(ex, "log in", client, ax_executor=ex, hands_off=True))
+    assert res["status"] == "paused"
+    assert ex.actions == []  # never acted on the credential field
+
+
 if __name__ == "__main__":
     print("Run via pytest (uses monkeypatch).")
