@@ -73,6 +73,28 @@ def test_open_known_app_still_wins():
     assert a and a["action"] == "open_app", a
 
 
+def test_open_onscreen_email_routes_to_ui_open():
+    # "open the email from X" → click the on-screen inbox row, not a lookup.
+    for phrase, tgt in [("open the email from Stripe", "email from stripe"),
+                        ("open the Stripe email", "stripe email"),
+                        ("read the message from Jacques", "message from jacques")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "ui_open" and a["target"] == tgt, (phrase, a)
+
+
+def test_open_email_app_still_launches_mail():
+    # "open my email" is the Mail app (app-launch), NOT an on-screen click.
+    a = server.detect_action_fast("open my email")
+    assert a and a["action"] == "open_app" and a["target"] == "Mail", a
+
+
+def test_bare_email_word_not_hijacked():
+    # Too-vague mail phrases (just "message"/"email") fall through, no wild click.
+    for phrase in ("read that message", "open the email"):
+        a = server.detect_action_fast(phrase)
+        assert a is None or a["action"] != "ui_open", (phrase, a)
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
