@@ -8170,16 +8170,18 @@ async def _handle_walkthrough(goal: str, ws) -> None:
 
             async def _glide(x, y, ref, label):
                 await emit_cursor_control(task_id, True, label)
-                # Drive the native cursor-follower caption (Rust reads this stdout
-                # marker). Set on glide and leave it up — it persists through the
-                # step so the instruction stays readable while the user acts, until
-                # the next step replaces it or the walkthrough ends (cleared below).
-                if label:
-                    print(f"{_CAPTION_MARKER}{label}", flush=True)
                 try:
                     await _ax_executor.glide_to_target(x, y, ref=ref)
                 finally:
                     await emit_cursor_control(task_id, False)
+
+            async def _set_caption(text):
+                # Drive the native cursor-follower caption bubble (Rust reads this
+                # stdout marker). Called for EVERY step — including keyboard steps
+                # ("Press Command+Shift+P") and "look here" steps that have no
+                # control to glide to — so the instruction always rides by the
+                # cursor, not only when something is pointed at.
+                print(f"{_CAPTION_MARKER}{text or ''}", flush=True)
 
             async def _speak_cb(t):
                 await _speak(ws, t)
@@ -8211,12 +8213,31 @@ async def _handle_walkthrough(goal: str, ws) -> None:
                     except Exception:
                         pass
 
+            async def _check_system(key):
+                # Reliable OS-state completion checks where an on-screen diff can't
+                # tell the step is done (toggles/selections). Fast, non-prompting.
+                if key == "dark_mode_on":
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            "defaults", "read", "-g", "AppleInterfaceStyle",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        out, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+                        # The key exists and reads "Dark" only when dark mode is on
+                        # (it's absent — nonzero rc — in light mode).
+                        return proc.returncode == 0 and b"Dark" in out
+                    except Exception:
+                        return False
+                return False
+
             deps = wt._LoopDeps(
                 observe=_observe, resolve=_resolve, glide=_glide,
                 speak=_speak_cb, emit=_emit_cb,
                 should_cancel=lambda: getattr(ws, "_wt_stop", False),
                 kill_engaged=kill_switch.is_engaged,
                 wait_signal=_wait_signal, do_it=_do_it, open_target=_open_target,
+                check_system=_check_system, set_caption=_set_caption,
             )
             result = await wt.run_walkthrough(goal=goal, steps=steps, deps=deps)
             msg = result.get("message") or "Done, sir."
