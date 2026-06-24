@@ -73,6 +73,28 @@ def test_open_known_app_still_wins():
     assert a and a["action"] == "open_app", a
 
 
+def test_open_gmail_goes_to_web_not_mail_app():
+    # "gmail" is ~0.89 similar to "Mail" — the fuzzy app matcher must NOT grab it;
+    # it routes to the Gmail website. ("open mail"/"open email" still = Mail app.)
+    a = server.detect_action_fast("open gmail")
+    assert a and a["action"] == "open_url" and "mail.google.com" in a["target"], a
+    for phrase in ("open mail", "open email"):
+        b = server.detect_action_fast(phrase)
+        assert b and b["action"] == "open_app" and b["target"] == "Mail", (phrase, b)
+    # Browser names still open the browser app, not a website.
+    s = server.detect_action_fast("open safari")
+    assert s and s["action"] == "open_app", s
+
+
+def test_is_browser_app():
+    assert server._is_browser_app("Google Chrome")
+    assert server._is_browser_app("Safari")
+    assert server._is_browser_app("Arc")
+    assert not server._is_browser_app("Finder")
+    assert not server._is_browser_app("Mail")
+    assert not server._is_browser_app(None)
+
+
 def test_open_onscreen_email_routes_to_ui_open():
     # "open the email from X" → click the on-screen inbox row, not a lookup.
     for phrase, tgt in [("open the email from Stripe", "email from stripe"),
