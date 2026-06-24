@@ -196,6 +196,7 @@ _NEXT_ACTION_TOOL = {
         "properties": {
             "action": {"type": "string", "enum": list(_ACTIONS)},
             "ref": {"type": "string", "description": "element ref id (e0, e1, …) for click/type"},
+            "target": {"type": "string", "description": "for action=click ONLY: the short visible label of a control you can SEE on the screenshot but that is NOT in the elements list (e.g. an item inside a popup that just opened, like 'Sign out of all accounts'). Vee locates it visually. Leave ref empty when you use this."},
             "text": {"type": "string", "description": "text to type (for action=type)"},
             "app": {"type": "string", "description": "app name (for action=open_app)"},
             "combo": {"type": "string", "description": "key chord like cmd+s (for action=key)"},
@@ -240,7 +241,14 @@ _DECIDE_SYSTEM = (
     "out', done means you SEE a signed-out / account-chooser / login screen — an open "
     "inbox or dashboard means you are still signed IN, so proceed (click the in-page "
     "account avatar, then 'Sign out'). Do not assume or hallucinate completion.\n"
-    "- Use only refs from the list. If a step just failed, do something DIFFERENT — never "
+    "- POPUPS / MENUS: after you click something that opens a menu or popup (an "
+    "account avatar, a ⋮ button, a dropdown), the next step is to click an ITEM "
+    "INSIDE it — do NOT click the opener again (that just closes it). If that item "
+    "is visible on the screenshot but missing from the elements list, use action "
+    "click with 'target' set to its visible label (e.g. 'Sign out of all "
+    "accounts') and no ref — Vee will find it visually.\n"
+    "- Prefer a ref from the list when one matches; use 'target' only for visible "
+    "items the list is missing. If a step just failed, do something DIFFERENT — never "
     "repeat the same failed step; if you genuinely cannot make progress after trying, "
     "return fail (not done). Keep reason to one short clause."
 )
@@ -317,6 +325,9 @@ async def _execute(actor, ax_executor, decision: dict, app: Optional[str],
         # often does nothing — click the element's location with a real mouse
         # instead. Native apps keep AXPress-by-ref (works regardless of focus).
         obs_app = (observation or {}).get("app") or app
+        pt = decision.get("_point")          # vision-resolved point (no ref)
+        if pt and len(pt) == 2:
+            return await actor.click_element(point=(float(pt[0]), float(pt[1])), app=obs_app)
         el = _find_element(observation or {}, decision.get("ref"))
         fr = el.get("frame")
         if _is_browser(obs_app) and fr and len(fr) == 4:
@@ -413,6 +424,30 @@ async def run_loop(
             return {"status": "failed", "steps": step - 1, "history": history,
                     "message": summary or "I couldn't complete that, sir."}
 
+        # Vision fallback: the model named a control it can SEE (e.g. a popup item)
+        # but couldn't ref. Locate it visually (the same resolver one-shot clicks
+        # use) and carry the resolved point on the decision for the click below.
+        if act == "click" and decision.get("target") and not _find_element(observation, decision.get("ref")):
+            res = None
+            try:
+                import target_resolver
+                res = await target_resolver.resolve(observation, decision["target"], client, intent="click")
+            except Exception as e:
+                log.warning("loop vision resolve failed: %s", e)
+            if res is not None and getattr(res, "status", None) == "ref":
+                decision["ref"] = res.ref
+            elif res is not None and getattr(res, "status", None) == "point" and res.point:
+                decision["_point"] = list(res.point)
+            else:
+                await _emit("act", f"I can't find '{decision['target']}' on screen", status="error")
+                history.append({"step": step, "action": "click", "ok": False,
+                                "target": decision.get("target"), "msg": "vision miss"})
+                consecutive_fails += 1
+                if consecutive_fails >= _MAX_CONSECUTIVE_FAILS:
+                    return {"status": "failed", "steps": step, "history": history,
+                            "message": "I got stuck, sir — stopping rather than guessing."}
+                continue
+
         # Hybrid autonomy: pick the actor (raw = no card, safe = card) per step,
         # and hand a credential field to the human instead of acting on it.
         actor = executor
@@ -443,13 +478,18 @@ async def run_loop(
         # WATCH the loop work (same affordance as a one-shot click). Browser-safe
         # (verify=False — web hit-tests are unreliable); best-effort, never fatal.
         if act == "click" and ax_executor is not None:
-            _el = _find_element(observation, decision.get("ref"))
-            _fr = _el.get("frame")
-            if _fr and len(_fr) == 4:
+            _pt = decision.get("_point")
+            if _pt and len(_pt) == 2:
+                _gx, _gy = _pt
+            else:
+                _el = _find_element(observation, decision.get("ref"))
+                _fr = _el.get("frame")
+                _gx, _gy = (_fr[0] + _fr[2] / 2.0, _fr[1] + _fr[3] / 2.0) \
+                    if (_fr and len(_fr) == 4) else (None, None)
+            if _gx is not None:
                 try:
                     await ax_executor.glide_to_target(
-                        _fr[0] + _fr[2] / 2.0, _fr[1] + _fr[3] / 2.0,
-                        ref=decision.get("ref"), verify=False)
+                        _gx, _gy, ref=decision.get("ref"), verify=False)
                 except Exception:
                     pass
 
