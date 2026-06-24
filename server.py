@@ -125,10 +125,10 @@ from voice_timing import TurnTimer
 import voice_timing
 from voice_stream import SpeakableStreamer
 
-from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project
+from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project, paste_into_cursor_claude
 from work_mode import WorkSession, is_casual_question
 import observability
-from screen import get_active_windows, take_screenshot, describe_screen, format_windows_for_context
+from screen import get_active_windows, take_screenshot, describe_screen, format_windows_for_context, get_running_apps
 from calendar_access import get_todays_events, get_upcoming_events, get_next_event, format_events_for_context, format_schedule_summary, refresh_cache as refresh_calendar_cache, create_event as calendar_create_event, delete_event as calendar_delete_event, get_events_for_date as calendar_events_for_date
 from mail_access import get_unread_count, get_unread_messages, get_recent_messages, search_mail, read_message, format_unread_summary, format_messages_for_context, format_messages_for_voice, create_draft as mail_create_draft
 import google_auth
@@ -5843,10 +5843,65 @@ async def _handle_send_to_claude_code(ws, voice_state: dict = None) -> None:
     if not allowed:
         await _speak(ws, "Cancelled, sir.")
         return
-    did = dispatch_registry.register(repo, _find_project_dir(repo) or "", brief["prompt"][:200])
-    await _speak(ws, f"Sending it to Claude Code on {repo}, sir.")
-    await _execute_prompt_project(repo, brief["prompt"], WorkSession(), ws,
-                                  dispatch_id=did, voice_state=voice_state)
+    await _dispatch_fix_brief(repo, brief["prompt"], brief["title"], ws)
+
+
+async def _dispatch_fix_brief(repo: str, prompt: str, title: str, ws) -> None:
+    """Hand a fix brief to Claude Code WITHOUT taking over the panel or parking
+    the user. Prefer an already-open Cursor/Claude session (just drop it in, like
+    dictation); if none is up, run claude -p quietly in the BACKGROUND (no
+    per-tool panel stream) and report a one-liner when done. Either way VALET
+    stays free for the next thing the user says."""
+    project_dir = _find_project_dir(repo)
+
+    # Prefer an existing Cursor session — paste the task straight into its claude
+    # pane instead of spinning up a second, headless agent.
+    try:
+        running = await get_running_apps()
+    except Exception:
+        running = []
+    if any("cursor" in a.lower() for a in running):
+        try:
+            res = await paste_into_cursor_claude(prompt, target_project_path=project_dir)
+        except Exception as e:
+            log.warning("paste_into_cursor_claude failed: %s", e)
+            res = {"success": False}
+        if res.get("success"):
+            await _speak(ws, "Dropped it into your Claude Code session, sir.")
+            return
+        # Not focused / no pane — fall through to a background run.
+
+    # Background: quiet headless claude -p. No task_id → WorkSession.send does NOT
+    # stream tool.* events, so the panel stays calm and the user can keep talking.
+    await _speak(ws, f"On it in the background, sir — I'll let you know when {repo} is sorted.")
+    asyncio.create_task(_run_fix_in_background(repo, project_dir, prompt, title, ws))
+
+
+async def _run_fix_in_background(repo: str, project_dir: Optional[str], prompt: str,
+                                 title: str, ws) -> None:
+    """Run the fix brief headless and quietly, then speak a single completion
+    line. Deliberately passes NO task_id to WorkSession.send so the per-tool
+    Read/Bash/grep stream never floods the process panel."""
+    if not project_dir:
+        await _speak(ws, f"I couldn't find the {repo} project to send that to, sir.")
+        return
+    did = dispatch_registry.register(repo, project_dir, prompt[:200])
+    dispatch_registry.update_status(did, "building")
+    sess = WorkSession()
+    try:
+        await sess.start(project_dir, repo)
+        full = await sess.send(prompt, anthropic_client=anthropic_client)  # quiet: no task_id
+        await sess.stop()
+    except Exception as e:
+        log.error("background fix dispatch failed: %s", e)
+        dispatch_registry.update_status(did, "failed", response=str(e)[:500])
+        await _speak(ws, f"I hit a snag sending that to {repo}, sir.")
+        return
+    dispatch_registry.update_status(did, "completed", response=(full or "")[:2000],
+                                    summary=title[:200])
+    # One spoken line, not a wall of tool output. The full result is in the
+    # dispatch registry if the user asks "what did Claude Code find?".
+    await _speak(ws, f"Claude Code's done on {repo}, sir — {title}.")
 
 
 def get_lookup_status() -> str:
