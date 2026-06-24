@@ -118,6 +118,7 @@ def _run_loop(steps, observe, resolve, **over):
         should_cancel=over.get("should_cancel", lambda: False),
         kill_engaged=over.get("kill_engaged", lambda: False),
         wait_signal=over.get("wait_signal", lambda: None),
+        check_system=over.get("check_system"),
     )
     res = asyncio.run(wt.run_walkthrough(
         goal="g", steps=steps, deps=deps,
@@ -163,6 +164,40 @@ def test_loop_completes_on_last_step_timeout():
     res, spoken, glided, emitted = _run_loop([step], observe, resolve)
     assert res["status"] == "done", res
     assert glided
+
+
+def test_loop_completes_via_system_check():
+    # The Dark click leaves no detectable on-screen diff, but the reliable system
+    # check (dark mode actually on) advances the step.
+    step = wt.Step("Pick", "Click Dark.", target="the Dark option", verify="dark",
+                   system_check="dark_mode_on")
+    async def observe(): return {"app": "Settings", "elements": [{"title": "Dark"}]}
+    async def resolve(obs, desc): return _Res(frame=[10, 10, 4, 4], ref="e1")
+    calls = {"n": 0}
+    async def check_system(key):
+        calls["n"] += 1
+        return key == "dark_mode_on"
+    res, *_ = _run_loop([step], observe, resolve, check_system=check_system)
+    assert res["status"] == "done", res
+    assert calls["n"] >= 1  # the system-state check actually ran
+
+
+def test_loop_captions_keyboard_step_without_target():
+    # A keyboard step ("Press Command+Shift+P") has no control to glide to, but the
+    # instruction should still ride by the cursor — set_caption fires for it.
+    step = wt.Step("A", "Press Command+Shift+P.", target="")
+    captioned = []
+    async def observe(): return {"app": "X", "elements": []}
+    deps = wt._LoopDeps(
+        observe=observe, resolve=lambda o, d: _aw(),
+        glide=lambda *a: _aw(), speak=lambda t: _aw(),
+        emit=lambda *a, **k: _aw(),
+        set_caption=lambda t: captioned.append(t) or _aw(),
+    )
+    asyncio.run(wt.run_walkthrough(
+        goal="g", steps=[step], deps=deps,
+        poll_interval=0, step_timeout=1, clock=_fake_clock(), sleep=_noop_sleep))
+    assert captioned == ["Press Command+Shift+P."]
 
 
 def test_loop_halts_on_kill():
