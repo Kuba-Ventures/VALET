@@ -95,6 +95,26 @@ def test_bare_email_word_not_hijacked():
         assert a is None or a["action"] != "ui_open", (phrase, a)
 
 
+def test_summarize_screen_routes():
+    # "summarize / tldr / what do I need to do" → read the focused content.
+    for phrase in ("summarize what I need to do", "summarize this email",
+                   "summarize the email", "tl;dr this page", "give me the gist",
+                   "give me the gist of the email", "what do I need to do here",
+                   "what does this say", "what are my action items",
+                   "recap this thread", "summarize the dashboard"):
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "summarize_screen", (phrase, a)
+
+
+def test_summarize_does_not_hijack_describe_or_research():
+    # "what's on my screen" stays describe; an arbitrary "summarize the <topic>"
+    # is NOT a screen summary — it falls through to the LLM (research vs screen).
+    assert server.detect_action_fast("what's on my screen")["action"] == "describe_screen"
+    for phrase in ("summarize the news about openai", "summarize my q3 fishing trip plans"):
+        a = server.detect_action_fast(phrase)
+        assert a is None or a["action"] != "summarize_screen", (phrase, a)
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
