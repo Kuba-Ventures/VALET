@@ -511,6 +511,7 @@ const PERM_TARGET: Record<string, string> = {
   microphone: "microphone",
   automation: "automation",
   speech_recognition: "speech_recognition",
+  input_monitoring: "input_monitoring",
 };
 
 /**
@@ -540,7 +541,7 @@ async function loadSettingsPermissions() {
       const mic = await micGranted();
       if (mic !== null) status.microphone.granted = mic;
     }
-    const keys = ["microphone", "speech_recognition", "calendars", "automation", "accessibility", "screen_recording", "full_disk_access"].filter((k) => status[k]);
+    const keys = ["microphone", "speech_recognition", "calendars", "automation", "accessibility", "screen_recording", "input_monitoring", "full_disk_access"].filter((k) => status[k]);
     list.innerHTML = keys
       .map((k) => {
         const p = status[k];
@@ -551,10 +552,11 @@ async function loadSettingsPermissions() {
           side = `<span style="margin-left:auto;opacity:0.6">Granted</span>`;
         } else if (k === "microphone") {
           side = `<button class="settings-btn" data-perm-mic="1" style="margin-left:auto">Enable</button>`;
-        } else if (k === "automation" || k === "calendars" || k === "accessibility" || k === "screen_recording") {
-          // Inline native prompt rather than a Settings deep-link. (Accessibility +
-          // Screen Recording grants land in System Settings + need a relaunch, so
-          // their dots stay red until Re-check; the button falls back to Open Settings.)
+        } else if (k === "automation" || k === "calendars" || k === "accessibility" || k === "screen_recording" || k === "input_monitoring") {
+          // Inline native prompt rather than a Settings deep-link. (Accessibility,
+          // Screen Recording + Input Monitoring grants land in System Settings +
+          // need a relaunch, so their dots stay red until Re-check; the button
+          // falls back to Open Settings.)
           side = `<button class="settings-btn" data-perm-trigger="${k}" style="margin-left:auto">Enable</button>`;
         } else {
           side = `<button class="settings-btn" data-perm-open="${PERM_TARGET[k]}" style="margin-left:auto">Open Settings</button>`;

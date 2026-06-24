@@ -251,7 +251,7 @@ function licenseBody(): string {
 
 function permsBody(status: PermStatus | null): string {
   if (!status) return `<h2 class="ob-title">Permissions.</h2><p class="ob-sub">Could not reach the backend yet. You can grant these later in Settings.</p>`;
-  const rows = ["microphone", "speech_recognition", "calendars", "automation", "accessibility", "screen_recording", "full_disk_access"]
+  const rows = ["microphone", "speech_recognition", "calendars", "automation", "accessibility", "screen_recording", "input_monitoring", "full_disk_access"]
     .filter((k) => status[k])
     .map((k) => {
       const p = status[k]; const s = pill(p);
@@ -269,11 +269,13 @@ function permsBody(status: PermStatus | null): string {
                 ? `<button class="ob-open" data-accessibility-enable="1">Enable</button>`
                 : k === "screen_recording" && p.granted !== true
                   ? `<button class="ob-open" data-screenrec-enable="1">Enable</button>`
-                  : k === "speech_recognition"
-                    ? `<button class="ob-open" data-target="speech_recognition">Open Settings</button>`
-                    : canOpen
-                      ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
-                      : "";
+                  : k === "input_monitoring" && p.granted !== true
+                    ? `<button class="ob-open" data-inputmon-enable="1">Enable</button>`
+                    : k === "speech_recognition"
+                      ? `<button class="ob-open" data-target="speech_recognition">Open Settings</button>`
+                      : canOpen
+                        ? `<button class="ob-open" data-target="${TARGET_FOR(k)}">Open Settings</button>`
+                        : "";
       return `
         <div class="ob-row" data-key="${k}">
           <div class="ob-row-main">
@@ -497,6 +499,29 @@ function wireStep(state: State, root: HTMLElement): void {
           } else {
             delete btn.dataset.screenrecEnable;
             btn.dataset.target = "screen_recording";
+            btn.textContent = "Open Settings";
+            btn.disabled = false;
+          }
+          return;
+        }
+        // Input Monitoring: fire the native prompt (CGRequestListenEventAccess),
+        // which adds VALET to the Input Monitoring list. Gates the global ⌃⌥
+        // push-to-talk chord. Like Accessibility/Screen Recording, the grant
+        // lands in System Settings and the chord's CGEventTap only attaches on
+        // the next launch, so it usually still reads not-granted right after —
+        // fall back to Open Settings + Re-check.
+        if (btn.dataset.inputmonEnable) {
+          btn.disabled = true;
+          btn.textContent = "Requesting...";
+          const res = await postJSON<{ ok: boolean; granted?: boolean }>(
+            "/api/permissions/trigger", { target: "input_monitoring" },
+          );
+          if (res?.granted) {
+            await refreshPerms(state);
+            renderBody(state, root);
+          } else {
+            delete btn.dataset.inputmonEnable;
+            btn.dataset.target = "input_monitoring";
             btn.textContent = "Open Settings";
             btn.disabled = false;
           }
