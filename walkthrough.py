@@ -22,7 +22,11 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
 # Model for plan generation — agentic step decomposition (matches agent_loop/UC4).
-_PLANNER_MODEL = "claude-sonnet-4-6"
+# Haiku, not Sonnet: planning a short step list is well within Haiku's reach, and
+# this is the "Planning the steps…" wait the user feels before a non-curated
+# walkthrough starts. Matches the resolver, which is already Haiku. Curated
+# walkthroughs (dark mode, wi-fi, …) skip planning entirely.
+_PLANNER_MODEL = "claude-haiku-4-5-20251001"
 
 
 @dataclass
@@ -157,7 +161,7 @@ async def plan_steps(goal: str, client, observation: Optional[dict] = None) -> l
     app = (observation or {}).get("app", "?")
     user = f"Goal: {goal}\nCurrent app: {app}\nGenerate the walkthrough steps."
     resp = await client.messages.create(
-        model=_PLANNER_MODEL, max_tokens=900, system=_PLANNER_SYSTEM,
+        model=_PLANNER_MODEL, max_tokens=700, system=_PLANNER_SYSTEM,
         messages=[{"role": "user", "content": user}],
         tools=[_PLANNER_TOOL],
         tool_choice={"type": "tool", "name": "walkthrough_steps"},
