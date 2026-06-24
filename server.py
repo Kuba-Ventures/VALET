@@ -8015,7 +8015,8 @@ async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int =
 
     return await agent_loop.run_loop(
         executor, goal, anthropic_client, app=app, max_steps=max_steps,
-        kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit)
+        kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit,
+        hands_off=True)
 
 
 @app.post("/api/ui/task")
