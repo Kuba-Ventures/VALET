@@ -173,6 +173,27 @@ def test_send_to_claude_code_routes():
         assert a and a["action"] == "send_to_claude_code", (phrase, a)
 
 
+def test_field_dictation_and_repo_hint():
+    # "dictate into here" → live field dictation; repo hint is extracted.
+    for phrase in ("dictate into here", "type into this", "let me dictate",
+                   "start dictating", "type what I say"):
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "start_field_dictation", (phrase, a)
+    a = server.detect_action_fast("send this to claude code in the valet repo")
+    assert a["action"] == "send_to_claude_code" and a["repo"] == "valet", a
+    b = server.detect_action_fast("send this to claude code to fix")
+    assert b["action"] == "send_to_claude_code" and b["repo"] == "", b
+
+
+def test_stripe_speech_correction():
+    from voice_text import apply_speech_corrections as fix
+    assert fix("open the strip email") == "open the Stripe email"
+    assert fix("go to the strike dashboard") == "go to the Stripe dashboard"
+    # General speech must be untouched.
+    assert fix("strike that") == "strike that"
+    assert fix("strip the trailing slash") == "strip the trailing slash"
+
+
 def test_send_to_claude_code_does_not_hijack():
     # "open claude" is the terminal; a bare "what does claude think" is convo.
     assert server.detect_action_fast("open claude")["action"] == "open_terminal"
