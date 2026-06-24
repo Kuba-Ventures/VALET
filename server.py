@@ -8126,6 +8126,12 @@ async def _handle_onboarding_demo(ws) -> None:
         await _speak(ws, "That's the gist of it, sir. We can try the live demo later.")
 
 
+# The Tauri host (main.rs) drains this sidecar's stdout; a line with this prefix
+# drives the native cursor-follower caption bubble (the remote orb webview can't
+# reach app commands, but stdout always works). Empty text after it clears it.
+_CAPTION_MARKER = "@@VALET_CAPTION@@"
+
+
 async def _handle_walkthrough(goal: str, ws) -> None:
     """Stage 3 — guided walkthrough. Plan steps (curated or model-generated), then
     run the teach loop (point + narrate + wait + re-observe) on this background
@@ -8164,6 +8170,12 @@ async def _handle_walkthrough(goal: str, ws) -> None:
 
             async def _glide(x, y, ref, label):
                 await emit_cursor_control(task_id, True, label)
+                # Drive the native cursor-follower caption (Rust reads this stdout
+                # marker). Set on glide and leave it up — it persists through the
+                # step so the instruction stays readable while the user acts, until
+                # the next step replaces it or the walkthrough ends (cleared below).
+                if label:
+                    print(f"{_CAPTION_MARKER}{label}", flush=True)
                 try:
                     await _ax_executor.glide_to_target(x, y, ref=ref)
                 finally:
@@ -8218,6 +8230,7 @@ async def _handle_walkthrough(goal: str, ws) -> None:
         return
     finally:
         ws._wt_active = False
+        print(_CAPTION_MARKER, flush=True)  # clear the cursor-follower caption
     await _speak(ws, msg)
 
 

@@ -73,7 +73,14 @@ fn spawn_backend(app: AppHandle, attempt: u32) {
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
-                    eprintln!("[backend] {}", String::from_utf8_lossy(&line));
+                    let s = String::from_utf8_lossy(&line);
+                    // The backend drives the walkthrough caption bubble by printing
+                    // a marker line (the remote orb webview can't reach app commands).
+                    if let Some(text) = s.trim_end_matches(['\r', '\n']).strip_prefix(CAPTION_MARKER) {
+                        set_cursor_caption(&watch, text);
+                    } else {
+                        eprintln!("[backend] {}", s);
+                    }
                 }
                 CommandEvent::Terminated(_) => {
                     let state = watch.state::<Backend>();
@@ -467,15 +474,18 @@ fn tray_action(app: AppHandle, id: String) {
     handle_tray_action(&app, &id);
 }
 
-/// Set the cursor-follower caption — the Clicky-style bubble that rides next to the
-/// cursor during a walkthrough glide. Empty string clears it. Evaluated on every
-/// per-display overlay window; only the one under the cursor (dot visible) actually
-/// shows it, so the caption appears wherever the cursor is. The native overlay loop
-/// is Rust-driven and not on the backend WebSocket, so the orb webview relays the
-/// `cursor_control` label here. App commands aren't ACL-gated, so no capability entry.
-#[tauri::command]
-fn set_cursor_caption(app: AppHandle, text: String) {
-    // Escape for safe embedding in the eval string literal (instruction text only).
+/// Prefix the backend prints to stdout to drive the cursor-follower caption — the
+/// Clicky-style bubble that rides next to the cursor during a walkthrough glide.
+/// The line is `@@VALET_CAPTION@@<text>` (empty text clears it). We use stdout
+/// rather than a Tauri command because the orb webview is served from a REMOTE
+/// origin (localhost:8340) whose IPC can't reach app commands; Rust already drains
+/// the sidecar's stdout, so this is a channel that always works.
+const CAPTION_MARKER: &str = "@@VALET_CAPTION@@";
+
+/// Set the cursor-follower caption on every per-display overlay. Only the overlay
+/// under the cursor (dot visible) actually shows it (see overlay.html render()), so
+/// the bubble appears wherever the cursor is. Empty clears it.
+fn set_cursor_caption(app: &AppHandle, text: &str) {
     let safe = text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ");
     for i in 0..16 {
         if let Some(win) = app.get_webview_window(&format!("overlay-{i}")) {
@@ -594,7 +604,7 @@ fn main() {
             shutting_down: AtomicBool::new(false),
             popover_hidden_at: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![tray_action, set_cursor_caption])
+        .invoke_handler(tauri::generate_handler![tray_action])
         .setup(|app| {
             // Menu-bar product: no Dock icon. The orb lives as an always-on-top
             // popover summoned via ⌃⌥ and toggled from the tray.
