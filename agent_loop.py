@@ -231,6 +231,10 @@ _DECIDE_SYSTEM = (
     "- Use \"click\" only for buttons, links, menu items, checkboxes, popups. Never "
     "click a container (AXGroup, AXScrollArea, AXWindow) or an element with no label.\n"
     "- Use \"key\" for keyboard shortcuts (save = cmd+s, select-all = cmd+a).\n"
+    "- You are ALREADY looking at FOCUSED APP — the elements shown ARE its current "
+    "screen. Do NOT use open_app for the app you're already in (it's a no-op and wastes "
+    "a step); act on the screen instead. Only use open_app to switch to a DIFFERENT app "
+    "that isn't focused.\n"
     "- BROWSER vs PAGE: in a browser (Chrome, Safari, Arc, Edge…) the goal is almost "
     "always about the WEB PAGE, not the browser itself. Act on elements INSIDE the page "
     "content. AVOID the browser's own chrome — the toolbar, address bar, tab strip, "
@@ -434,6 +438,23 @@ async def run_loop(
         if act == "fail":
             return {"status": "failed", "steps": step - 1, "history": history,
                     "message": summary or "I couldn't complete that, sir."}
+
+        # Redundant open_app: opening the app you're already in is a no-op that
+        # "succeeds", so the model can spin on it forever. Treat as a soft failure
+        # and nudge it to act on the screen instead.
+        if act == "open_app":
+            _tgt = (decision.get("app") or "").strip().lower()
+            _cur = (observation.get("app") or "").strip().lower()
+            if _tgt and _cur and (_tgt == _cur or _tgt in _cur or _cur in _tgt):
+                await _emit("decide", f"Already in {observation.get('app')} — acting on the screen instead")
+                history.append({"step": step, "action": "open_app", "ok": False,
+                                "target": decision.get("app"),
+                                "msg": "already in this app — pick a click/type on the visible screen"})
+                consecutive_fails += 1
+                if consecutive_fails >= _MAX_CONSECUTIVE_FAILS:
+                    return {"status": "failed", "steps": step, "history": history,
+                            "message": "I got stuck, sir — stopping rather than guessing."}
+                continue
 
         # Vision fallback: the model named a control it can SEE (e.g. a popup item)
         # but couldn't ref. Locate it visually (the same resolver one-shot clicks
