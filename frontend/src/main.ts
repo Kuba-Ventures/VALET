@@ -525,6 +525,14 @@ document.addEventListener("mousedown", ensureAudioContext);
 document.addEventListener("touchstart", ensureAudioContext);
 document.addEventListener("keydown", ensureAudioContext, { once: true });
 
+// True once the AudioContext is actually unlocked (running). Onboarding uses this
+// to decide whether a narration line will be audible now or must wait for the
+// first user gesture (which the listeners above turn into a resume()).
+const audioReady = () => {
+  try { return (audioPlayer.getAnalyser().context as AudioContext).state === "running"; }
+  catch { return true; }
+};
+
 // Try to resume audio context on load
 ensureAudioContext();
 
@@ -826,10 +834,11 @@ const obAsk = (text: string) => { try { socket.send({ type: "transcript", text, 
     const ctx = audioPlayer.getAnalyser().context as AudioContext;
     if (ctx.state === "suspended") void ctx.resume();
   } catch { /* ignore */ }
-  void maybeShowOnboarding(obNarrate, obDemo, obAsk, true);
+  // Replay resumes the context above, so greet immediately (audioReady=true).
+  void maybeShowOnboarding(obNarrate, obDemo, obAsk, true, () => true);
 };
 
 setTimeout(async () => {
-  const onboarding = await maybeShowOnboarding(obNarrate, obDemo, obAsk);
+  const onboarding = await maybeShowOnboarding(obNarrate, obDemo, obAsk, false, audioReady);
   if (!onboarding) checkFirstTimeSetup();
 }, 2000);

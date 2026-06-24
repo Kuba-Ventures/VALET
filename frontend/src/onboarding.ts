@@ -91,6 +91,7 @@ interface State {
   speak: Narrate;
   demo: StartDemo;
   ask: Ask;
+  audioReady: () => boolean;
 }
 
 const STEP_TITLES = ["Welcome", "License", "Permissions", "Voice", "About you", "See it work", "Done"];
@@ -659,7 +660,7 @@ function renderBody(state: State, root: HTMLElement): void {
 function render(state: State, root: HTMLElement): void {
   const dots = STEP_TITLES.map((_, i) => `<span class="ob-dot ${i === 0 ? "on" : ""}"></span>`).join("");
   root.innerHTML = `
-    <div class="ob-backdrop"></div>
+    <div class="ob-backdrop" data-tauri-drag-region></div>
     <div class="ob-card ob-wizard" role="dialog" aria-label="VALET setup">
       <div class="ob-titlebar">
         <div class="ob-drag" data-tauri-drag-region></div>
@@ -668,7 +669,7 @@ function render(state: State, root: HTMLElement): void {
           <button class="ob-light min" id="ob-win-min" type="button" aria-label="Minimize"></button>
         </div>
       </div>
-      <div class="ob-head">
+      <div class="ob-head" data-tauri-drag-region>
         <div class="ob-brand">VALET</div>
         <div class="ob-dots">${dots}</div>
       </div>
@@ -716,21 +717,27 @@ function render(state: State, root: HTMLElement): void {
 
   wireStep(state, root);
 
-  // Greet immediately when the wizard appears — audio plays freely in the app
-  // webview (Vee already speaks on launch), so there's no need to wait for a
-  // click. A first-gesture listener stays as a fallback in case the very first
-  // launch hasn't unlocked audio yet; it self-cancels once we've greeted.
-  let greeted = false;
-  const greet = () => {
-    if (greeted || state.step !== 0) return;
-    greeted = true;
-    root.removeEventListener("pointerdown", greet);
-    root.removeEventListener("keydown", greet);
+  // Greet when the wizard appears. On a cold first launch the browser autoplay
+  // policy leaves the AudioContext SUSPENDED until a user gesture, so a greeting
+  // spoken now would round-trip to TTS and play into a muted context — silently
+  // lost. So: if audio is already live (warm launch / tray "Replay setup", which
+  // resumes the context first) greet immediately; otherwise defer the line to the
+  // first pointer/key gesture, which is exactly what unlocks audio (main.ts
+  // resumes the context on pointerdown/keydown). Deferring — rather than greeting
+  // now AND on the gesture — avoids double-speaking when audio is already live.
+  if (state.audioReady()) {
     narrateStep(state);
-  };
-  root.addEventListener("pointerdown", greet);
-  root.addEventListener("keydown", greet);
-  greet();
+  } else {
+    const speakOnUnlock = () => {
+      root.removeEventListener("pointerdown", speakOnUnlock);
+      root.removeEventListener("keydown", speakOnUnlock);
+      // Let the context's resume() (same gesture) settle before the TTS audio
+      // arrives, so the first line is audible.
+      setTimeout(() => narrateStep(state), 150);
+    };
+    root.addEventListener("pointerdown", speakOnUnlock);
+    root.addEventListener("keydown", speakOnUnlock);
+  }
 }
 
 /** Show the wizard on the first open of each new build. No-op once finished.
@@ -741,6 +748,7 @@ export async function maybeShowOnboarding(
   startDemo: StartDemo = () => {},
   ask: Ask = () => {},
   force = false,
+  audioReady: () => boolean = () => true,
 ): Promise<boolean> {
   // Force the wizard regardless of the seen-flag or an already entitled license:
   // the tray "Replay setup" calls this with force=true (no reload, so audio stays
@@ -779,6 +787,7 @@ export async function maybeShowOnboarding(
     speak,
     demo: startDemo,
     ask,
+    audioReady,
   };
   const root = document.createElement("div");
   root.id = "valet-onboarding";
