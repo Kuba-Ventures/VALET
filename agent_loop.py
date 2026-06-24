@@ -58,6 +58,19 @@ _LOGIN_ROLE_HINTS = ("securetextfield", "secure text field")
 _LOGIN_LABEL_HINTS = ("password", "passcode", "passphrase", "one-time code", "verification code")
 
 
+# Browser app names: web content needs a real synthetic mouse click — AXPress
+# no-ops on a Gmail row / page button (same reason as the one-shot click path).
+_BROWSER_APPS = {
+    "google chrome", "chrome", "chromium", "safari", "safari technology preview",
+    "firefox", "firefox developer edition", "microsoft edge", "edge", "arc",
+    "brave browser", "brave", "opera", "vivaldi", "duckduckgo",
+}
+
+
+def _is_browser(app: Optional[str]) -> bool:
+    return bool(app) and app.strip().lower() in _BROWSER_APPS
+
+
 def _find_element(observation: dict, ref: Optional[str]) -> dict:
     """The observed element dict for `ref`, or {} if not found."""
     if not ref:
@@ -198,9 +211,15 @@ _DECIDE_SYSTEM = (
     "click the account avatar INSIDE the page (the one whose label names the Google "
     "Account / email, top-right of the page content), then the site's own 'Sign out' "
     "item — never the browser's profile menu.\n"
-    "- Use only refs from the list. When the goal is already satisfied, return done. "
-    "If a step just failed, do something DIFFERENT — never repeat the same failed step; "
-    "if you can't make progress, return fail. Keep reason to one short clause."
+    "- DO THE WORK — do not declare success without acting. NEVER return 'done' on "
+    "the first step (no steps taken yet): take a real first action. Only return 'done' "
+    "when the goal's END STATE is visibly true on screen RIGHT NOW. For 'log out / sign "
+    "out', done means you SEE a signed-out / account-chooser / login screen — an open "
+    "inbox or dashboard means you are still signed IN, so proceed (click the in-page "
+    "account avatar, then 'Sign out'). Do not assume or hallucinate completion.\n"
+    "- Use only refs from the list. If a step just failed, do something DIFFERENT — never "
+    "repeat the same failed step; if you genuinely cannot make progress after trying, "
+    "return fail (not done). Keep reason to one short clause."
 )
 
 
@@ -248,7 +267,8 @@ async def _decide(client, goal: str, observation: dict, history: list,
     return data
 
 
-async def _execute(actor, ax_executor, decision: dict, app: Optional[str]):
+async def _execute(actor, ax_executor, decision: dict, app: Optional[str],
+                   observation: Optional[dict] = None):
     """Run one decided action through `actor`. Returns an ActionResult.
 
     `actor` is the executor that performs the act: the gating SafeExecutor for a
@@ -268,6 +288,15 @@ async def _execute(actor, ax_executor, decision: dict, app: Optional[str]):
         # keeps the user in the loop if focus is somewhere unexpected).
         return await actor.send_keystroke(app or "", decision.get("text") or "")
     if act == "click":
+        # In a browser, AXPress on web content (a Gmail avatar, a page button)
+        # often does nothing — click the element's location with a real mouse
+        # instead. Native apps keep AXPress-by-ref (works regardless of focus).
+        obs_app = (observation or {}).get("app") or app
+        el = _find_element(observation or {}, decision.get("ref"))
+        fr = el.get("frame")
+        if _is_browser(obs_app) and fr and len(fr) == 4:
+            cx, cy = fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0
+            return await actor.click_element(point=(cx, cy), app=obs_app)
         return await actor.click_element(ref=decision.get("ref"), app=app)
     # done / fail never reach here
     from action_executor import ActionResult, Capability
@@ -326,6 +355,7 @@ async def run_loop(
 
     history: list = []
     consecutive_fails = 0
+    forced_recheck = False
 
     for step in range(1, max_steps + 1):
         if kill_switch is not None and kill_switch.is_engaged():
@@ -340,6 +370,16 @@ async def run_loop(
         summary = decision.get("reason", "")
         await _emit("decide", f"{act} {decision.get('target') or decision.get('app') or decision.get('combo') or decision.get('ref') or ''}".strip(),
                     detail=summary)
+
+        # Guard against a lazy first-step "done" (the model glancing at a busy
+        # page and declaring victory without acting). Re-observe and re-decide
+        # once, with a nudge, before accepting completion. Bounded to one retry.
+        if act == "done" and not history and not forced_recheck:
+            forced_recheck = True
+            await _emit("decide", "Double-checking before I call it done…")
+            history.append({"step": step, "action": "recheck", "ok": True,
+                            "msg": "claimed done with no action taken — re-evaluating"})
+            continue
 
         if act == "done":
             return {"status": "done", "steps": step - 1, "history": history,
@@ -374,7 +414,21 @@ async def run_loop(
                     return {"status": "halted", "steps": step - 1, "history": history, "message": "Halted, sir."}
                 actor = ax_executor
 
-        result = await _execute(actor, ax_executor, decision, app)
+        # Visibly glide the cursor onto a click target first, so the user can
+        # WATCH the loop work (same affordance as a one-shot click). Browser-safe
+        # (verify=False — web hit-tests are unreliable); best-effort, never fatal.
+        if act == "click" and ax_executor is not None:
+            _el = _find_element(observation, decision.get("ref"))
+            _fr = _el.get("frame")
+            if _fr and len(_fr) == 4:
+                try:
+                    await ax_executor.glide_to_target(
+                        _fr[0] + _fr[2] / 2.0, _fr[1] + _fr[3] / 2.0,
+                        ref=decision.get("ref"), verify=False)
+                except Exception:
+                    pass
+
+        result = await _execute(actor, ax_executor, decision, app, observation)
         ok = bool(getattr(result, "ok", False))
         history.append({"step": step, "action": act,
                         "target": decision.get("ref") or decision.get("app") or decision.get("combo"),
