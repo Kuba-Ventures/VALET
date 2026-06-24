@@ -141,6 +141,19 @@ def test_go_to_clicks_on_screen_target():
             and a["target"] == tgt, (phrase, a)
 
 
+def test_set_value_clicks_on_screen_option():
+    # "set/change/switch <setting> to <value>" → click the VALUE on screen
+    # (e.g. the Dark button under Appearance on the Stripe Developers page).
+    for phrase, val in [("set appearance to dark", "dark"),
+                        ("change appearance to dark", "dark"),
+                        ("switch to dark mode", "dark"),
+                        ("change the theme to light", "light"),
+                        ("set the SDK language to python", "python")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "ui_act" and a["ui_action"] == "click" \
+            and a["target"] == val, (phrase, a)
+
+
 def test_go_to_does_not_hijack_real_routes():
     # System actions and known web destinations still win; conversational
     # "go to bed" isn't a click.

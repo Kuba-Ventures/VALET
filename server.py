@@ -4848,6 +4848,15 @@ _UI_NAV_RE = re.compile(
     r'select|choose|click\s+into)\s+(?:the\s+)?(?P<target>.+?)'
     r'(?:\s+(?:section|tab|page|link|option|menu|item|card|button))?\s*[.?!]*$',
     re.IGNORECASE)
+# "set/change/switch [<setting>] to <value>" → click the VALUE option on the
+# current screen (e.g. the "Dark" button under Appearance). The value is the
+# click target. Late fallback + honest miss, like _UI_NAV_RE. "turn/toggle on X"
+# is intentionally NOT here — those are system toggles, not on-screen options.
+_UI_SET_RE = re.compile(
+    r'^(?:set|change|switch)\s+(?:the\s+)?(?:[a-z][a-z ]*?\s+)?'
+    r'(?:to|into)\s+(?:the\s+)?(?P<value>.+?)'
+    r'(?:\s+(?:mode|option|setting|theme|view|style))?\s*[.?!]*$',
+    re.IGNORECASE)
 _SUMMARIZE_SCREEN_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:'
@@ -5328,6 +5337,15 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         if (_navt and len(_navt.split()) <= 6
                 and _navt not in ("it", "that", "this", "back", "there", "here", "sleep", "bed")):
             return {"action": "ui_act", "ui_action": "click", "target": _navt}
+
+    # "set/change/switch <setting> to <value>" → click the value on screen
+    # ("set appearance to dark" → click the Dark button). Honest miss if absent.
+    _setm2 = _UI_SET_RE.match(t)
+    if _setm2:
+        _val = _setm2.group("value").strip(" .?!")
+        if (_val and len(_val.split()) <= 3
+                and _val not in ("it", "that", "this", "default", "on", "off", "sleep")):
+            return {"action": "ui_act", "ui_action": "click", "target": _val}
 
     return None  # Everything else goes to the LLM for conversational routing
 
