@@ -47,6 +47,13 @@
 #valet-onboarding .ob-drag {
   position: absolute; inset: 0;   /* the whole strip drags the window */
 }
+/* The brand row is also a window drag handle (the 22px titlebar alone is a tiny
+   target, and the card fills most of the small popover). Its children are purely
+   visual, so let pointer events fall through to [data-tauri-drag-region] on
+   .ob-head — Tauri only starts a drag when the event target itself carries the
+   attribute. Interactive controls live in .ob-body/.ob-actions, never here. */
+#valet-onboarding .ob-head { cursor: default; }
+#valet-onboarding .ob-head > * { pointer-events: none; }
 #valet-onboarding .ob-lights {
   position: absolute; top: 4px; left: 4px;
   display: flex; gap: 8px; z-index: 1;   /* above the drag layer so clicks land */
