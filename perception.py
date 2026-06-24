@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import tempfile
 from pathlib import Path
@@ -381,3 +382,57 @@ async def summarize_observation(observation: dict, anthropic_client) -> str:
             pass
     return ("I couldn't read the screen well enough to summarize, sir. Screen "
             "Recording or Accessibility permission may be needed.")
+
+
+async def build_fix_brief(observation: dict, anthropic_client) -> dict:
+    """Turn the FOCUSED content (an error report, an issue email, a failing
+    dashboard…) into a concrete engineering task for Claude Code.
+
+    Returns {"title": str, "prompt": str}. title is "NO_TASK" when the screen
+    doesn't describe a fixable software issue. App-agnostic; uses the screenshot
+    + AX text. Never invents specifics that aren't on screen."""
+    elements = observation.get("elements", [])
+    app = observation.get("app", "the focused app")
+    ax_text = elements_as_text(elements)
+    empty = {"title": "NO_TASK", "prompt": ""}
+    if not anthropic_client:
+        return empty
+
+    system = (
+        "You are VALET, turning what's on the user's screen into a precise task for "
+        "Claude Code (a coding agent that will edit a repo). Read the screenshot and "
+        "the accessibility text. Produce:\n"
+        "- title: one imperative line, <=10 words (e.g. 'Fix Stripe webhook 404s in "
+        "sandbox').\n"
+        "- prompt: a concrete, self-contained instruction telling Claude Code what to "
+        "investigate and fix, quoting the SPECIFICS visible on screen (exact error "
+        "text, endpoints, IDs, status codes, feature/file names). Do not invent "
+        "anything that isn't shown; don't guess repo paths.\n"
+        "If the screen doesn't describe a fixable software issue, set title to "
+        "'NO_TASK'. Reply as STRICT JSON only: {\"title\":\"...\",\"prompt\":\"...\"}."
+    )
+    user_text = (f"Focused app: {app}.\nVisible text / elements:\n{ax_text}\n\n"
+                 "Turn this into a fix task for Claude Code.")
+    content = [{"type": "text", "text": user_text}]
+    if observation.get("image"):
+        img = observation["image"]
+        content.insert(0, {"type": "image", "source": {
+            "type": "base64", "media_type": img["media_type"], "data": img["b64"]}})
+    try:
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=600, system=system,
+            messages=[{"role": "user", "content": content}])
+        raw = (resp.content[0].text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            raw = raw[raw.find("{"):] if "{" in raw else raw
+        a, b = raw.find("{"), raw.rfind("}")
+        data = json.loads(raw[a:b + 1]) if 0 <= a < b else {}
+        title = (data.get("title") or "NO_TASK").strip()
+        prompt = (data.get("prompt") or "").strip()
+        if not title or not prompt:
+            return empty
+        return {"title": title, "prompt": prompt}
+    except Exception as e:
+        log.warning("build_fix_brief failed: %s", e)
+        return empty

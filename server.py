@@ -553,6 +553,7 @@ ACTION SYSTEM:
 When you decide the user needs something DONE (not just discussed), include an action tag in your response:
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
 - [ACTION:SUMMARIZE_SCREEN] — read the FOCUSED content (the open email, doc, dashboard, article…) and speak a tight summary plus what the user needs to DO. Use when the user asks to summarize / TL;DR / "give me the gist" / "what do I need to do here" / "what does this say" about what's in front of them. Distinct from SCREEN, which just names what's open; this reads the content and extracts action items.
+- [ACTION:SEND_TO_CLAUDE_CODE] — read what's on screen (e.g. an error report, an issue email, a failing dashboard), turn it into a concrete fix task, infer the right repo, and after a confirmation dispatch it to Claude Code to fix. Use when the user says "send this to Claude Code", "have Claude Code fix this", "dispatch this to Claude to fix", etc. Vee shows the brief + target repo and asks before sending.
 - [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
 - [ACTION:OPEN_ON_SCREEN] description — open or click ONE thing the user can see on screen, named in plain words: an email in the open inbox ("the email from Stripe"), a file in a Finder window ("the resume PDF"), a link, a button, a row. Vee clicks it where it sits; if it isn't on the current screen it navigates there first (e.g. opens the Downloads folder, then the file). Use this for "open/read/click the X" when X is on-screen content rather than an installed app or a website. Pass the description verbatim. For launching an app use OPEN_APP; for a website use the web route; for a genuine multi-step "do X then Y" use UI_TASK.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
@@ -802,7 +803,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -4857,6 +4858,21 @@ _UI_SET_RE = re.compile(
     r'(?:to|into)\s+(?:the\s+)?(?P<value>.+?)'
     r'(?:\s+(?:mode|option|setting|theme|view|style))?\s*[.?!]*$',
     re.IGNORECASE)
+# "Send this to Claude Code to fix" — read whatever's on screen, turn it into a
+# fix task, infer the repo, and (after a confirm card) dispatch it to Claude
+# Code. Anchored on "<send/hand/dispatch> … to claude [code]" OR "<have/get/tell>
+# claude [code] (to) fix/handle/work on" OR "fix this with claude [code]".
+_SEND_TO_CC_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:'
+    r'(?:send|pass|hand|give|dispatch|forward|kick|throw)\s+(?:this|that|it|'
+    r'the\s+[a-z]+|over)?\s*(?:over\s+)?(?:to|off\s+to)\s+claude(?:\s+code)?'
+    r'|(?:have|get|tell|ask|let)\s+claude(?:\s+code)?\s+(?:to\s+)?'
+    r'(?:fix|handle|look\s+at|work\s+on|deal\s+with|take\s+care\s+of|sort\s+out)'
+    r'|fix\s+(?:this|it|that)\s+(?:with|in|using|via)\s+claude(?:\s+code)?'
+    r')'
+    r'(?:\s+.*)?$',
+    re.IGNORECASE)
 _SUMMARIZE_SCREEN_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:'
@@ -5062,6 +5078,12 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         "hide it", "hide that", "hide the panel",
     ]):
         return {"action": "close_panel"}
+
+    # "Send this to Claude Code to fix" — read the screen, brief it, dispatch.
+    # Before summarize/describe so "send this to Claude to fix" isn't read as a
+    # summary request.
+    if _SEND_TO_CC_RE.match(t):
+        return {"action": "send_to_claude_code"}
 
     # Summarize the focused content + action items ("summarize what I need to
     # do", "tldr this", "what does this say"). Before describe_screen so a
@@ -5767,6 +5789,66 @@ async def _handle_summarize(ws, voice_state: dict = None) -> None:
     await _speak(ws, summary)
 
 
+async def _infer_target_project(brief: dict, projects: list[dict]) -> Optional[str]:
+    """Pick the most likely repo for a fix brief from the known projects, or None
+    if there's no confident match (caller then asks). Single Haiku call."""
+    names = [p["name"] for p in projects if p.get("name")]
+    if not names or not anthropic_client:
+        return None
+    try:
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=20,
+            system=("Pick the ONE repo from the list most likely to contain the code "
+                    "for this task, or reply NONE if none clearly fits. Reply with the "
+                    "exact repo name (or NONE) — nothing else."),
+            messages=[{"role": "user", "content":
+                       f"Task: {brief.get('title','')}\n{brief.get('prompt','')[:600]}\n\n"
+                       f"Repos:\n" + "\n".join(names)}])
+        pick = (resp.content[0].text or "").strip().strip(".\"'")
+        return pick if pick in names else None
+    except Exception as e:
+        log.warning("infer target project failed: %s", e)
+        return None
+
+
+async def _handle_send_to_claude_code(ws, voice_state: dict = None) -> None:
+    """Read the focused screen → concrete fix brief → infer the repo → confirm
+    card (shows brief + target) → dispatch to Claude Code. Runs on a background
+    task, so awaiting the confirm reply never parks the WS receive loop."""
+    import perception
+    async with process_bus.task_context("Send to Claude Code") as task_id:
+        obs = await perception.build_observation(executor)
+        if not (obs.get("image") or obs.get("elements")):
+            await _speak(ws, "I can't read the screen well enough to send that, sir.")
+            return
+        await emit_step(task_id, "Reading the screen…", status="active")
+        brief = await perception.build_fix_brief(obs, anthropic_client)
+        if not brief or brief.get("title", "").upper() == "NO_TASK" or not brief.get("prompt"):
+            await _speak(ws, "I don't see a fixable issue on screen, sir.")
+            return
+
+        projects = list_projects()
+        repo = await _infer_target_project(brief, projects)
+        if not repo:
+            # Honest ask rather than guessing — keeps the user in control of WHERE.
+            await _speak(ws, f"I've got the task — {brief['title']} — but I'm not sure "
+                             "which project it belongs to, sir. Which repo should I send it to?")
+            return
+        await emit_step(task_id, f"Brief: {brief['title']}", detail=f"→ {repo}", status="done")
+
+    # Confirm (Tier 1) — the card shows the target repo + the brief — then dispatch.
+    allowed = await confirmations.request(
+        summary=f"Send to Claude Code · {repo}: {brief['title']}",
+        detail=brief["prompt"][:240], tier=1)
+    if not allowed:
+        await _speak(ws, "Cancelled, sir.")
+        return
+    did = dispatch_registry.register(repo, _find_project_dir(repo) or "", brief["prompt"][:200])
+    await _speak(ws, f"Sending it to Claude Code on {repo}, sir.")
+    await _execute_prompt_project(repo, brief["prompt"], WorkSession(), ws,
+                                  dispatch_id=did, voice_state=voice_state)
+
+
 def get_lookup_status() -> str:
     """Get status of active lookups for when user asks 'how's that coming'."""
     if not _active_lookups:
@@ -6450,6 +6532,11 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "summarize_screen":
                             response_text = ""  # _handle_summarize shows the panel + speaks the result
                             _track_uc(ws, _handle_summarize(ws, voice_state))
+                        elif action["action"] == "send_to_claude_code":
+                            # Read the screen → fix brief → infer repo → confirm
+                            # card → dispatch. Runs on a bg task (confirm-safe).
+                            response_text = ""
+                            _track_uc(ws, _handle_send_to_claude_code(ws, voice_state))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
@@ -6897,6 +6984,9 @@ async def voice_handler(ws: WebSocket):
                                     _track_uc(ws, _handle_screen(ws, voice_state))
                                 elif embedded_action["action"] == "summarize_screen":
                                     _track_uc(ws, _handle_summarize(ws, voice_state))
+                                elif embedded_action["action"] == "send_to_claude_code":
+                                    response_text = ""
+                                    _track_uc(ws, _handle_send_to_claude_code(ws, voice_state))
                                 elif embedded_action["action"] == "read_note":
                                     # Read note in background and report back
                                     async def _read_and_report(search_term, _ws):

@@ -163,6 +163,24 @@ def test_go_to_does_not_hijack_real_routes():
     assert b is None or b["action"] != "ui_act", b
 
 
+def test_send_to_claude_code_routes():
+    # "send this to Claude Code to fix" / "have Claude Code fix this" → dispatch.
+    for phrase in ("send this to claude code for fixing now",
+                   "send this to claude code to fix", "have claude code fix this",
+                   "get claude code to fix this", "fix this with claude code",
+                   "dispatch this to claude to fix it", "send it to claude"):
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "send_to_claude_code", (phrase, a)
+
+
+def test_send_to_claude_code_does_not_hijack():
+    # "open claude" is the terminal; a bare "what does claude think" is convo.
+    assert server.detect_action_fast("open claude")["action"] == "open_terminal"
+    for phrase in ("summarize this email", "what does claude think"):
+        a = server.detect_action_fast(phrase)
+        assert a is None or a["action"] != "send_to_claude_code", (phrase, a)
+
+
 def test_summarize_does_not_hijack_describe_or_research():
     # "what's on my screen" stays describe; an arbitrary "summarize the <topic>"
     # is NOT a screen summary — it falls through to the LLM (research vs screen).
