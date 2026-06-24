@@ -341,13 +341,27 @@ def _ax_press(element) -> bool:
 
 
 def _mouse_click(x: float, y: float) -> None:
-    """Synthetic left click at a global screen point."""
+    """Synthetic left click at a global screen point.
+
+    Posts a move first (so the target registers hover), then a down/up carrying
+    click-state, with brief gaps between events. An instantaneous, stateless
+    down/up — the naive version — is silently dropped by some targets, notably
+    browser web content (a Gmail row would be hovered but never opened)."""
     pt = Quartz.CGPointMake(x, y)
+    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    move = Quartz.CGEventCreateMouseEvent(
+        src, Quartz.kCGEventMouseMoved, pt, Quartz.kCGMouseButtonLeft)
     down = Quartz.CGEventCreateMouseEvent(
-        None, Quartz.kCGEventLeftMouseDown, pt, Quartz.kCGMouseButtonLeft)
+        src, Quartz.kCGEventLeftMouseDown, pt, Quartz.kCGMouseButtonLeft)
     up = Quartz.CGEventCreateMouseEvent(
-        None, Quartz.kCGEventLeftMouseUp, pt, Quartz.kCGMouseButtonLeft)
+        src, Quartz.kCGEventLeftMouseUp, pt, Quartz.kCGMouseButtonLeft)
+    # click count = 1 so the event reads as a real single click, not a bare press.
+    Quartz.CGEventSetIntegerValueField(down, Quartz.kCGMouseEventClickState, 1)
+    Quartz.CGEventSetIntegerValueField(up, Quartz.kCGMouseEventClickState, 1)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, move)
+    time.sleep(0.02)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    time.sleep(0.03)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
 
@@ -613,6 +627,10 @@ class AccessibilityExecutor(ActionExecutor):
             if point is not None:
                 if app:
                     _activate_app(app)
+                    # activateWithOptions_ is async — let the app actually come
+                    # frontmost before clicking, or the event lands in whatever
+                    # was focused (e.g. Vee's own overlay) instead of the target.
+                    time.sleep(0.12)
                 _mouse_click(float(point[0]), float(point[1]))
                 return True, "point"
             el = self._ref_map.get(ref)
@@ -663,12 +681,18 @@ class AccessibilityExecutor(ActionExecutor):
         return True
 
     async def glide_to_target(self, x: float, y: float, *, ref: Optional[str] = None,
-                              duration: float = 0.45) -> dict:
+                              duration: float = 0.45, verify: bool = True) -> dict:
         """Visibly glide the real cursor to (x, y) on a worker thread (so the
-        async voice loop can't jank it), then — when `ref` is given — AX hit-test
-        that the element under the cursor still matches. Does NOT click; the
-        caller's existing gated click_element fires the actual click, so the
-        safety gate (confirm card / kill switch) is preserved.
+        async voice loop can't jank it), then — when `ref` is given AND `verify`
+        — AX hit-test that the element under the cursor still matches. Does NOT
+        click; the caller's existing gated click_element fires the actual click,
+        so the safety gate (confirm card / kill switch) is preserved.
+
+        `verify=False` skips the post-glide hit-test: browser web content has a
+        deep AX tree where the element AT a point is often a child span of the
+        resolved row, so the strict role/title match false-aborts ('that moved,
+        sir') even though the cursor is dead on the target. The user_moved /
+        timeout aborts (physical mouse grab, stall) are always honored.
 
         Returns {'ok': bool, 'reason': None|'user_moved'|'timeout'|'moved_target'
         |'unavailable'}."""
@@ -677,7 +701,7 @@ class AccessibilityExecutor(ActionExecutor):
         res = await asyncio.to_thread(move_cursor, float(x), float(y), duration=duration)
         if res.get("aborted"):
             return {"ok": False, "reason": res["aborted"]}
-        if ref is not None and not await asyncio.to_thread(self._verify_under, ref, x, y):
+        if verify and ref is not None and not await asyncio.to_thread(self._verify_under, ref, x, y):
             return {"ok": False, "reason": "moved_target"}
         return {"ok": True, "reason": None}
 
