@@ -341,13 +341,27 @@ def _ax_press(element) -> bool:
 
 
 def _mouse_click(x: float, y: float) -> None:
-    """Synthetic left click at a global screen point."""
+    """Synthetic left click at a global screen point.
+
+    Posts a move first (so the target registers hover), then a down/up carrying
+    click-state, with brief gaps between events. An instantaneous, stateless
+    down/up — the naive version — is silently dropped by some targets, notably
+    browser web content (a Gmail row would be hovered but never opened)."""
     pt = Quartz.CGPointMake(x, y)
+    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    move = Quartz.CGEventCreateMouseEvent(
+        src, Quartz.kCGEventMouseMoved, pt, Quartz.kCGMouseButtonLeft)
     down = Quartz.CGEventCreateMouseEvent(
-        None, Quartz.kCGEventLeftMouseDown, pt, Quartz.kCGMouseButtonLeft)
+        src, Quartz.kCGEventLeftMouseDown, pt, Quartz.kCGMouseButtonLeft)
     up = Quartz.CGEventCreateMouseEvent(
-        None, Quartz.kCGEventLeftMouseUp, pt, Quartz.kCGMouseButtonLeft)
+        src, Quartz.kCGEventLeftMouseUp, pt, Quartz.kCGMouseButtonLeft)
+    # click count = 1 so the event reads as a real single click, not a bare press.
+    Quartz.CGEventSetIntegerValueField(down, Quartz.kCGMouseEventClickState, 1)
+    Quartz.CGEventSetIntegerValueField(up, Quartz.kCGMouseEventClickState, 1)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, move)
+    time.sleep(0.02)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    time.sleep(0.03)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
 
@@ -613,6 +627,10 @@ class AccessibilityExecutor(ActionExecutor):
             if point is not None:
                 if app:
                     _activate_app(app)
+                    # activateWithOptions_ is async — let the app actually come
+                    # frontmost before clicking, or the event lands in whatever
+                    # was focused (e.g. Vee's own overlay) instead of the target.
+                    time.sleep(0.12)
                 _mouse_click(float(point[0]), float(point[1]))
                 return True, "point"
             el = self._ref_map.get(ref)
