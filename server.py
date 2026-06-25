@@ -2383,12 +2383,6 @@ async def _execute_clock_tab(tab: str, ws):
                             lambda: clock_switch_tab(tab), ws)
 
 
-async def _execute_clock_timer(seconds: int, label: str, ws):
-    from actions import clock_set_timer
-    await _run_clock_action(f"Timer: {label}", f"Clock app → Timers → {label}",
-                            lambda: clock_set_timer(seconds, label), ws)
-
-
 async def _execute_clock_alarm(hour: int, minute: int, spoken: str, ws):
     from actions import clock_add_alarm
     await _run_clock_action(f"Alarm: {spoken or f'{hour}:{minute:02d}'}",
@@ -5624,14 +5618,17 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
             return {"action": "clock_alarm", "hour": _hm[0], "minute": _hm[1],
                     "spoken": _atime}
 
-    # Timer → drive Apple's Clock app deterministically (Timers tab → enter the
-    # duration → Start). Best-effort digit entry; the built-in timer is the fallback.
+    # Timer → VALET's built-in timer, which announces aloud when time's up. The
+    # Apple Clock Timers tab has no automatable duration field (it's not a standard
+    # text field), so driving it reliably isn't possible; the built-in is rock-solid
+    # and hands-free. (Stopwatch/alarms/tabs DO use the Clock app — those are
+    # buttons/shortcuts that automate cleanly.)
     _tm2 = _TIMER_RE.match(t)
     if _tm2 and "stopwatch" not in t:
         _dur = (_tm2.group("b") or _tm2.group("c") or _tm2.group("a") or "").strip()
         if _dur:
             _secs, _lbl = _parse_duration(_dur)
-            return {"action": "clock_timer", "seconds": _secs, "label": _lbl}
+            return {"action": "set_timer", "seconds": _secs, "label": _lbl}
 
     # "text/message <person> saying <body>" → compose-and-stop (never auto-send).
     # Only the explicit-separator form is deterministic enough to fast-path; the
@@ -7363,10 +7360,6 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "clock_tab":
                             response_text = ""
                             _track_uc(ws, _execute_clock_tab(action.get("tab", ""), ws))
-                        elif action["action"] == "clock_timer":
-                            response_text = ""
-                            _track_uc(ws, _execute_clock_timer(
-                                action.get("seconds", 60), action.get("label", "a minute"), ws))
                         elif action["action"] == "clock_alarm":
                             response_text = ""
                             _track_uc(ws, _execute_clock_alarm(

@@ -481,48 +481,46 @@ async def compose_text_message(recipient: str, body: str,
 
 
 # ── Apple Clock app control (System Events GUI scripting) ───────────────────
-# The Clock app has no AppleScript dictionary, so we drive it by clicking named
-# AX controls. The tabs are an AXTabGroup of radio buttons (or toolbar buttons on
-# older macOS) titled "World Clock"/"Alarms"/"Stopwatch"/"Timers"; Start/Stop/Lap
-# are AXButtons titled exactly that. Clicking BY NAME is deterministic — the
-# vision loop mis-clicked the screen instead.
+# The Clock app has no AppleScript dictionary. Live AX inspection showed two
+# important facts that earlier code got wrong:
+#   • The TABS are nested radio buttons with NO stable container path and a
+#     name of "missing value" (the label is in `description`) — clicking them by
+#     name silently failed, which is why tab switches never happened and the
+#     timer landed on the wrong tab. The reliable switch is the View-menu
+#     KEYBOARD SHORTCUT: ⌘1 World Clock, ⌘2 Alarms, ⌘3 Stopwatch, ⌘4 Timers.
+#   • The Start/Stop/Lap/Cancel BUTTONS are text-labeled, so they DO have a real
+#     `name` and ARE direct children of window 1 — `first button of window 1
+#     whose name is "Start"` works.
 
-_CLOCK_TAB_NAMES = {
-    "world clock": "World Clock", "world": "World Clock", "clock": "World Clock",
-    "alarms": "Alarms", "alarm": "Alarms",
-    "stopwatch": "Stopwatch", "stop watch": "Stopwatch",
-    "timers": "Timers", "timer": "Timers",
+_CLOCK_TAB_KEYS = {  # canonical tab → ⌘-number View-menu shortcut
+    "world clock": "1", "world": "1", "clock": "1",
+    "alarms": "2", "alarm": "2",
+    "stopwatch": "3", "stop watch": "3",
+    "timers": "4", "timer": "4",
+}
+_CLOCK_TAB_LABELS = {
+    "1": "World Clock", "2": "Alarms", "3": "Stopwatch", "4": "Timers",
 }
 
 
-def _clock_canonical_tab(s: str) -> str | None:
-    return _CLOCK_TAB_NAMES.get((s or "").strip().lower())
+def _clock_tab_key(s: str) -> str | None:
+    return _CLOCK_TAB_KEYS.get((s or "").strip().lower())
 
 
-def _clock_switch_snippet(tab: str) -> str:
-    """AppleScript that switches the Clock window to the named tab (tab group
-    radio button first, toolbar button as a fallback for older macOS)."""
+def _clock_switch_snippet(tab_key: str) -> str:
+    """Switch the Clock window to a tab via its ⌘-number View-menu shortcut."""
     return (
-        '  try\n'
-        f'    click (first radio button of tab group 1 of window 1 whose name is "{tab}")\n'
-        '  on error\n'
-        '    try\n'
-        f'      click (first button of toolbar 1 of window 1 whose name is "{tab}")\n'
-        '    on error\n'
-        f'      try\n        click (first radio button of window 1 whose name is "{tab}")\n      end try\n'
-        '    end try\n'
-        '  end try\n'
+        f'  keystroke "{tab_key}" using {{command down}}\n'
         '  delay 0.5\n'
     )
 
 
 def _clock_click_button_snippet(btn: str) -> str:
-    """AppleScript that clicks an AXButton titled `btn` anywhere in the window."""
+    """Click a text-labeled Clock button (Start/Stop/Lap/Cancel) by name. These
+    are direct children of window 1, so the specifier resolves directly."""
     return (
         '  try\n'
         f'    click (first button of window 1 whose name is "{btn}")\n'
-        '  on error\n'
-        f'    click (first button of (entire contents of window 1) whose name is "{btn}")\n'
         '  end try\n'
     )
 
@@ -555,11 +553,15 @@ async def _run_clock_script(script: str, fail_msg: str) -> dict:
 
 
 async def clock_stopwatch(mode: str) -> dict:
-    """Start or stop the Stopwatch in Apple's Clock app — deterministically."""
+    """Start or stop the Stopwatch in Apple's Clock app — deterministically.
+
+    ⌘3 switches to the Stopwatch tab (reliable, regardless of which tab is
+    showing), then the named Start/Stop button (a direct child of window 1) is
+    clicked."""
     want_start = mode in ("start", "begin")
     btn = "Start" if want_start else "Stop"
     script = _clock_wrap(
-        _clock_switch_snippet("Stopwatch") + '  delay 0.2\n' + _clock_click_button_snippet(btn))
+        _clock_switch_snippet("3") + '  delay 0.2\n' + _clock_click_button_snippet(btn))
     res = await _run_clock_script(script, f"Couldn't reach the Stopwatch {btn} button, sir.")
     if res["success"]:
         res["confirmation"] = f"Stopwatch {'started' if want_start else 'stopped'}, sir."
@@ -567,47 +569,24 @@ async def clock_stopwatch(mode: str) -> dict:
 
 
 async def clock_switch_tab(tab_name: str) -> dict:
-    """Switch the Clock app to a named tab (World Clock / Alarms / Stopwatch / Timers)."""
-    tab = _clock_canonical_tab(tab_name)
-    if not tab:
+    """Switch the Clock app to a tab via its ⌘-number View-menu shortcut."""
+    key = _clock_tab_key(tab_name)
+    if not key:
         return {"success": False, "confirmation": f"I don't know a '{tab_name}' tab in Clock, sir."}
-    script = _clock_wrap(_clock_switch_snippet(tab))
-    res = await _run_clock_script(script, f"Couldn't switch to the {tab} tab, sir.")
+    label = _CLOCK_TAB_LABELS[key]
+    res = await _run_clock_script(_clock_wrap(_clock_switch_snippet(key)),
+                                  f"Couldn't switch to the {label} tab, sir.")
     if res["success"]:
-        res["confirmation"] = f"Switched to {tab}, sir."
-    return res
-
-
-async def clock_set_timer(seconds: int, label: str = "") -> dict:
-    """Set and start a timer in the Clock app's Timers tab.
-
-    Switches to Timers, types the duration as HHMMSS digits (the field fills
-    right-aligned), then clicks Start. Best-effort: the Timers digit entry varies
-    by macOS version, so this may need a tweak after testing.
-    """
-    seconds = max(1, int(seconds))
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    digits = f"{h:02d}{m:02d}{s:02d}"   # HHMMSS, e.g. 3 min → "000300"
-    steps = (
-        _clock_switch_snippet("Timers")
-        + '  delay 0.4\n'
-        + f'  keystroke "{digits}"\n'    # fills the duration field right-aligned
-        + '  delay 0.4\n'
-        + _clock_click_button_snippet("Start")
-    )
-    res = await _run_clock_script(_clock_wrap(steps), "Couldn't set the timer in Clock, sir.")
-    if res["success"]:
-        res["confirmation"] = f"Timer set for {label or f'{seconds} seconds'}, sir."
+        res["confirmation"] = f"Switched to {label}, sir."
     return res
 
 
 async def clock_add_alarm(hour_24: int, minute: int, label: str = "") -> dict:
     """Add an alarm in the Clock app's Alarms tab (best-effort).
 
-    Switches to Alarms, clicks Add (+), types the time, and saves. The add-alarm
-    sheet's controls are version-specific, so this is the least certain of the
-    Clock actions and may need adjustment after testing.
+    ⌘2 switches to Alarms reliably; the add-alarm sheet's controls are
+    version-specific, so the Add/time-entry/Save steps are best-effort and may
+    need a tweak after testing.
     """
     hour_24 = max(0, min(23, int(hour_24)))
     minute = max(0, min(59, int(minute)))
@@ -615,12 +594,12 @@ async def clock_add_alarm(hour_24: int, minute: int, label: str = "") -> dict:
     ampm = "AM" if hour_24 < 12 else "PM"
     time_digits = f"{hr12:02d}{minute:02d}"
     steps = (
-        _clock_switch_snippet("Alarms")
+        _clock_switch_snippet("2")
         + '  delay 0.4\n'
         + '  try\n'
-          '    click (first button of window 1 whose name is "Add")\n'
+          '    click (first button of window 1 whose description is "Add")\n'
           '  on error\n'
-          '    try\n      click (first button of window 1 whose description is "Add")\n    end try\n'
+          '    try\n      click (first button of window 1 whose name is "Add")\n    end try\n'
           '  end try\n'
         + '  delay 0.6\n'
         + f'  keystroke "{time_digits}"\n'
