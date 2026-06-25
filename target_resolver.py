@@ -126,17 +126,21 @@ async def _vision_point(observation: dict, description: str, client) -> Optional
     if not img or not wf:
         return None
     sys = (
-        "You locate a UI target in a screenshot. Return STRICT JSON only: "
-        "{\"found\": true, \"x\": <int>, \"y\": <int>} with x,y the PIXEL coordinates "
-        "of the CENTER of the target in THIS image, or {\"found\": false}."
+        "You locate a UI target in a screenshot for a PRECISE click. Return STRICT "
+        "JSON only: {\"found\": true, \"x\": <int>, \"y\": <int>} with x,y the PIXEL "
+        "coordinates of the exact CENTER of the target in THIS image, or "
+        "{\"found\": false}. Precision matters: when the target is one row of a "
+        "vertical list or menu (e.g. 'Sign out of all accounts' sitting directly "
+        "below 'Add another account'), READ the labels and return the center of the "
+        "CORRECT row — never an adjacent one."
     )
     try:
         resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001", max_tokens=120, system=sys,
+            model="claude-sonnet-4-6", max_tokens=120, system=sys,
             messages=[{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64",
                  "media_type": img["media_type"], "data": img["b64"]}},
-                {"type": "text", "text": f'Where is "{description}"? Return JSON.'},
+                {"type": "text", "text": f'Where exactly is "{description}"? Center pixel only, JSON.'},
             ]}],
         )
         data = _parse_json(resp.content[0].text) or {}
