@@ -18,6 +18,7 @@ a caller-supplied `emit` callback — no direct WebSocket / process_events coupl
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Awaitable, Callable, Optional
@@ -30,6 +31,10 @@ log = logging.getLogger("valet.loop")
 _DEFAULT_MAX_STEPS = 8
 # Bail after this many consecutive non-veto failures (can't make progress).
 _MAX_CONSECUTIVE_FAILS = 2
+# Pause after an action before re-observing, so a just-opened menu/popup or a page
+# transition has time to RENDER before the next screenshot. Without this the loop
+# screenshots mid-animation and "can't see" a menu the user clearly can.
+_ACT_SETTLE = 0.5
 
 _ACTIONS = ("click", "type", "key", "open_app", "done", "fail")
 
@@ -56,6 +61,42 @@ _PAYMENT_HINTS = (
 # Secure-field role + label cues that mean "credentials go here".
 _LOGIN_ROLE_HINTS = ("securetextfield", "secure text field")
 _LOGIN_LABEL_HINTS = ("password", "passcode", "passphrase", "one-time code", "verification code")
+
+
+# Browser app names: web content needs a real synthetic mouse click — AXPress
+# no-ops on a Gmail row / page button (same reason as the one-shot click path).
+_BROWSER_APPS = {
+    "google chrome", "chrome", "chromium", "safari", "safari technology preview",
+    "firefox", "firefox developer edition", "microsoft edge", "edge", "arc",
+    "brave browser", "brave", "opera", "vivaldi", "duckduckgo",
+}
+
+
+def _is_browser(app: Optional[str]) -> bool:
+    return bool(app) and app.strip().lower() in _BROWSER_APPS
+
+
+def _page_elements(observation: dict) -> list:
+    """The candidate elements to show the model. For a browser, DROP everything
+    that sits entirely above the web-content top (the browser's own toolbar,
+    profile/avatar button, tab strip, address bar, extensions) so the loop can
+    only target the PAGE — never Chrome's chrome (which is why 'log out of Gmail'
+    kept hitting the Chrome profile button). No-op when not a browser or when the
+    web-content top is unknown."""
+    els = observation.get("elements") or []
+    if not _is_browser(observation.get("app")):
+        return els
+    web_top = observation.get("web_top")
+    if not web_top:
+        return els
+    kept = []
+    for e in els:
+        fr = e.get("frame")
+        if fr and len(fr) == 4 and (fr[1] + fr[3]) <= web_top + 4:
+            continue  # entirely in the toolbar band → browser chrome, not the page
+        kept.append(e)
+    # Safety: if the filter nuked everything (odd geometry), fall back to all.
+    return kept or els
 
 
 def _find_element(observation: dict, ref: Optional[str]) -> dict:
@@ -160,6 +201,7 @@ _NEXT_ACTION_TOOL = {
         "properties": {
             "action": {"type": "string", "enum": list(_ACTIONS)},
             "ref": {"type": "string", "description": "element ref id (e0, e1, …) for click/type"},
+            "target": {"type": "string", "description": "for action=click ONLY: the short visible label of a control you can SEE on the screenshot but that is NOT in the elements list (e.g. an item inside a popup that just opened, like 'Sign out of all accounts'). Vee locates it visually. Leave ref empty when you use this."},
             "text": {"type": "string", "description": "text to type (for action=type)"},
             "app": {"type": "string", "description": "app name (for action=open_app)"},
             "combo": {"type": "string", "description": "key chord like cmd+s (for action=key)"},
@@ -189,9 +231,41 @@ _DECIDE_SYSTEM = (
     "- Use \"click\" only for buttons, links, menu items, checkboxes, popups. Never "
     "click a container (AXGroup, AXScrollArea, AXWindow) or an element with no label.\n"
     "- Use \"key\" for keyboard shortcuts (save = cmd+s, select-all = cmd+a).\n"
-    "- Use only refs from the list. When the goal is already satisfied, return done. "
-    "If a step just failed, do something DIFFERENT — never repeat the same failed step; "
-    "if you can't make progress, return fail. Keep reason to one short clause."
+    "- You are ALREADY looking at FOCUSED APP — the elements shown ARE its current "
+    "screen. Do NOT use open_app for the app you're already in (it's a no-op and wastes "
+    "a step); act on the screen instead. Only use open_app to switch to a DIFFERENT app "
+    "that isn't focused.\n"
+    "- BROWSER vs PAGE: in a browser (Chrome, Safari, Arc, Edge…) the goal is almost "
+    "always about the WEB PAGE, not the browser itself. Act on elements INSIDE the page "
+    "content. AVOID the browser's own chrome — the toolbar, address bar, tab strip, "
+    "extension icons, and ESPECIALLY the browser's profile/avatar button (it opens the "
+    "browser's profile switcher — 'Other Chrome Profiles', 'Turn on sync', 'Manage "
+    "Profiles' — NOT the website's account menu). To sign out of a web app like Gmail, "
+    "click the account avatar INSIDE the page (the one whose label names the Google "
+    "Account / email, top-right of the page content), then the site's own 'Sign out' "
+    "item — never the browser's profile menu.\n"
+    "- DO THE WORK — do not declare success without acting. NEVER return 'done' on "
+    "the first step (no steps taken yet): take a real first action. Only return 'done' "
+    "when the goal's END STATE is visibly true on screen RIGHT NOW. For 'log out / sign "
+    "out', done means you SEE a signed-out / account-chooser / login screen — an open "
+    "inbox or dashboard means you are still signed IN, so proceed (click the in-page "
+    "account avatar, then 'Sign out'). Do not assume or hallucinate completion.\n"
+    "- BEWARE the wrong sign-in page: a page that says 'continue to Gmail' or 'this "
+    "account will be available to other apps' is an ADD-ANOTHER-ACCOUNT page (it "
+    "appears if you clicked 'Add another account' by mistake) — that is NOT a sign-out. "
+    "In the account menu, 'Sign out of all accounts' is the LAST/bottom item, directly "
+    "BELOW 'Add another account' — target the bottom one. If you landed on an add-"
+    "account page, go back and click the correct row.\n"
+    "- POPUPS / MENUS: after you click something that opens a menu or popup (an "
+    "account avatar, a ⋮ button, a dropdown), the next step is to click an ITEM "
+    "INSIDE it — do NOT click the opener again (that just closes it). If that item "
+    "is visible on the screenshot but missing from the elements list, use action "
+    "click with 'target' set to its visible label (e.g. 'Sign out of all "
+    "accounts') and no ref — Vee will find it visually.\n"
+    "- Prefer a ref from the list when one matches; use 'target' only for visible "
+    "items the list is missing. If a step just failed, do something DIFFERENT — never "
+    "repeat the same failed step; if you genuinely cannot make progress after trying, "
+    "return fail (not done). Keep reason to one short clause."
 )
 
 
@@ -210,7 +284,9 @@ def _extract_decision(resp) -> dict:
 
 async def _decide(client, goal: str, observation: dict, history: list,
                   model: str = _DECIDE_MODEL) -> dict:
-    elements = observation.get("elements") or []
+    # In a browser, only the PAGE is offered as candidates — the toolbar/profile
+    # buttons are filtered out so the model can't pick Chrome's own chrome.
+    elements = _page_elements(observation)
     user = (
         f"GOAL: {goal}\n\n"
         f"FOCUSED APP: {observation.get('app','?')}\n"
@@ -239,7 +315,8 @@ async def _decide(client, goal: str, observation: dict, history: list,
     return data
 
 
-async def _execute(actor, ax_executor, decision: dict, app: Optional[str]):
+async def _execute(actor, ax_executor, decision: dict, app: Optional[str],
+                   observation: Optional[dict] = None):
     """Run one decided action through `actor`. Returns an ActionResult.
 
     `actor` is the executor that performs the act: the gating SafeExecutor for a
@@ -259,6 +336,18 @@ async def _execute(actor, ax_executor, decision: dict, app: Optional[str]):
         # keeps the user in the loop if focus is somewhere unexpected).
         return await actor.send_keystroke(app or "", decision.get("text") or "")
     if act == "click":
+        # In a browser, AXPress on web content (a Gmail avatar, a page button)
+        # often does nothing — click the element's location with a real mouse
+        # instead. Native apps keep AXPress-by-ref (works regardless of focus).
+        obs_app = (observation or {}).get("app") or app
+        pt = decision.get("_point")          # vision-resolved point (no ref)
+        if pt and len(pt) == 2:
+            return await actor.click_element(point=(float(pt[0]), float(pt[1])), app=obs_app)
+        el = _find_element(observation or {}, decision.get("ref"))
+        fr = el.get("frame")
+        if _is_browser(obs_app) and fr and len(fr) == 4:
+            cx, cy = fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0
+            return await actor.click_element(point=(cx, cy), app=obs_app)
         return await actor.click_element(ref=decision.get("ref"), app=app)
     # done / fail never reach here
     from action_executor import ActionResult, Capability
@@ -317,6 +406,7 @@ async def run_loop(
 
     history: list = []
     consecutive_fails = 0
+    forced_recheck = False
 
     for step in range(1, max_steps + 1):
         if kill_switch is not None and kill_switch.is_engaged():
@@ -332,12 +422,63 @@ async def run_loop(
         await _emit("decide", f"{act} {decision.get('target') or decision.get('app') or decision.get('combo') or decision.get('ref') or ''}".strip(),
                     detail=summary)
 
+        # Guard against a lazy first-step "done" (the model glancing at a busy
+        # page and declaring victory without acting). Re-observe and re-decide
+        # once, with a nudge, before accepting completion. Bounded to one retry.
+        if act == "done" and not history and not forced_recheck:
+            forced_recheck = True
+            await _emit("decide", "Double-checking before I call it done…")
+            history.append({"step": step, "action": "recheck", "ok": True,
+                            "msg": "claimed done with no action taken — re-evaluating"})
+            continue
+
         if act == "done":
             return {"status": "done", "steps": step - 1, "history": history,
                     "message": summary or "Done, sir."}
         if act == "fail":
             return {"status": "failed", "steps": step - 1, "history": history,
                     "message": summary or "I couldn't complete that, sir."}
+
+        # Redundant open_app: opening the app you're already in is a no-op that
+        # "succeeds", so the model can spin on it forever. Treat as a soft failure
+        # and nudge it to act on the screen instead.
+        if act == "open_app":
+            _tgt = (decision.get("app") or "").strip().lower()
+            _cur = (observation.get("app") or "").strip().lower()
+            if _tgt and _cur and (_tgt == _cur or _tgt in _cur or _cur in _tgt):
+                await _emit("decide", f"Already in {observation.get('app')} — acting on the screen instead")
+                history.append({"step": step, "action": "open_app", "ok": False,
+                                "target": decision.get("app"),
+                                "msg": "already in this app — pick a click/type on the visible screen"})
+                consecutive_fails += 1
+                if consecutive_fails >= _MAX_CONSECUTIVE_FAILS:
+                    return {"status": "failed", "steps": step, "history": history,
+                            "message": "I got stuck, sir — stopping rather than guessing."}
+                continue
+
+        # Vision fallback: the model named a control it can SEE (e.g. a popup item)
+        # but couldn't ref. Locate it visually (the same resolver one-shot clicks
+        # use) and carry the resolved point on the decision for the click below.
+        if act == "click" and decision.get("target") and not _find_element(observation, decision.get("ref")):
+            res = None
+            try:
+                import target_resolver
+                res = await target_resolver.resolve(observation, decision["target"], client, intent="click")
+            except Exception as e:
+                log.warning("loop vision resolve failed: %s", e)
+            if res is not None and getattr(res, "status", None) == "ref":
+                decision["ref"] = res.ref
+            elif res is not None and getattr(res, "status", None) == "point" and res.point:
+                decision["_point"] = list(res.point)
+            else:
+                await _emit("act", f"I can't find '{decision['target']}' on screen", status="error")
+                history.append({"step": step, "action": "click", "ok": False,
+                                "target": decision.get("target"), "msg": "vision miss"})
+                consecutive_fails += 1
+                if consecutive_fails >= _MAX_CONSECUTIVE_FAILS:
+                    return {"status": "failed", "steps": step, "history": history,
+                            "message": "I got stuck, sir — stopping rather than guessing."}
+                continue
 
         # Hybrid autonomy: pick the actor (raw = no card, safe = card) per step,
         # and hand a credential field to the human instead of acting on it.
@@ -365,13 +506,37 @@ async def run_loop(
                     return {"status": "halted", "steps": step - 1, "history": history, "message": "Halted, sir."}
                 actor = ax_executor
 
-        result = await _execute(actor, ax_executor, decision, app)
+        # Visibly glide the cursor onto a click target first, so the user can
+        # WATCH the loop work (same affordance as a one-shot click). Browser-safe
+        # (verify=False — web hit-tests are unreliable); best-effort, never fatal.
+        if act == "click" and ax_executor is not None:
+            _pt = decision.get("_point")
+            if _pt and len(_pt) == 2:
+                _gx, _gy = _pt
+            else:
+                _el = _find_element(observation, decision.get("ref"))
+                _fr = _el.get("frame")
+                _gx, _gy = (_fr[0] + _fr[2] / 2.0, _fr[1] + _fr[3] / 2.0) \
+                    if (_fr and len(_fr) == 4) else (None, None)
+            if _gx is not None:
+                try:
+                    await ax_executor.glide_to_target(
+                        _gx, _gy, ref=decision.get("ref"), verify=False)
+                except Exception:
+                    pass
+
+        result = await _execute(actor, ax_executor, decision, app, observation)
         ok = bool(getattr(result, "ok", False))
         history.append({"step": step, "action": act,
                         "target": decision.get("ref") or decision.get("app") or decision.get("combo"),
                         "ok": ok, "msg": getattr(result, "message", "")})
         await _emit("act", getattr(result, "message", "") or act,
                     status="done" if ok else "error")
+
+        # Let the UI settle (menu open animation, page nav) before re-observing —
+        # otherwise the next screenshot catches it mid-render and the model can't
+        # see the menu item it just revealed.
+        await asyncio.sleep(_ACT_SETTLE)
 
         if ok:
             consecutive_fails = 0
