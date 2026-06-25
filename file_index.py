@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,13 @@ def detect_kind(text: str) -> tuple[str | None, str, bool]:
             break
     for w in _RECENCY_WORDS:
         s = s.replace(w, " ")
+    # Strip stated LOCATION ("on my desktop", "in downloads", "on my computer").
+    # mdfind scans the whole home regardless, and the spoken location is often
+    # wrong (the file's really elsewhere) — so it must not pollute the name query.
+    s = re.sub(r'\b(?:on|in|under|inside|from|at)\s+(?:my\s+|the\s+)?'
+               r'(?:desktop|downloads?|documents?|pictures?|photos?|movies?|music|'
+               r'folder|directory|computer|laptop|mac(?:book)?|hard\s*drive|drive|files?)\b',
+               ' ', s)
     # drop leftover filler
     for filler in ("from", "my", "the", "a ", "of", "for"):
         s = f" {s} ".replace(f" {filler} ", " ").strip()
@@ -86,14 +94,18 @@ def _score(path: str, query: str, home: str) -> int:
     q = query.lower().strip()
     score = 10  # mdfind already matched something
     if q:
+        toks = [w for w in q.split() if len(w) >= 2]
         if stem == q or nl == q:
             score = 100
         elif stem.startswith(q) or nl.startswith(q):
             score = 70
         elif q in nl:
-            score = 50
+            score = 55
         else:
-            score = 10
+            # Partial / multi-word: +14 per query word present in the name, so a
+            # file matching more of the spoken words ranks higher.
+            matched = sum(1 for w in toks if w in nl)
+            score = 10 + matched * 14
     if path.startswith(home):
         score += 20
     # Strongly prefer the user's document folders; bury dev/package clutter.
@@ -133,13 +145,15 @@ def _mdfind_args(scope_dirs: list[str], pred: str | None, q: str) -> list[str] |
     args = ["mdfind"]
     for d in scope_dirs:
         args += ["-onlyin", d]
-    if pred and q:
-        safe = q.replace('"', "")
-        args.append(f'{pred} && kMDItemDisplayName == "*{safe}*"c')
+    # Match files whose name contains ANY query word (OR), not the whole phrase as
+    # one substring — so "gold rocket" still finds "Gold_copy-remove.png" and
+    # rank_hits sorts by how many words actually matched.
+    toks = [w.replace('"', "") for w in q.split() if len(w) >= 2]
+    if toks:
+        name_or = " || ".join(f'kMDItemDisplayName == "*{w}*"c' for w in toks)
+        args.append(f"({pred}) && ({name_or})" if pred else f"({name_or})")
     elif pred:
         args.append(pred)
-    elif q:
-        args += ["-name", q]
     else:
         return None
     return args

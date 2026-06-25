@@ -272,3 +272,22 @@ def test_browser_tabs_and_claude_in_chrome():
     assert a and a["action"] == "open_url" and "claude.ai" in a["target"], a
     # bare "open claude" still opens the terminal.
     assert server.detect_action_fast("open claude")["action"] == "open_terminal"
+
+
+def test_timers_and_stopwatch():
+    a = server.detect_action_fast("set a timer for three minutes")
+    assert a and a["action"] == "set_timer" and a["seconds"] == 180, a
+    a = server.detect_action_fast("set a timer for 30 seconds")
+    assert a and a["seconds"] == 30, a
+    a = server.detect_action_fast("start a stopwatch")
+    assert a and a["action"] == "stopwatch" and a["mode"] == "start", a
+    a = server.detect_action_fast("stop the stopwatch")
+    assert a and a["action"] == "stopwatch" and a["mode"] == "stop", a
+
+
+def test_file_search_strips_location():
+    import file_index
+    for q, want in [("the juniper logo on my desktop", "juniper logo"),
+                    ("my q2 report in downloads", "q2 report")]:
+        _, name, _ = file_index.detect_kind(q)
+        assert name == want, (q, name)
