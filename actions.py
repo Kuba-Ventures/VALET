@@ -421,12 +421,16 @@ async def compose_text_message(recipient: str, body: str,
         log.error(f"compose_text_message pbcopy failed: {e}")
         return {"success": False, "confirmation": "Couldn't prepare that text, sir."}
 
-    # key code 36 = Return (accepts the highlighted contact suggestion → addresses
-    # the message and moves focus to the body field; it does NOT send from the
-    # recipient field). Generous settles: the recipient autocomplete needs time to
-    # populate, and after Return the conversation switches/renders before the body
-    # field is focused — typing too early is what dropped the body. Then ⌘V pastes
-    # the body atomically. We never press Return in the body → composed, unsent.
+    # Sequence (each step needs a settle or the next keystroke is dropped/misrouted):
+    #   ⌘N            new compose, focus in the To field
+    #   type name     recipient autocomplete populates
+    #   key 36 Return accept the top suggestion → recipient becomes a chip. Focus
+    #                 STAYS in the To field (ready for more recipients) — it does
+    #                 NOT drop to the body. Pasting here is what put the text in the
+    #                 recipients bar.
+    #   key 48 Tab    advance To → message body field
+    #   ⌘V            paste the body atomically (NOT sent — we never press Return
+    #                 in the body, so it's composed and left for the user to send)
     script = (
         'tell application "Messages" to activate\n'
         'delay 0.7\n'
@@ -435,8 +439,10 @@ async def compose_text_message(recipient: str, body: str,
         '  delay 0.9\n'
         f'  keystroke "{r_esc}"\n'                  # type recipient name
         '  delay 1.3\n'                             # let autocomplete populate
-        '  key code 36\n'                           # accept top suggestion → addresses + focuses body
-        '  delay 1.3\n'                             # let the conversation open + body field focus
+        '  key code 36\n'                           # Return: accept top suggestion → recipient chip
+        '  delay 0.7\n'                             # let the dropdown close / chip commit
+        '  key code 48\n'                           # Tab: move To → message body
+        '  delay 0.7\n'                             # let focus land in the body
         '  keystroke "v" using {command down}\n'   # paste the body (atomic, NOT sent)
         '  delay 0.3\n'
         'end tell\n'
