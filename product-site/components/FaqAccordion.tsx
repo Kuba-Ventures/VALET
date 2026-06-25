@@ -15,7 +15,7 @@ const FAQS: Qa[] = [
   },
   {
     q: "What does the free trial include?",
-    a: "The full Pro plan for 7 days. Unlimited voice control across your apps, fast and deep work, all of it. No charge until the trial ends, and you can cancel before then.",
+    a: "Full access for 7 days. Unlimited voice control across your apps, fast and deep work, all of it. No charge until the trial ends, and you can cancel before then.",
   },
   {
     q: "How do I cancel?",
