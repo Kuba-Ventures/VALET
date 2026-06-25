@@ -94,14 +94,18 @@ def _score(path: str, query: str, home: str) -> int:
     q = query.lower().strip()
     score = 10  # mdfind already matched something
     if q:
+        toks = [w for w in q.split() if len(w) >= 2]
         if stem == q or nl == q:
             score = 100
         elif stem.startswith(q) or nl.startswith(q):
             score = 70
         elif q in nl:
-            score = 50
+            score = 55
         else:
-            score = 10
+            # Partial / multi-word: +14 per query word present in the name, so a
+            # file matching more of the spoken words ranks higher.
+            matched = sum(1 for w in toks if w in nl)
+            score = 10 + matched * 14
     if path.startswith(home):
         score += 20
     # Strongly prefer the user's document folders; bury dev/package clutter.
@@ -141,13 +145,15 @@ def _mdfind_args(scope_dirs: list[str], pred: str | None, q: str) -> list[str] |
     args = ["mdfind"]
     for d in scope_dirs:
         args += ["-onlyin", d]
-    if pred and q:
-        safe = q.replace('"', "")
-        args.append(f'{pred} && kMDItemDisplayName == "*{safe}*"c')
+    # Match files whose name contains ANY query word (OR), not the whole phrase as
+    # one substring — so "gold rocket" still finds "Gold_copy-remove.png" and
+    # rank_hits sorts by how many words actually matched.
+    toks = [w.replace('"', "") for w in q.split() if len(w) >= 2]
+    if toks:
+        name_or = " || ".join(f'kMDItemDisplayName == "*{w}*"c' for w in toks)
+        args.append(f"({pred}) && ({name_or})" if pred else f"({name_or})")
     elif pred:
         args.append(pred)
-    elif q:
-        args += ["-name", q]
     else:
         return None
     return args

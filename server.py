@@ -2411,9 +2411,69 @@ async def _execute_open_file(path: str, label: str, reveal: bool = False):
             await emit_error(task_id, "Open file failed", detail=str(e)[:200])
 
 
+async def _semantic_file_match(query: str, candidate_paths: list | None = None):
+    """Let a model pick the file that best matches the spoken description —
+    handles abbreviations ("EV" = escape velocity), partials, synonyms, word
+    order. When `candidate_paths` is given it chooses among them (disambiguation);
+    otherwise it lists the user's real files (literal-search miss). Path or None."""
+    import os, file_index
+    if not query or not anthropic_client:
+        return None
+    files: list[tuple[str, str]] = []
+    if candidate_paths:
+        files = [(os.path.basename(p), p) for p in candidate_paths if p]
+    else:
+        for d in file_index._doc_dirs(str(Path.home())):
+            try:
+                for entry in os.scandir(d):
+                    if entry.name.startswith("."):
+                        continue
+                    if entry.is_file():
+                        files.append((entry.name, entry.path))
+                    elif entry.is_dir():        # one level deep (e.g. Desktop/Work/…)
+                        try:
+                            for sub in os.scandir(entry.path):
+                                if sub.is_file() and not sub.name.startswith("."):
+                                    files.append((sub.name, sub.path))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if len(files) >= 500:
+                break
+        files = files[:500]
+    if not files:
+        return None
+    # Show the parent folder for context ("…/Desktop/EV social profile pic.png").
+    def _ctx(p):
+        try:
+            return f"{os.path.basename(os.path.dirname(p))}/{os.path.basename(p)}"
+        except Exception:
+            return os.path.basename(p)
+    numbered = "\n".join(f"{i}: {_ctx(p)}" for i, (_n, p) in enumerate(files))
+    try:
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=10,
+            system=("Pick the file that best matches the user's spoken description. "
+                    "Account for abbreviations (e.g. 'EV' = 'escape velocity'), partial "
+                    "names, synonyms, and word order. Reply with ONLY the file's number, "
+                    "or NONE if nothing reasonably matches."),
+            messages=[{"role": "user", "content": f"Wants: {query}\n\nFiles:\n{numbered}"}])
+        txt = (resp.content[0].text or "").strip()
+        m = re.search(r"\d+", txt)
+        if m:
+            idx = int(m.group())
+            if 0 <= idx < len(files):
+                return files[idx][1]
+    except Exception as e:
+        log.warning("semantic file match failed: %s", e)
+    return None
+
+
 async def _execute_find_file(action: dict, ws):
     """Resolve a spoken file query via mdfind and open the best hit, or offer a
-    short voice pick-list on ambiguity. No LLM — a confident match opens directly."""
+    short voice pick-list on ambiguity. Falls back to a semantic (LLM-over-real-
+    files) match when the literal search misses."""
     import file_index
     query = action.get("query", "")
     kind = action.get("kind")
@@ -2424,15 +2484,36 @@ async def _execute_find_file(action: dict, ws):
         await emit_step(task_id, f"Searching for {phrase}…", status="active")
         hits = await file_index.find_files(query, kind=kind, recent=recent, limit=6)
         if not hits:
+            # Literal search missed — try matching the DESCRIPTION against the real
+            # files (abbreviations, partials). "escape velocity profile pic" →
+            # "EV social profile pic.png".
+            await emit_step(task_id, "No exact name — matching by description…", status="active")
+            match = await _semantic_file_match(query or phrase)
+            if match:
+                import os as _os
+                await emit_step(task_id, f"Opening {_os.path.basename(match)}", status="done")
+                await open_app_or_path(match, task_id=task_id)
+                await _speak(ws, f"Opening {_os.path.basename(match)}, sir.")
+                return
             await emit_error(task_id, "No file found", detail=phrase[:120])
             await _speak(ws, f"I couldn't find {phrase}, sir.")
             return
         top = hits[0]
-        clear_winner = len(hits) == 1 or (top.score - hits[1].score) >= 25
+        clear_winner = len(hits) == 1 or (top.score - hits[1].score) >= 30
         if clear_winner:
             await emit_step(task_id, f"Opening {top.name}", status="done")
             await open_app_or_path(top.path, task_id=task_id)
             await _speak(ws, f"Opening {top.name}, sir.")
+            return
+        # Ambiguous literal ranking ("escape velocity profile pic" ties the Admin
+        # sheet with the profile pic) — let the model pick the best DESCRIPTION
+        # match among the candidates before falling back to a spoken pick-list.
+        import os as _os
+        match = await _semantic_file_match(query or phrase, [h.path for h in hits[:12]])
+        if match:
+            await emit_step(task_id, f"Opening {_os.path.basename(match)}", status="done")
+            await open_app_or_path(match, task_id=task_id)
+            await _speak(ws, f"Opening {_os.path.basename(match)}, sir.")
             return
         cands = hits[:3]
         for i, h in enumerate(cands):
