@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,13 @@ def detect_kind(text: str) -> tuple[str | None, str, bool]:
             break
     for w in _RECENCY_WORDS:
         s = s.replace(w, " ")
+    # Strip stated LOCATION ("on my desktop", "in downloads", "on my computer").
+    # mdfind scans the whole home regardless, and the spoken location is often
+    # wrong (the file's really elsewhere) — so it must not pollute the name query.
+    s = re.sub(r'\b(?:on|in|under|inside|from|at)\s+(?:my\s+|the\s+)?'
+               r'(?:desktop|downloads?|documents?|pictures?|photos?|movies?|music|'
+               r'folder|directory|computer|laptop|mac(?:book)?|hard\s*drive|drive|files?)\b',
+               ' ', s)
     # drop leftover filler
     for filler in ("from", "my", "the", "a ", "of", "for"):
         s = f" {s} ".replace(f" {filler} ", " ").strip()

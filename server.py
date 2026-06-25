@@ -2303,6 +2303,41 @@ async def _execute_open_app(target: str):
             await emit_error(task_id, "Open app failed", detail=str(e)[:200])
 
 
+async def _execute_set_timer(seconds: int, label: str, ws):
+    """Built-in timer: ack now, then announce when it's up. No Clock app needed."""
+    await _speak(ws, f"Timer set for {label}, sir.")
+    try:
+        async with process_bus.task_context(f"Timer · {label}") as task_id:
+            await emit_step(task_id, f"Counting down {label}…", status="active")
+            await asyncio.sleep(seconds)
+            await emit_step(task_id, "Time's up", status="done")
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        log.warning(f"timer error: {e}")
+        await asyncio.sleep(seconds)
+    await _speak(ws, f"Time's up, sir — your {label} timer's done.")
+
+
+# Per-connection stopwatch start time lives on the ws (set in voice_handler).
+async def _execute_stopwatch(mode: str, ws):
+    """Start or stop/check a simple stopwatch, reporting elapsed time aloud."""
+    if mode == "start":
+        ws.stopwatch_start = time.time()
+        await _speak(ws, "Stopwatch started, sir.")
+        return
+    start = getattr(ws, "stopwatch_start", None)
+    if not start:
+        await _speak(ws, "No stopwatch running, sir.")
+        return
+    elapsed = int(time.time() - start)
+    ws.stopwatch_start = None
+    m, s = divmod(elapsed, 60)
+    parts = ([f"{m} minute{'s' if m != 1 else ''}"] if m else []) + \
+            ([f"{s} second{'s' if s != 1 else ''}"] if s or not m else [])
+    await _speak(ws, f"{' and '.join(parts)}, sir.")
+
+
 async def _execute_browser_tab(combo: str, ack: str, ws):
     """Send a browser tab keyboard shortcut (⌘T new / ⌘W close / ⇧⌘T reopen /
     ⌥⌘→← switch) to the frontmost browser. Keyboard shortcuts are universal and
@@ -4946,6 +4981,41 @@ _WEB_FLOW_RE = re.compile(
 _GO_BACK_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:go|take\s+me|head|navigate|click)\s+back\b(?!\s+to\s+sleep)', re.IGNORECASE)
+# Built-in timer + stopwatch (VALET announces when done — no Clock app needed).
+_TIMER_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:(?:set|start|create|make|put\s+on)\s+(?:a\s+|an\s+)?(?P<a>.+?)?\s*timer'
+    r'(?:\s+(?:for|of)\s+(?P<b>.+?))?'
+    r'|(?:a\s+|an\s+)?timer\s+(?:for\s+|of\s+)(?P<c>.+?))'
+    r'\s*[.?!]*$', re.IGNORECASE)
+_STOPWATCH_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?P<mode>start|begin|stop|end|check|how\s+long(?:\'s| is| has)?)\b.*\bstopwatch\b'
+    r'|^(?:stop|end|check)\s+the\s+stopwatch\s*[.?!]*$', re.IGNORECASE)
+_NUM_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40,
+    "forty-five": 45, "forty five": 45, "fifty": 50, "sixty": 60, "ninety": 90,
+    "half": 0.5,
+}
+
+
+def _parse_duration(text: str) -> tuple[int, str]:
+    """(seconds, spoken-label) from a duration phrase. Default unit = minutes."""
+    s = (text or "").lower().strip()
+    m = re.search(r'(\d+(?:\.\d+)?)', s)
+    n = float(m.group(1)) if m else next(
+        (v for w, v in sorted(_NUM_WORDS.items(), key=lambda x: -len(x[0]))
+         if re.search(rf'\b{re.escape(w)}\b', s)), 1)
+    if "hour" in s or re.search(r'\bhrs?\b', s):  # NOT "hr" in s — "three" has "hr"
+        secs, unit = n * 3600, "hour"
+    elif "second" in s or re.search(r'\bsec', s):
+        secs, unit = n, "second"
+    else:
+        secs, unit = n * 60, "minute"
+    label = f"{n:g} {unit}" + ("s" if n != 1 else "")
+    return max(1, int(secs)), label
 # Browser tab control via keyboard shortcuts (universal, reliable). Matched BEFORE
 # the web-search fallback so "open a new tab" isn't searched.
 _BROWSER_TAB_RE = re.compile(
@@ -5191,6 +5261,20 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if _tabm:
         _combo, _ack = _tab_combo(_tabm.group("cmd"))
         return {"action": "browser_tab", "combo": _combo, "ack": _ack}
+
+    # Stopwatch (start / stop / check) — before the timer so "stopwatch" wins.
+    _swm = _STOPWATCH_RE.match(t)
+    if _swm:
+        _mode = (_swm.group("mode") or "stop").lower()
+        return {"action": "stopwatch", "mode": "start" if _mode in ("start", "begin") else "stop"}
+
+    # Built-in timer: "set a timer for three minutes", "start a 5 minute timer".
+    _tm2 = _TIMER_RE.match(t)
+    if _tm2 and "stopwatch" not in t:
+        _dur = (_tm2.group("b") or _tm2.group("c") or _tm2.group("a") or "").strip()
+        if _dur:
+            _secs, _lbl = _parse_duration(_dur)
+            return {"action": "set_timer", "seconds": _secs, "label": _lbl}
 
     # Live field dictation: "dictate into here" / "type what I say" → enter a
     # mode that types each following utterance into the focused field.
@@ -6879,6 +6963,13 @@ async def voice_handler(ws: WebSocket):
                             response_text = ""
                             _track_uc(ws, _execute_browser_tab(
                                 action.get("combo", "cmd+t"), action.get("ack", "Done, sir."), ws))
+                        elif action["action"] == "set_timer":
+                            response_text = ""
+                            asyncio.create_task(_execute_set_timer(
+                                action.get("seconds", 60), action.get("label", "a minute"), ws))
+                        elif action["action"] == "stopwatch":
+                            response_text = ""
+                            asyncio.create_task(_execute_stopwatch(action.get("mode", "stop"), ws))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
@@ -8506,7 +8597,12 @@ async def _handle_ui_act(action: dict, ws) -> None:
     # If a click landed on a login / sign-in page (e.g. picking an account →
     # password screen), proactively hand off the credentials instead of a bare
     # "Clicked, sir" — same guidance as the multi-step loop's login hand-off.
-    if result.get("ok") and ui_action == "click":
+    # Only when the click was an ACCOUNT/navigation (→ a password page), not a
+    # submit. Clicking "Sign in" / "Next" SUBMITS, so prompting for the password
+    # afterward is stale (the user has already signed in).
+    _submit = any(h in (target or "").lower() for h in
+                  ("sign in", "log in", "login", "next", "submit", "continue", "done"))
+    if result.get("ok") and ui_action == "click" and not _submit:
         try:
             import perception, agent_loop
             await asyncio.sleep(0.6)  # let the next page render

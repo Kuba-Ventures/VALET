@@ -462,11 +462,11 @@ async def run_loop(
         """Speak + show the credential hand-off, wait for the user to sign in,
         then resume. Returns a terminal result dict to RETURN, or None to CONTINUE
         the loop. Spoken AND panelled so the prompt isn't silent."""
-        prompt = ("Enter your password, sir — let the browser fill your saved one, "
-                  "and I'll carry on once you're in.")
-        await _emit("act", "Enter your password, sir.",
-                    detail="Let the browser fill your saved one — I'll carry on once "
-                           "you're in.", status="active")
+        prompt = ("Sign in with your saved login, sir — I'll carry on once you're in.")
+        await _emit("act", "The sign-in's yours, sir.",
+                    detail="Pick your account / enter your password — let the browser "
+                           "fill your saved login. I'll carry on once you're in.",
+                    status="active")
         if speak:
             try:
                 await speak(prompt)
@@ -498,6 +498,16 @@ async def run_loop(
 
         await _emit("observe", f"Step {step}: looking at the screen")
         observation = await perception.build_observation(executor, app=app)
+
+        # FAST login hand-off: the instant a sign-in page (account chooser or
+        # password) appears, hand off — don't run a ~5s model decide first. Login
+        # is the user's to do (and the slow loop made "enter your password" arrive
+        # 60s late, after they'd already signed in).
+        if hands_off and _is_login_page(observation):
+            _r = await _login_handoff(step)
+            if _r is not None:
+                return _r
+            continue
 
         decision = await _decide(client, goal, observation, history)
         act = decision.get("action")
