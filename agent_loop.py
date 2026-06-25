@@ -502,11 +502,11 @@ async def run_loop(
         await _emit("observe", f"Step {step}: looking at the screen")
         observation = await perception.build_observation(executor, app=app)
 
-        # FAST login hand-off: the instant a sign-in page (account chooser or
-        # password) appears, hand off — don't run a ~5s model decide first. Login
-        # is the user's to do (and the slow loop made "enter your password" arrive
-        # 60s late, after they'd already signed in).
-        if hands_off and _is_login_page(observation):
+        # FAST hand-off at the CREDENTIAL step (password) only — VALET still clicks
+        # through the account chooser itself (the user wants to see it pick their
+        # account), then hands off the instant the password page appears, before a
+        # ~5s model decide. (Handing off the whole login skipped the account click.)
+        if hands_off and _is_credential_page(observation):
             _r = await _login_handoff(step)
             if _r is not None:
                 return _r
