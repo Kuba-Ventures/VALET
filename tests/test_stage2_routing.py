@@ -292,3 +292,24 @@ def test_file_search_strips_location():
                     ("my q2 report in downloads", "q2 report")]:
         _, name, _ = file_index.detect_kind(q)
         assert name == want, (q, name)
+
+
+def test_text_contact_composes_addressed_not_blind_send():
+    # "text/message <person> saying <body>" routes to compose_text (addresses the
+    # NAMED contact) — never the old blind SEND into the focused thread that texted
+    # the wrong person. Body keeps its original casing; multi-word names split.
+    for phrase, recip, body in [
+        ("text Camille saying I'll be late", "Camille", "I'll be late"),
+        ("message my brother saying Happy Birthday", "my brother", "Happy Birthday"),
+        ("text Camille: test", "Camille", "test"),
+        ("shoot a text to Sarah saying on my way", "Sarah", "on my way"),
+    ]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "compose_text", (phrase, a)
+        assert a["recipient"] == recip and a["body"] == body, (phrase, a)
+    # Bare form (no separator) is too ambiguous to split deterministically — it must
+    # NOT fast-path; it falls through to the LLM (COMPOSE_TEXT). And never SEND.
+    assert server.detect_action_fast("text Camille hi") is None
+    # Unrelated "message me…" phrasing isn't a compose.
+    a = server.detect_action_fast("message me the details")
+    assert a is None or a["action"] != "compose_text", a

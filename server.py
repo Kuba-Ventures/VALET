@@ -125,7 +125,7 @@ from voice_timing import TurnTimer
 import voice_timing
 from voice_stream import SpeakableStreamer
 
-from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project, paste_into_cursor_claude
+from actions import execute_action, monitor_build, open_terminal, open_browser, open_app_or_path, delete_file, run_applescript, type_into_app, compose_text_message, refresh_calendar_tabs, new_cursor_project, open_claude_in_project, _generate_project_name, prompt_existing_terminal, open_project, list_projects, register_project, paste_into_cursor_claude
 from work_mode import WorkSession, is_casual_question
 import observability
 from screen import get_active_windows, take_screenshot, describe_screen, format_windows_for_context, get_running_apps
@@ -635,11 +635,14 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "type 'hello world' into the search bar" → [ACTION:TYPE] Google Chrome ||| hello world
   "type my email into this field" → [ACTION:TYPE] ||| {{user's work or personal email from PERSONAL CONTEXT}}
   If you don't need to switch apps, omit the app name: [ACTION:TYPE] ||| text only
-- [ACTION:SEND] app_name ||| text — activate an app, type text, and press Enter. For sending chat messages and running commands.
+- [ACTION:SEND] app_name ||| text — activate an app, type text, and press Enter. For sending chat messages and running commands. NEVER use SEND for Messages/iMessage — it types into whatever conversation is focused and can text the WRONG person. Use COMPOSE_TEXT for texts.
   "send 'hey team' in Slack" → [ACTION:SEND] Slack ||| hey team
   "run 'ls -la' in terminal" → [ACTION:SEND] Terminal ||| ls -la
-  "tell {user_name} I'll be five minutes" via Messages → [ACTION:SEND] Messages ||| I'll be five minutes
-  YOU CAN type and send messages in Slack, Chrome, Terminal, Finder, Messages, etc. via this action. Stop saying you can't.
+  YOU CAN type and send messages in Slack, Chrome, Terminal, Finder, etc. via this action. Stop saying you can't.
+- [ACTION:COMPOSE_TEXT] recipient ||| message — for ALL "text/iMessage/message <person>" requests. Opens a NEW Messages compose addressed to the named contact, types the message, and STOPS — {user_name} reviews the recipient and presses send. VALET never auto-sends a text (an autocomplete mismatch must not text the wrong person). Split the contact name from the body yourself.
+  "text Camille test" → [ACTION:COMPOSE_TEXT] Camille ||| test
+  "message my brother happy birthday" → [ACTION:COMPOSE_TEXT] my brother ||| happy birthday
+  "tell Sarah I'll be five minutes" (a text) → [ACTION:COMPOSE_TEXT] Sarah ||| I'll be five minutes
 - [ACTION:CHECK_DATE] YYYY-MM-DD — look up calendar events for ANY specific date and read them aloud. Use this for ALL "what's on my calendar [date]", "do I have anything [date]", "show me [date]" queries. Resolve relative dates ("next Thursday", "the 21st") to absolute YYYY-MM-DD using the CURRENT TIME context above.
   "what's on my calendar next Thursday the 21st" → [ACTION:CHECK_DATE] 2026-05-21
   "do I have anything Friday" → [ACTION:CHECK_DATE] 2026-05-16
@@ -803,7 +806,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2622,6 +2625,31 @@ async def _execute_type(target: str, press_enter: bool):
         except Exception as e:
             log.error(f"type_into_app failed: {e}")
             await emit_error(task_id, "Type failed", detail=str(e)[:200])
+
+
+async def _execute_compose_text(recipient: str, body: str, ws):
+    """Compose (but never send) a Messages text to a named contact.
+
+    Replaces the old blind [ACTION:SEND] Messages path, which typed into whatever
+    thread was focused and so could text the wrong person. VALET addresses a fresh
+    message to `recipient`, types `body`, and stops — the user reviews the
+    recipient chip and presses send.
+    """
+    async with process_bus.task_context(f"Texting {recipient}") as task_id:
+        try:
+            result = await compose_text_message(recipient, body, task_id=task_id)
+        except Exception as e:
+            log.error(f"compose_text_message failed: {e}")
+            await emit_error(task_id, "Compose failed", detail=str(e)[:200])
+            result = {"success": False, "confirmation": "Couldn't compose that text, sir."}
+    msg = result.get("confirmation", "Done, sir.")
+    audio = await synthesize_speech(msg)
+    if audio and ws:
+        try:
+            await ws.send_json({"type": "status", "state": "speaking"})
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+        except Exception:
+            pass
 
 
 def _find_project_dir(project_name: str) -> str | None:
@@ -5110,6 +5138,20 @@ _STOPWATCH_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?P<mode>start|begin|stop|end|check|how\s+long(?:\'s| is| has)?)\b.*\bstopwatch\b'
     r'|^(?:stop|end|check)\s+the\s+stopwatch\s*[.?!]*$', re.IGNORECASE)
+# "text/message <person> saying <body>" → compose (never blind-send). Routed to
+# compose_text so VALET addresses the NAMED contact in a fresh message instead of
+# typing into whatever thread is focused (the wrong-contact bug). We require an
+# EXPLICIT recipient/body separator ("saying"/"that says"/"that"/":"/",") so a
+# multi-word name ("text my brother saying hi") splits correctly; the ambiguous
+# bare form ("text Camille hi") has no reliable split and falls through to the LLM,
+# which emits [ACTION:COMPOSE_TEXT] recipient ||| body.
+_TEXT_CONTACT_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:text|message|imessage|shoot)\s+'
+    r'(?:a\s+(?:text|message|imessage)\s+to\s+)?'      # "shoot a text to Camille …"
+    r'(?P<recipient>.+?)'
+    r'(?:\s+(?:saying|that\s+says|that|the\s+message\s+)\s*|\s*[:,]\s*)'
+    r'(?P<body>.+?)\s*[.?!]*$', re.IGNORECASE)
 _NUM_WORDS = {
     "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
@@ -5128,7 +5170,7 @@ def _parse_duration(text: str) -> tuple[int, str]:
          if re.search(rf'\b{re.escape(w)}\b', s)), 1)
     if "hour" in s or re.search(r'\bhrs?\b', s):  # NOT "hr" in s — "three" has "hr"
         secs, unit = n * 3600, "hour"
-    elif "second" in s or re.search(r'\bsec', s):
+    elif "second" in s or re.search(r'\bsecs?\b', s):  # \bsecs?\b — not bare "sec" ("section")
         secs, unit = n, "second"
     else:
         secs, unit = n * 60, "minute"
@@ -5400,6 +5442,18 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
             _secs, _lbl = _parse_duration(_dur)
             return {"action": "ui_task", "goal": f"Open the Clock app, switch to the "
                     f"Timers tab, set a new timer for {_lbl}, and click Start"}
+
+    # "text/message <person> saying <body>" → compose-and-stop (never auto-send).
+    # Only the explicit-separator form is deterministic enough to fast-path; the
+    # bare "text Camille hi" falls through to the LLM (COMPOSE_TEXT).
+    # Match the ORIGINAL-case text (regex is IGNORECASE) so the message body keeps
+    # its capitalization instead of the lowercased routing copy.
+    _txm = _TEXT_CONTACT_RE.match(text.strip())
+    if _txm:
+        _recip = _txm.group("recipient").strip(" .?!")
+        _body = _txm.group("body").strip()
+        if _recip and _body:
+            return {"action": "compose_text", "recipient": _recip, "body": _body}
 
     # Live field dictation: "dictate into here" / "type what I say" → enter a
     # mode that types each following utterance into the focused field.
@@ -7207,6 +7261,19 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "google_signout":
                             response_text = "Signing you out, sir."
                             _track_uc(ws, _execute_google_signout(ws, bool(action.get("gmail"))))
+                        elif action["action"] == "compose_text":
+                            # Fast-path supplies recipient/body keys; the LLM tag
+                            # supplies target = "recipient ||| body".
+                            _recip = action.get("recipient", "").strip()
+                            _body = action.get("body", "").strip()
+                            if not _recip and "|||" in action.get("target", ""):
+                                _rp, _, _bd = action["target"].partition("|||")
+                                _recip, _body = _rp.strip(), _bd.strip()
+                            if _recip and _body:
+                                response_text = f"Composing a text to {_recip}, sir."
+                                _track_uc(ws, _execute_compose_text(_recip, _body, ws))
+                            else:
+                                response_text = "Who should I text, and what should it say, sir?"
                         elif action["action"] == "open_note":
                             note_q = action.get("target", "").strip()
                             response_text = f"Opening your {note_q} note, sir." if note_q else "Which note, sir?"
