@@ -453,6 +453,39 @@ async def run_loop(
     consecutive_fails = 0
     forced_recheck = False
 
+    async def _login_handoff(step):
+        """Speak + show the credential hand-off, wait for the user to sign in,
+        then resume. Returns a terminal result dict to RETURN, or None to CONTINUE
+        the loop. Spoken AND panelled so the prompt isn't silent."""
+        prompt = ("Enter your password, sir — let the browser fill your saved one, "
+                  "and I'll carry on once you're in.")
+        await _emit("act", "Enter your password, sir.",
+                    detail="Let the browser fill your saved one — I'll carry on once "
+                           "you're in.", status="active")
+        if speak:
+            try:
+                await speak(prompt)
+            except Exception:
+                pass
+        outcome = await _await_login(executor, app, kill_switch, emit)
+        if outcome == "halted":
+            return {"status": "halted", "steps": step - 1, "history": history,
+                    "message": "Halted, sir."}
+        if outcome == "timeout":
+            return {"status": "paused", "steps": step - 1, "history": history,
+                    "message": "I'll leave the login with you, sir — pick your account "
+                               "and use your saved password, then say 'continue' when "
+                               "you're in."}
+        await _emit("act", "Signed in — carrying on, sir.", status="done")
+        if speak:
+            try:
+                await speak("Signed in — carrying on, sir.")
+            except Exception:
+                pass
+        history.append({"step": step, "action": "login", "target": "credentials",
+                        "ok": True, "msg": "handed off to user"})
+        return None
+
     for step in range(1, max_steps + 1):
         if kill_switch is not None and kill_switch.is_engaged():
             await _emit("act", "Stopped.", status="error")
@@ -460,6 +493,15 @@ async def run_loop(
 
         await _emit("observe", f"Step {step}: looking at the screen")
         observation = await perception.build_observation(executor, app=app)
+
+        # Fast credential hand-off: the moment we SEE a password page, hand off —
+        # don't spend a ~2-3s model decide first (that's why "enter your password"
+        # used to lag). The account chooser still goes through decide → click.
+        if hands_off and _is_credential_page(observation):
+            _r = await _login_handoff(step)
+            if _r is not None:
+                return _r
+            continue
 
         decision = await _decide(client, goal, observation, history)
         act = decision.get("action")
@@ -531,33 +573,10 @@ async def run_loop(
         actor = executor
         if hands_off:
             risk = _classify_step(decision, observation)
-            if _is_credential_page(observation) or risk == "login":
-                await _emit("act", "Enter your password, sir.",
-                            detail="Let the browser fill your saved one — I'll carry "
-                                   "on once you're in.",
-                            status="active")
-                if speak:                       # say it aloud, not just in the panel
-                    try:
-                        await speak("Enter your password, sir — let the browser fill "
-                                    "your saved one, and I'll carry on once you're in.")
-                    except Exception:
-                        pass
-                outcome = await _await_login(executor, app, kill_switch, emit)
-                if outcome == "halted":
-                    return {"status": "halted", "steps": step - 1, "history": history,
-                            "message": "Halted, sir."}
-                if outcome == "timeout":
-                    return {"status": "paused", "steps": step - 1, "history": history,
-                            "message": "I'll leave the login with you, sir — pick your account and "
-                                       "use your saved password, then say 'continue' when you're in."}
-                await _emit("act", "Signed in — carrying on, sir.", status="done")
-                if speak:
-                    try:
-                        await speak("Signed in — carrying on, sir.")
-                    except Exception:
-                        pass
-                history.append({"step": step, "action": "login", "target": "credentials",
-                                "ok": True, "msg": "handed off to user"})
+            if risk == "login":          # the model targeted a credential field
+                _r = await _login_handoff(step)
+                if _r is not None:
+                    return _r
                 continue
             if risk == "auto" and ax_executor is not None:
                 # Un-carded — re-check the kill switch right before acting.
