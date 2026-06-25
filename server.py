@@ -658,7 +658,7 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "forecast for the rest of the week" → [ACTION:CHECK_WEATHER]
   CRITICAL: NEVER try to "click" a date in any calendar UI — you cannot click app/web content. Always use this action. NEVER say "Done, sir" without actually emitting an action tag.
 - [ACTION:WORLD_TIME] location_or_empty — report the CURRENT clock time in any city/place, computed from real timezone data. Empty target → the user's LOCAL time. Use this for ALL "what time is it [in X]", "current time in X", "how late is it in X" questions.
-  CRITICAL: NEVER compute or convert a time in your head — you will get it wrong. For ANY question about the current time anywhere (including "what time is it" with no place), emit this action and let the system read the real clock. Do NOT state a time inline.
+  CRITICAL: NEVER compute or convert a time in your head — you will get it wrong. For ANY question about the current time anywhere (including "what time is it" with no place), emit this action and let the system read the real clock. Do NOT state a time inline. Emit the tag ALONE with NO words before it — no "Right away, sir", no acknowledgment — the system speaks the time, so any preamble just gets said before it.
   "what time is it in Singapore" → [ACTION:WORLD_TIME] Singapore
   "what's the time in Tokyo right now" → [ACTION:WORLD_TIME] Tokyo
   "what time is it" → [ACTION:WORLD_TIME]
@@ -5894,6 +5894,35 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     ]):
         return {"action": "check_weather", "target": "", "when": _weather_when(t)}
 
+    # ── World clock: "what time is it [in X]" / "what's the time in X" /
+    # "current time in X" / "how late is it in X". Caught here (not the LLM)
+    # so the reply is JUST the time — the LLM path streams a "Right away, sir."
+    # preamble before the answer, which this avoids entirely. Empty or
+    # self-referential place → the user's LOCAL time. The "time" anchors keep
+    # it from poaching calendar phrasings like "what time is the meeting".
+    _wt_local = {
+        "here", "now", "right now", "local", "local time", "my time",
+        "my timezone", "my time zone", "this time zone", "this timezone",
+    }
+    _tm = _action_re.match(
+        r"^(?:hey\s+|ok\s+)?(?:vee[,\s]+|valet[,\s]+)?"
+        r"(?:can\s+you\s+|could\s+you\s+|please\s+|tell\s+me\s+|do\s+you\s+know\s+)*"
+        r"(?:what(?:'s|s| is)?\s+the\s+(?:current\s+)?time|what\s+time\s+is\s+it|"
+        r"the\s+current\s+time|current\s+time|how\s+late\s+is\s+it)"
+        r"(?:\s+(?:right\s+now|now))?"
+        r"(?:\s+(?:in|at)\s+(?P<place>.+?))?\s*[.?!]*$",
+        t,
+    )
+    if _tm:
+        place = (_tm.group("place") or "").strip()
+        if place in _SELF_LOC or place in _wt_local or place.startswith("my "):
+            place = ""
+        return {"action": "world_time", "target": place}
+    # Bare "time in X" / "the time in X" as the whole utterance ("time in Tokyo").
+    _tm2 = _action_re.match(r"^(?:the\s+)?time\s+in\s+(?P<place>[a-z][a-z .,'-]+?)\s*[.?!]*$", t)
+    if _tm2:
+        return {"action": "world_time", "target": _tm2.group("place").strip()}
+
     # Dispatch / build status check
     if any(p in t for p in ["where are we", "where were we", "project status", "how's the build",
                              "hows the build", "status update", "status report", "where is that",
@@ -7495,6 +7524,11 @@ async def voice_handler(ws: WebSocket):
                                 lambda t=wx_target, w=wx_when: _do_weather_lookup(t, ws, w),
                                 ws, history=history, voice_state=voice_state,
                             ))
+                        elif action["action"] == "world_time":
+                            # Speak ONLY the time — no preamble. The handler emits
+                            # the spoken answer itself, so leave response_text empty.
+                            response_text = ""
+                            asyncio.create_task(_execute_world_time(action.get("target", ""), ws))
                         elif action["action"] == "check_dispatch":
                             recent = dispatch_registry.get_most_recent()
                             if not recent:
