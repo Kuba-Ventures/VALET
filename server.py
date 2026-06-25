@@ -635,14 +635,18 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "type 'hello world' into the search bar" → [ACTION:TYPE] Google Chrome ||| hello world
   "type my email into this field" → [ACTION:TYPE] ||| {{user's work or personal email from PERSONAL CONTEXT}}
   If you don't need to switch apps, omit the app name: [ACTION:TYPE] ||| text only
-- [ACTION:SEND] app_name ||| text — activate an app, type text, and press Enter. For sending chat messages and running commands. NEVER use SEND for Messages/iMessage — it types into whatever conversation is focused and can text the WRONG person. Use COMPOSE_TEXT for texts.
-  "send 'hey team' in Slack" → [ACTION:SEND] Slack ||| hey team
+- [ACTION:SEND] app_name ||| text — activate an app, type text, and press Enter. For running commands (Terminal) and command-line-style inputs. NEVER use SEND for Messages/iMessage (use COMPOSE_TEXT), email (use COMPOSE_EMAIL), or Slack (use COMPOSE_SLACK) — SEND types into whatever is focused and can hit the WRONG person/channel.
   "run 'ls -la' in terminal" → [ACTION:SEND] Terminal ||| ls -la
-  YOU CAN type and send messages in Slack, Chrome, Terminal, Finder, etc. via this action. Stop saying you can't.
 - [ACTION:COMPOSE_TEXT] recipient ||| message — for ALL "text/iMessage/message <person>" requests. Opens a NEW Messages compose addressed to the named contact, types the message, and STOPS — {user_name} reviews the recipient and presses send. VALET never auto-sends a text (an autocomplete mismatch must not text the wrong person). Split the contact name from the body yourself.
   "text Camille test" → [ACTION:COMPOSE_TEXT] Camille ||| test
   "message my brother happy birthday" → [ACTION:COMPOSE_TEXT] my brother ||| happy birthday
   "tell Sarah I'll be five minutes" (a text) → [ACTION:COMPOSE_TEXT] Sarah ||| I'll be five minutes
+- [ACTION:COMPOSE_EMAIL] to ||| subject ||| body — for ALL "email/send an email to <person>" requests. Opens a pre-filled Gmail compose (To, Subject, Body) and STOPS — {user_name} reviews and presses Send. VALET never auto-sends mail. `to` may be a name (we resolve it to an address) or an email. Write a complete, well-formed body in {user_name}'s voice; infer a short subject if none was given.
+  "email Nick that I'll be late" → [ACTION:COMPOSE_EMAIL] Nick ||| Running late ||| Hi Nick, I'm running a few minutes behind — see you shortly. Best, {user_name}
+  "send Sarah an email about the deck" → [ACTION:COMPOSE_EMAIL] Sarah ||| The deck ||| Hi Sarah, …
+- [ACTION:COMPOSE_SLACK] target ||| message — for ALL "slack/DM <person or channel>" requests. Opens the Slack DM/channel (⌘K jump) and types the message, then STOPS for {user_name} to send. Split the target (person/channel) from the message.
+  "slack Kuba that the build is green" → [ACTION:COMPOSE_SLACK] Kuba ||| the build is green
+  "dm the design channel saying assets are ready" → [ACTION:COMPOSE_SLACK] design ||| assets are ready
 - [ACTION:CHECK_DATE] YYYY-MM-DD — look up calendar events for ANY specific date and read them aloud. Use this for ALL "what's on my calendar [date]", "do I have anything [date]", "show me [date]" queries. Resolve relative dates ("next Thursday", "the 21st") to absolute YYYY-MM-DD using the CURRENT TIME context above.
   "what's on my calendar next Thursday the 21st" → [ACTION:CHECK_DATE] 2026-05-21
   "do I have anything Friday" → [ACTION:CHECK_DATE] 2026-05-16
@@ -806,7 +810,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2353,6 +2357,85 @@ async def _execute_clock_stopwatch(mode: str, ws):
             log.error(f"clock_stopwatch failed: {e}")
             await emit_error(task_id, "Stopwatch failed", detail=str(e)[:200])
             res = {"success": False, "confirmation": "Couldn't drive the Stopwatch, sir."}
+        await emit_step(task_id, res.get("confirmation", "Done, sir."),
+                        status="done" if res.get("success") else "error")
+    await _speak(ws, res.get("confirmation", "Done, sir."))
+
+
+async def _run_clock_action(title: str, step: str, coro_factory, ws):
+    """Shared wrapper for the Clock-app actions: panel task + emit + speak."""
+    async with process_bus.task_context(title) as task_id:
+        await emit_step(task_id, step, status="active")
+        try:
+            res = await coro_factory()
+        except Exception as e:
+            log.error(f"{title} failed: {e}")
+            await emit_error(task_id, f"{title} failed", detail=str(e)[:200])
+            res = {"success": False, "confirmation": "Couldn't drive the Clock app, sir."}
+        await emit_step(task_id, res.get("confirmation", "Done, sir."),
+                        status="done" if res.get("success") else "error")
+    await _speak(ws, res.get("confirmation", "Done, sir."))
+
+
+async def _execute_clock_tab(tab: str, ws):
+    from actions import clock_switch_tab
+    await _run_clock_action(f"Clock: {tab} tab", f"Switching to {tab}",
+                            lambda: clock_switch_tab(tab), ws)
+
+
+async def _execute_clock_timer(seconds: int, label: str, ws):
+    from actions import clock_set_timer
+    await _run_clock_action(f"Timer: {label}", f"Clock app → Timers → {label}",
+                            lambda: clock_set_timer(seconds, label), ws)
+
+
+async def _execute_clock_alarm(hour: int, minute: int, spoken: str, ws):
+    from actions import clock_add_alarm
+    await _run_clock_action(f"Alarm: {spoken or f'{hour}:{minute:02d}'}",
+                            "Clock app → Alarms → Add",
+                            lambda: clock_add_alarm(hour, minute), ws)
+
+
+async def _execute_compose_email(target: str, ws):
+    """Open a pre-filled Gmail compose (compose-and-stop). target = "to ||| subject
+    ||| body"; `to` may be a name we resolve to an email first."""
+    from actions import compose_email
+    parts = [p.strip() for p in (target or "").split("|||")]
+    if len(parts) < 3:
+        await _speak(ws, "I need a recipient, subject, and body, sir.")
+        return
+    to, subject, body = parts[0], parts[1], parts[2]
+    # Resolve a spoken name → email (so Gmail addresses it properly). If `to`
+    # already looks like an address, keep it; if a name doesn't resolve, compose
+    # with what we have — the user reviews the recipient before sending anyway.
+    if to and "@" not in to:
+        hit = await _resolve_contact_email(to)
+        if hit:
+            to = hit["email"]
+    async with process_bus.task_context(f"Email: {subject or to}"[:60]) as task_id:
+        await emit_step(task_id, f"Drafting email to {to}", status="active")
+        try:
+            res = await compose_email(to, subject, body)
+        except Exception as e:
+            log.error(f"compose_email failed: {e}")
+            await emit_error(task_id, "Email draft failed", detail=str(e)[:200])
+            res = {"success": False, "confirmation": "Couldn't open the email draft, sir."}
+        await emit_step(task_id, res.get("confirmation", "Done, sir."),
+                        status="done" if res.get("success") else "error")
+    await _speak(ws, res.get("confirmation", "Done, sir."))
+
+
+async def _execute_compose_slack(target: str, body: str, ws):
+    """Open a Slack DM/channel and type a message (compose-and-stop)."""
+    from actions import compose_slack
+    async with process_bus.task_context(f"Slack: {target}"[:60]) as task_id:
+        await emit_step(task_id, f"Opening Slack → {target}", status="active")
+        try:
+            res = await compose_slack(target, body)
+        except Exception as e:
+            log.error(f"compose_slack failed: {e}")
+            await emit_error(task_id, "Slack compose failed", detail=str(e)[:200])
+            res = {"success": False, "confirmation": "Couldn't compose that Slack message, sir."}
         await emit_step(task_id, res.get("confirmation", "Done, sir."),
                         status="done" if res.get("success") else "error")
     await _speak(ws, res.get("confirmation", "Done, sir."))
@@ -5172,6 +5255,37 @@ _STOPWATCH_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?P<mode>start|begin|stop|end|check|how\s+long(?:\'s| is| has)?)\b.*\bstopwatch\b'
     r'|^(?:stop|end|check)\s+the\s+stopwatch\s*[.?!]*$', re.IGNORECASE)
+# Catch-all so ANY stopwatch phrasing drives the Apple Clock app instead of
+# dead-ending in a web search ("open a stopwatch" → online-stopwatch.com). Mode
+# defaults to start unless a stop/pause word is present.
+_STOPWATCH_ANY_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+|i\s+(?:need|want)\s+(?:a\s+)?)?'
+    r'(?:(?:open|start|launch|use|pull\s+up|bring\s+up|fire\s+up|get\s+me|'
+    r'show\s+me|show|pause|stop|end|reset|restart)\s+)?'
+    r'(?:a\s+|the\s+)?stopwatch\b.*$', re.IGNORECASE)
+# Clock-app tab switching: "switch to the timers tab", "go to alarms in clock".
+_CLOCK_TAB_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:switch|go|change|take\s+me|jump|show(?:\s+me)?|open|bring\s+up)\s+'
+    r'(?:to\s+|to\s+the\s+|the\s+|over\s+to\s+)?'
+    r'(?P<tab>world\s+clock|world|alarms?|stop\s*watch|timers?)'
+    r'(?:\s+tab|\s+(?:in|on|of)\s+(?:the\s+)?clock(?:\s+app)?)\s*[.?!]*$', re.IGNORECASE)
+# Set an alarm: "set an alarm for 7am" / "wake me at 6:30".
+_ALARM_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:set|create|add|make)\s+(?:an?\s+)?alarm\s+(?:for|at)\s+(?P<time>.+?)\s*[.?!]*$'
+    r'|^(?:wake\s+me(?:\s+up)?)\s+(?:at|for)\s+(?P<time2>.+?)\s*[.?!]*$', re.IGNORECASE)
+# "slack <target> saying <body>" / "message <target> on slack saying <body>" →
+# compose-and-stop in Slack (⌘K jump → type → paste → STOP). Explicit separator
+# only, like text; bare forms fall through to the LLM (COMPOSE_SLACK).
+_SLACK_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:'
+    r'slack\s+(?P<target1>.+?)'
+    r'|(?:dm|message|ping|tell|send)\s+(?P<target2>.+?)\s+on\s+slack'
+    r')'
+    r'(?:\s+(?:saying|that\s+says|that)\s+|\s*[:,]\s*)'
+    r'(?P<body>.+?)\s*[.?!]*$', re.IGNORECASE)
 # "text/message <person> saying <body>" → compose (never blind-send). Routed to
 # compose_text so VALET addresses the NAMED contact in a fresh message instead of
 # typing into whatever thread is focused (the wrong-contact bug). We require an
@@ -5210,6 +5324,32 @@ def _parse_duration(text: str) -> tuple[int, str]:
         secs, unit = n * 60, "minute"
     label = f"{n:g} {unit}" + ("s" if n != 1 else "")
     return max(1, int(secs)), label
+
+
+def _parse_clock_time(text: str) -> tuple[int, int] | None:
+    """(hour_24, minute) from a spoken time like "7am", "6:30 pm", "noon". None if
+    unparseable. Bare hours with no am/pm assume the next sensible meridiem isn't
+    inferred — we keep it simple and treat 1-7 as PM-ish only when 'pm' is said."""
+    s = (text or "").lower().strip()
+    if "noon" in s:
+        return (12, 0)
+    if "midnight" in s:
+        return (0, 0)
+    m = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?', s)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    mer = (m.group(3) or "").replace(".", "")
+    if mer == "pm" and hour < 12:
+        hour += 12
+    elif mer == "am" and hour == 12:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return (hour, minute)
+
+
 # Browser tab control via keyboard shortcuts (universal, reliable). Matched BEFORE
 # the web-search fallback so "open a new tab" isn't searched.
 _BROWSER_TAB_RE = re.compile(
@@ -5456,25 +5596,42 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         _combo, _ack = _tab_combo(_tabm.group("cmd"))
         return {"action": "browser_tab", "combo": _combo, "ack": _ack}
 
-    # Stopwatch → drive Apple's Clock app (native, clean AX). Start/stop is one
-    # button click. (The built-in stopwatch is still the handler if the Clock app
-    # can't be driven.)
+    # Stopwatch → drive Apple's Clock app deterministically (click the named
+    # Start/Stop button via System Events; the vision loop mis-clicked the screen).
     _swm = _STOPWATCH_RE.match(t)
     if _swm:
         _mode = (_swm.group("mode") or "stop").lower()
-        # Deterministic: click the Clock app's named Start/Stop button via System
-        # Events (the vision loop mis-clicked the screen instead of the button).
         return {"action": "clock_stopwatch",
                 "mode": "start" if _mode in ("start", "begin") else "stop"}
+    # Switch Clock-app tabs by name: "go to the timers tab", "alarms in clock".
+    # BEFORE the stopwatch catch-all so "...the stopwatch tab" switches tabs rather
+    # than starting the stopwatch.
+    _ctab = _CLOCK_TAB_RE.match(t)
+    if _ctab:
+        return {"action": "clock_tab", "tab": _ctab.group("tab")}
+    # Any other stopwatch phrasing ("open a stopwatch") also goes to the Clock app
+    # — never the web-search fallback (online-stopwatch.com). Default mode: start.
+    if _STOPWATCH_ANY_RE.match(t) and "tab" not in t:
+        _stop = bool(re.search(r'\b(stop|pause|end|reset)\b', t))
+        return {"action": "clock_stopwatch", "mode": "stop" if _stop else "start"}
 
-    # Timer → drive Apple's Clock app: open it, set the duration, click Start.
+    # Set an alarm: "set an alarm for 7am", "wake me at 6:30".
+    _alm = _ALARM_RE.match(t)
+    if _alm:
+        _atime = (_alm.group("time") or _alm.group("time2") or "").strip()
+        _hm = _parse_clock_time(_atime)
+        if _hm:
+            return {"action": "clock_alarm", "hour": _hm[0], "minute": _hm[1],
+                    "spoken": _atime}
+
+    # Timer → drive Apple's Clock app deterministically (Timers tab → enter the
+    # duration → Start). Best-effort digit entry; the built-in timer is the fallback.
     _tm2 = _TIMER_RE.match(t)
     if _tm2 and "stopwatch" not in t:
         _dur = (_tm2.group("b") or _tm2.group("c") or _tm2.group("a") or "").strip()
         if _dur:
             _secs, _lbl = _parse_duration(_dur)
-            return {"action": "ui_task", "goal": f"Open the Clock app, switch to the "
-                    f"Timers tab, set a new timer for {_lbl}, and click Start"}
+            return {"action": "clock_timer", "seconds": _secs, "label": _lbl}
 
     # "text/message <person> saying <body>" → compose-and-stop (never auto-send).
     # Only the explicit-separator form is deterministic enough to fast-path; the
@@ -5487,6 +5644,15 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         _body = _txm.group("body").strip()
         if _recip and _body:
             return {"action": "compose_text", "recipient": _recip, "body": _body}
+
+    # "slack <target> saying <body>" → compose-and-stop in Slack (⌘K jump → paste
+    # → STOP). Explicit separator only; bare forms go to the LLM (COMPOSE_SLACK).
+    _slk = _SLACK_RE.match(text.strip())
+    if _slk:
+        _starget = (_slk.group("target1") or _slk.group("target2") or "").strip(" .?!")
+        _sbody = _slk.group("body").strip()
+        if _starget and _sbody:
+            return {"action": "compose_slack", "target": _starget, "body": _sbody}
 
     # Live field dictation: "dictate into here" / "type what I say" → enter a
     # mode that types each following utterance into the focused field.
@@ -7194,6 +7360,26 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "clock_stopwatch":
                             response_text = ""
                             _track_uc(ws, _execute_clock_stopwatch(action.get("mode", "start"), ws))
+                        elif action["action"] == "clock_tab":
+                            response_text = ""
+                            _track_uc(ws, _execute_clock_tab(action.get("tab", ""), ws))
+                        elif action["action"] == "clock_timer":
+                            response_text = ""
+                            _track_uc(ws, _execute_clock_timer(
+                                action.get("seconds", 60), action.get("label", "a minute"), ws))
+                        elif action["action"] == "clock_alarm":
+                            response_text = ""
+                            _track_uc(ws, _execute_clock_alarm(
+                                action.get("hour", 0), action.get("minute", 0),
+                                action.get("spoken", ""), ws))
+                        elif action["action"] == "compose_slack":
+                            _starget = action.get("target", "").strip()
+                            _sbody = action.get("body", "").strip()
+                            if _starget and _sbody:
+                                response_text = f"Composing a Slack message to {_starget}, sir."
+                                _track_uc(ws, _execute_compose_slack(_starget, _sbody, ws))
+                            else:
+                                response_text = "Who on Slack, and what should it say, sir?"
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
@@ -7571,6 +7757,22 @@ async def voice_handler(ws: WebSocket):
                                         _track_uc(ws, _execute_compose_text(_cr, _cb, ws))
                                     else:
                                         response_text = "Who should I text, and what should it say, sir?"
+                                elif embedded_action["action"] == "compose_email":
+                                    # "to ||| subject ||| body" → pre-filled Gmail
+                                    # compose, left for the user to send.
+                                    response_text = "Drafting that email, sir."
+                                    _track_uc(ws, _execute_compose_email(
+                                        embedded_action.get("target", ""), ws))
+                                elif embedded_action["action"] == "compose_slack":
+                                    # "target ||| body" → Slack compose-and-stop.
+                                    _se = embedded_action.get("target", "")
+                                    _st, _, _sb = _se.partition("|||")
+                                    _st, _sb = _st.strip(), _sb.strip()
+                                    if _st and _sb:
+                                        response_text = f"Composing a Slack message to {_st}, sir."
+                                        _track_uc(ws, _execute_compose_slack(_st, _sb, ws))
+                                    else:
+                                        response_text = "Who on Slack, and what should it say, sir?"
                                 # NOTE: "send", "create_event" and "cancel_event" are in
                                 # _CONFIRM_ACTIONS and dispatched via _confirm_and_dispatch
                                 # above — no branch for them here.
