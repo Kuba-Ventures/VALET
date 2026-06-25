@@ -32,10 +32,12 @@ STT_CORRECTIONS = {
     (r"\b(?:strip|striped|stripped|strike|strikes|striked)\b"
      r"(?=\s+(?:e-?mails?|dashboards?|webhooks?|accounts?|payments?|invoices?|"
      r"settings|checkout|subscriptions?|customers?|api|tab|page|portal))"): "Stripe",
-    # "QSBS" (the user's firm — qsbsrollover.com): STT has no such token and hears
-    # "USPS" / "U.S.P.S." / "cue S B S". This user never means the postal service
-    # in-app, so correct toward QSBS.
-    r"\bu\.?\s?s\.?\s?p\.?\s?s\.?\b": "QSBS",
+    # "QSBS" / "qsbsrollover" (the user's firm — qsbsrollover.com): STT has no such
+    # token and renders it as "USPS" / "U.S.P.S." / "uspsrollover" / "cue S B S".
+    # This user never means the postal service in-app, so correct toward QSBS —
+    # including the embedded domain form (finley@uspsrollover.com → …@qsbsrollover).
+    r"usps(?=\s*rollover)": "qsbs",                 # uspsrollover → qsbsrollover (domain, lowercase)
+    r"\bu\.?\s?s\.?\s?p\.?\s?s\.?\b": "QSBS",        # standalone USPS / U.S.P.S.
     r"\b(?:cue|queue|q)\s+s\s*b\s*s\b": "QSBS",
 }
 
