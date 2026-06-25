@@ -277,9 +277,10 @@ def test_browser_tabs_and_claude_in_chrome():
 
 
 def test_timers_and_stopwatch():
-    # Timer now drives the Clock app deterministically (Timers tab → duration → Start).
+    # Timer uses VALET's built-in announce-when-done timer (the Clock Timers tab
+    # has no automatable duration field). Stopwatch/tabs/alarms DO use the Clock app.
     a = server.detect_action_fast("set a timer for three minutes")
-    assert a and a["action"] == "clock_timer" and a["seconds"] == 180, a
+    assert a and a["action"] == "set_timer" and a["seconds"] == 180, a
     # Stopwatch — clicks the named Clock-app button (vision mis-clicked the screen).
     a = server.detect_action_fast("start a stopwatch")
     assert a and a["action"] == "clock_stopwatch" and a["mode"] == "start", a
