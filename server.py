@@ -657,6 +657,12 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "any UV warnings today" → [ACTION:CHECK_WEATHER]
   "forecast for the rest of the week" → [ACTION:CHECK_WEATHER]
   CRITICAL: NEVER try to "click" a date in any calendar UI — you cannot click app/web content. Always use this action. NEVER say "Done, sir" without actually emitting an action tag.
+- [ACTION:WORLD_TIME] location_or_empty — report the CURRENT clock time in any city/place, computed from real timezone data. Empty target → the user's LOCAL time. Use this for ALL "what time is it [in X]", "current time in X", "how late is it in X" questions.
+  CRITICAL: NEVER compute or convert a time in your head — you will get it wrong. For ANY question about the current time anywhere (including "what time is it" with no place), emit this action and let the system read the real clock. Do NOT state a time inline.
+  "what time is it in Singapore" → [ACTION:WORLD_TIME] Singapore
+  "what's the time in Tokyo right now" → [ACTION:WORLD_TIME] Tokyo
+  "what time is it" → [ACTION:WORLD_TIME]
+  "how late is it in London" → [ACTION:WORLD_TIME] London
 - [ACTION:CREATE_EVENT] title ||| start_iso ||| duration_min_or_end ||| description? ||| location? — schedule an event on the user's Mac Calendar (Apple Calendar, via EventKit). Always resolve relative times ("tomorrow at 3pm") to absolute ISO timestamps using the CURRENT TIME context above. Use 30 if no duration mentioned.
   "schedule a meeting tomorrow at 3pm called design review" → [ACTION:CREATE_EVENT] design review ||| 2026-05-16 3:00 PM ||| 30
   "block 2-3pm Friday for deep work" → [ACTION:CREATE_EVENT] Deep work ||| 2026-05-16 2:00 PM ||| 2026-05-16 3:00 PM
@@ -810,7 +816,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2240,6 +2246,46 @@ async def _execute_check_date(target: str, ws):
         except Exception as e:
             log.error(f"check_date failed: {e}")
             msg = "Something went wrong checking that date, sir."
+
+    audio = await synthesize_speech(msg)
+    if audio and ws:
+        try:
+            await ws.send_json({"type": "status", "state": "speaking"})
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+        except Exception:
+            pass
+
+
+async def _execute_world_time(target: str, ws):
+    """Report the current clock time for a city — or locally — from REAL timezone
+    data, never the LLM's arithmetic (which silently produces wrong times). Reuses
+    weather.geocode() to resolve a place name to an IANA timezone, then reads the
+    wall clock for that zone via zoneinfo. Empty/self-referential target → the
+    machine's local time."""
+    from zoneinfo import ZoneInfo
+    import weather as _wx
+
+    place = (target or "").strip()
+    # Empty or self-referential ("here", "now", "my time") → local system time.
+    _self_ref = {
+        "here", "now", "right now", "my time", "local", "local time",
+        "where i am", "where i live", "my location", "current time", "the time",
+        "my time zone", "my timezone", "this time zone", "this timezone",
+    }
+    if not place or place.lower() in _self_ref or place.lower().startswith("my "):
+        now = datetime.now()
+        msg = f"It's {now.strftime('%-I:%M %p on %A')} locally, sir."
+    else:
+        geo = await _wx.geocode(place)
+        if not geo:
+            msg = f"I can't place {place} on the map, sir. Could you spell it?"
+        else:
+            try:
+                now = datetime.now(ZoneInfo(geo["timezone"]))
+                msg = f"It's {now.strftime('%-I:%M %p on %A')} in {geo['name']}, sir."
+            except Exception as e:
+                log.error(f"world_time tz lookup failed for {geo!r}: {e}")
+                msg = f"I couldn't resolve the time zone for {geo.get('name', place)}, sir."
 
     audio = await synthesize_speech(msg)
     if audio and ws:
@@ -7781,6 +7827,8 @@ async def voice_handler(ws: WebSocket):
                                         log.warning(f"dispatch_to_agent missing |||: {raw[:120]!r}")
                                 elif embedded_action["action"] == "check_date":
                                     asyncio.create_task(_execute_check_date(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "world_time":
+                                    asyncio.create_task(_execute_world_time(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "check_weather":
                                     wx_t = (embedded_action.get("target") or "").strip()
                                     # LLM tag carries no time scope — recover it
