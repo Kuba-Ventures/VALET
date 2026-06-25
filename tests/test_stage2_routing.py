@@ -277,13 +277,31 @@ def test_browser_tabs_and_claude_in_chrome():
 
 
 def test_timers_and_stopwatch():
-    # Routed to the native Clock app via a UI task.
+    # Timer still routes to the native Clock app via a UI task.
     a = server.detect_action_fast("set a timer for three minutes")
     assert a and a["action"] == "ui_task" and "Clock" in a["goal"] and "Timers" in a["goal"], a
+    # Stopwatch is deterministic now — clicks the named Clock-app button (the
+    # vision UI task mis-clicked the screen instead of Start).
     a = server.detect_action_fast("start a stopwatch")
-    assert a and a["action"] == "ui_task" and "Stopwatch" in a["goal"] and "Start" in a["goal"], a
+    assert a and a["action"] == "clock_stopwatch" and a["mode"] == "start", a
     a = server.detect_action_fast("stop the stopwatch")
-    assert a and a["action"] == "ui_task" and "Stop" in a["goal"], a
+    assert a and a["action"] == "clock_stopwatch" and a["mode"] == "stop", a
+
+
+def test_copy_file_to_clipboard_routes():
+    # "copy <file> to clipboard" → find_file with the clipboard flag (copy, not
+    # open); the "(and) copy it to clipboard" tail is stripped from the query.
+    for phrase, q in [
+        ("find the juniper logo on my desktop and copy it to clipboard", "juniper logo"),
+        ("copy my q2 report to the clipboard", "q2 report"),
+        ("copy the juniper logo to clipboard", "juniper logo"),
+    ]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "find_file" and a.get("clipboard") is True, (phrase, a)
+        assert a["query"] == q, (phrase, a)
+    # A plain find without the clipboard tail must NOT set the flag.
+    a = server.detect_action_fast("find my q2 report")
+    assert a and a["action"] == "find_file" and not a.get("clipboard"), a
 
 
 def test_file_search_strips_location():
