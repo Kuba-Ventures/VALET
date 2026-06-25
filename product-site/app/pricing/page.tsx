@@ -114,7 +114,7 @@ export default function PricingPage() {
           are tailored to how you work.
         </p>
 
-        <div className="mt-14 grid items-start gap-5 md:grid-cols-3">
+        <div className="mt-14 grid items-stretch gap-5 md:grid-cols-3">
           {TIERS.map((tier) => (
             <div
               key={tier.id}
@@ -152,7 +152,7 @@ export default function PricingPage() {
                   ))}
                 </ul>
 
-                <div className="mt-8 pt-2">
+                <div className="mt-auto pt-8">
                   <Cta tier={tier} />
                 </div>
               </div>
