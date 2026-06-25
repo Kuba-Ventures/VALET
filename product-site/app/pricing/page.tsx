@@ -44,7 +44,7 @@ const TIERS: Tier[] = [
     features: [
       "Unlimited voice control across your apps",
       "Fast answers and deep background work",
-      "Acts across any app — calendar, mail, notes, browser, and beyond",
+      "Acts across any app: calendar, mail, notes, browser, and beyond",
       "All intelligence included",
       "Email support",
     ],
@@ -54,7 +54,7 @@ const TIERS: Tier[] = [
     name: "PRO",
     price: "Custom",
     cadence: "pricing",
-    blurb: "Bundles built for teams — architects, web agencies, and marketers.",
+    blurb: "Bundles built for teams: architects, web agencies, and marketers.",
     features: [
       "Everything in the Personal plan",
       "Bundles tailored to how your team works",
@@ -109,7 +109,7 @@ export default function PricingPage() {
           Pick your level.
         </h1>
         <p className="mt-6 max-w-2xl text-lg leading-relaxed text-ink-dim">
-          Try the full assistant free for 7 days. Keep it for $20 a month —
+          Try the full assistant free for 7 days. Keep it for $20 a month, with
           nothing to bring and nothing to configure. Running a team? PRO bundles
           are tailored to how you work.
         </p>
