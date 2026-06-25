@@ -249,3 +249,13 @@ if __name__ == "__main__":
             failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_big_consumer_sites_open_as_web():
+    # "open facebook / instagram / youtube" → open the website (no app/project).
+    for phrase, host in [("open facebook", "facebook.com"),
+                         ("open instagram", "instagram.com"),
+                         ("open youtube", "youtube.com"),
+                         ("open netflix", "netflix.com")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "open_url" and host in a["target"], (phrase, a)

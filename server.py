@@ -4416,6 +4416,22 @@ _WEB_DESTINATIONS = {
     "linkedin": "https://www.linkedin.com",
     "reddit": "https://www.reddit.com",
     "amazon": "https://www.amazon.com",
+    # Big consumer sites — "open facebook / instagram / youtube" should just work.
+    "facebook": "https://www.facebook.com", "fb": "https://www.facebook.com",
+    "instagram": "https://www.instagram.com", "insta": "https://www.instagram.com",
+    "twitter": "https://x.com", "x": "https://x.com", "tweetdeck": "https://x.com",
+    "tiktok": "https://www.tiktok.com", "tik tok": "https://www.tiktok.com",
+    "netflix": "https://www.netflix.com", "spotify": "https://open.spotify.com",
+    "whatsapp": "https://web.whatsapp.com", "messenger": "https://www.messenger.com",
+    "pinterest": "https://www.pinterest.com", "twitch": "https://www.twitch.tv",
+    "discord": "https://discord.com/app", "slack": "https://app.slack.com",
+    "zoom": "https://zoom.us", "calendly": "https://calendly.com",
+    "wikipedia": "https://www.wikipedia.org", "maps": "https://maps.google.com",
+    "yahoo": "https://www.yahoo.com", "bing": "https://www.bing.com",
+    "ebay": "https://www.ebay.com", "etsy": "https://www.etsy.com",
+    "paypal": "https://www.paypal.com", "venmo": "https://venmo.com",
+    "outlook": "https://outlook.live.com", "icloud": "https://www.icloud.com",
+    "dropbox": "https://www.dropbox.com", "figma": "https://www.figma.com",
     "chatgpt": "https://chatgpt.com",
     "claude": "https://claude.ai",
 }
@@ -8403,6 +8419,19 @@ async def _handle_ui_act(action: dict, ws) -> None:
         await _speak(ws, "I couldn't do that, sir.")
         return
     msg = result.get("message") or ("Done, sir." if result.get("ok") else "I couldn't do that, sir.")
+    # If a click landed on a login / sign-in page (e.g. picking an account →
+    # password screen), proactively hand off the credentials instead of a bare
+    # "Clicked, sir" — same guidance as the multi-step loop's login hand-off.
+    if result.get("ok") and ui_action == "click":
+        try:
+            import perception, agent_loop
+            await asyncio.sleep(0.6)  # let the next page render
+            obs = await perception.build_observation(executor)
+            if agent_loop._is_login_page(obs):
+                msg = ("You're at the sign-in, sir — enter your password, and let the "
+                       "browser fill your saved one if it offers.")
+        except Exception as e:
+            log.warning(f"post-click login check failed: {e}")
     await _speak(ws, msg)
 
 
