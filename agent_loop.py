@@ -160,14 +160,36 @@ def _has_login_field(observation: dict) -> bool:
 
 
 def _is_login_page(observation: dict) -> bool:
-    """True if the focused screen is a login / account-chooser / sign-in step —
-    a credential field OR the wider sign-in cues. VALET hands the whole login to
-    the user here (and waits for it to clear before resuming)."""
+    """True if the focused screen is anywhere in the login flow — account chooser
+    OR credential entry. Used to detect when login is fully DONE (resume only once
+    none of this remains)."""
     if _has_login_field(observation):
         return True
     for e in observation.get("elements", []) or []:
         label = " ".join(filter(None, [e.get("title"), e.get("value")])).lower()
         if any(h in label for h in _LOGIN_PAGE_HINTS):
+            return True
+    return False
+
+
+# Credential-ENTRY cues (the password step) — distinct from the account chooser.
+# VALET clicks through the chooser itself and only HANDS OFF here, where secrets
+# are entered.
+_CREDENTIAL_PAGE_HINTS = (
+    "enter your password", "forgot password", "show password", "wrong password",
+    "couldn't sign you in", "your password", "passkey",
+)
+
+
+def _is_credential_page(observation: dict) -> bool:
+    """True only at the credential-ENTRY step (a secure field or 'enter your
+    password'), NOT the account chooser — so VALET picks the account itself and
+    hands off just for the password."""
+    if _has_login_field(observation):
+        return True
+    for e in observation.get("elements", []) or []:
+        label = " ".join(filter(None, [e.get("title"), e.get("value")])).lower()
+        if any(h in label for h in _CREDENTIAL_PAGE_HINTS):
             return True
     return False
 
@@ -503,16 +525,15 @@ async def run_loop(
                 continue
 
         # Hybrid autonomy: pick the actor (raw = no card, safe = card) per step,
-        # and hand the WHOLE login (account chooser + credentials) to the human —
-        # it's the sensitive part and the flaky-to-click part. Triggers on the
-        # login page itself, not just a focused credential field.
+        # Click through the account chooser ourselves, but hand off at the
+        # CREDENTIAL step — VALET picks the account, the user enters the password.
         actor = executor
         if hands_off:
             risk = _classify_step(decision, observation)
-            if _is_login_page(observation) or risk == "login":
-                await _emit("act", "The login's yours, sir.",
-                            detail="Pick your account and let the browser fill your "
-                                   "saved password — I'll carry on once you're in.",
+            if _is_credential_page(observation) or risk == "login":
+                await _emit("act", "Enter your password, sir.",
+                            detail="Let the browser fill your saved one — I'll carry "
+                                   "on once you're in.",
                             status="active")
                 outcome = await _await_login(executor, app, kill_switch, emit)
                 if outcome == "halted":

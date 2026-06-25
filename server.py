@@ -4927,6 +4927,14 @@ _WEB_FLOW_RE = re.compile(
 _GO_BACK_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:go|take\s+me|head|navigate|click)\s+back\b(?!\s+to\s+sleep)', re.IGNORECASE)
+# Last-resort "open X" → web search. Reached ONLY after app / known-site / folder
+# / settings / file / real-project routes all miss, so "open <any website>" (even
+# obscure ones) lands somewhere instead of dead-ending as "no project called X".
+_OPEN_SEARCH_FALLBACK_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:open|launch|pull\s+up|bring\s+up|fire\s+up|boot\s+up|visit|take\s+me\s+to|go\s+to)\s+'
+    r'(?:the\s+|my\s+|a\s+)?(?P<q>.+?)(?:\s+(?:website|site|web\s*site|page))?\s*[.?!]*$',
+    re.IGNORECASE)
 _SUMMARIZE_SCREEN_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:'
@@ -5385,13 +5393,18 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # Skipped when the captured name looks like an app (so "open Cursor",
     # "open my work gmail", "open the design panel" all route through the
     # LLM's OPEN_APP path instead of erroring on a missing project).
-    for pat in _OPEN_PROJECT_PATTERNS:
+    for _pi, pat in enumerate(_OPEN_PROJECT_PATTERNS):
         m = pat.match(t)
         if m:
             name = m.group("name").strip()
             if name and not _looks_like_app(name):
-                return {"action": "open_project", "target": name}
-            break  # Matched as "open <app>" — let the LLM handle via OPEN_APP
+                # Explicit "open the project called X" (pattern 0) always routes to
+                # a project. A BARE "open X" only does so when that project really
+                # exists — otherwise fall through to the web-search fallback below,
+                # so "open <any site>" doesn't dead-end as "no project called X".
+                if _pi == 0 or _find_project_dir(name):
+                    return {"action": "open_project", "target": name}
+            break  # app, or a non-existent bare name → fall through
 
     # Register a path → alias for projects outside any configured root.
     # Match against the ORIGINAL text (not lowercased `t`) so absolute paths
@@ -5450,6 +5463,18 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         if (_val and len(_val.split()) <= 3
                 and _val not in ("it", "that", "this", "default", "on", "off", "sleep")):
             return {"action": "ui_act", "ui_action": "click", "target": _val}
+
+    # Web-search fallback: an "open X" that matched no app / site / folder /
+    # settings / file / real project is treated as a destination — search the web
+    # for it so ANY site (even the crazy ones) is reachable by voice.
+    _osm = _OPEN_SEARCH_FALLBACK_RE.match(t)
+    if _osm:
+        _q = _osm.group("q").strip(" .?!")
+        if (_q and 1 <= len(_q.split()) <= 5
+                and _q not in ("it", "that", "this", "up", "there", "here", "me", "one")):
+            from urllib.parse import quote
+            return {"action": "open_url", "browser": "chrome", "label": _q,
+                    "target": f"https://www.google.com/search?q={quote(_q)}"}
 
     return None  # Everything else goes to the LLM for conversational routing
 
@@ -8427,9 +8452,9 @@ async def _handle_ui_act(action: dict, ws) -> None:
             import perception, agent_loop
             await asyncio.sleep(0.6)  # let the next page render
             obs = await perception.build_observation(executor)
-            if agent_loop._is_login_page(obs):
-                msg = ("You're at the sign-in, sir — enter your password, and let the "
-                       "browser fill your saved one if it offers.")
+            if agent_loop._is_credential_page(obs):
+                msg = ("You're at the password step, sir — enter your password, and let "
+                       "the browser fill your saved one if it offers.")
         except Exception as e:
             log.warning(f"post-click login check failed: {e}")
     await _speak(ws, msg)
