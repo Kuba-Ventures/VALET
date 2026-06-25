@@ -202,6 +202,16 @@ def test_logout_login_routes_to_ui_loop():
         assert a is None or a["action"] not in ("ui_task", "open_url") or "Logout" not in (a.get("target") or ""), (phrase, a)
 
 
+def test_go_back_clicks_back_button():
+    # "go back" → click the on-screen back button (e.g. Gmail's back-to-inbox).
+    for phrase in ("go back", "go back to my inbox", "take me back", "head back"):
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "ui_act" and a["target"] == "back button", (phrase, a)
+    # "go back to sleep" must not become a click.
+    a = server.detect_action_fast("go back to sleep")
+    assert a is None or a["target"] != "back button", a
+
+
 def test_stripe_speech_correction():
     from voice_text import apply_speech_corrections as fix
     assert fix("open the strip email") == "open the Stripe email"

@@ -4905,6 +4905,12 @@ _WEB_FLOW_RE = re.compile(
     r'(?P<goal>(?:log|sign)\s+(?:me\s+)?'
     r'(?:out\s+of|back\s+into|back\s+in\s+to|back\s+in|into|in\s+to|out|in)\b.*)$',
     re.IGNORECASE)
+# "go back" / "go back to my inbox" / "take me back" → click the on-screen back
+# button (one-shot, honest miss). NOT "go back to sleep" (system) — the back
+# button is the target. "go to X" (forward nav) is _UI_NAV_RE, separate.
+_GO_BACK_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:go|take\s+me|head|navigate|click)\s+back\b(?!\s+to\s+sleep)', re.IGNORECASE)
 _SUMMARIZE_SCREEN_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:'
@@ -5131,6 +5137,11 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
             return {"action": "open_url", "target": "https://accounts.google.com/Logout",
                     "browser": "chrome", "label": "Google sign-out"}
         return {"action": "ui_task", "goal": _goal}
+
+    # "go back" → click the on-screen back button (e.g. Gmail's back-to-inbox
+    # arrow). One-shot click via the proven resolver path.
+    if _GO_BACK_RE.match(t):
+        return {"action": "ui_act", "ui_action": "click", "target": "back button"}
 
     # "Send this to Claude Code to fix" — read the screen, brief it, dispatch.
     # Before summarize/describe so "send this to Claude to fix" isn't read as a
@@ -7450,9 +7461,13 @@ async def api_settings_status():
     google_connected = google_auth.is_connected()
     google_email = google_auth.get_connected_email() if google_connected else None
     google_creds_present = google_auth.credentials_file_exists()
-    notes_ok = False
-    try: await get_recent_notes(count=1); notes_ok = True
-    except Exception: pass
+    # Do NOT probe Notes by reading it: `tell application "Notes"` LAUNCHES the
+    # app, so the frontend polling this status endpoint kept opening Notes in the
+    # background. Notes is a stock macOS app — report availability from the bundle
+    # on disk instead (no launch). Real automation-permission errors still surface
+    # when the user actually reads/creates a note.
+    notes_ok = any(Path(p).exists() for p in
+                   ("/System/Applications/Notes.app", "/Applications/Notes.app"))
     memory_count = task_count = 0
     try: memory_count = len(get_important_memories(limit=9999))
     except Exception: pass
