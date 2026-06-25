@@ -2,11 +2,16 @@ import CheckoutButton from "@/components/CheckoutButton";
 
 export const metadata = {
   title: "VALET: Pricing",
-  description: "Start free. Move up when you want more reach. Every paid plan includes the intelligence.",
+  description: "Try the full assistant free for 7 days. Keep it for $20 a month. Teams get tailored PRO bundles.",
 };
 
+// PRO "Contact us" lead form — collects contact details + use case so the team
+// can build bundle pricing (architects, web agencies, marketers).
+const PRO_CONTACT_URL =
+  "https://docs.google.com/forms/d/e/1FAIpQLSeYJ7Z8l-pwcWe8tcauP1n7otjazedE7F5_iHE0h0dwKDoQDA/viewform";
+
 type Tier = {
-  id: "free" | "pro" | "ultra";
+  id: "trial" | "pro" | "contact";
   name: string;
   price: string;
   cadence: string;
@@ -17,24 +22,24 @@ type Tier = {
 
 const TIERS: Tier[] = [
   {
-    id: "free",
-    name: "Free",
-    price: "$0",
-    cadence: "forever",
-    blurb: "Try talking to your Mac. No card required.",
+    id: "trial",
+    name: "Free trial",
+    price: "Free",
+    cadence: "for 7 days",
+    blurb: "Try the full assistant. No charge for 7 days, cancel anytime.",
     features: [
-      "Hands-free voice, plain words",
-      "Everyday questions and answers",
-      "Read your calendar, mail, and notes",
-      "Up to 20 actions a day",
+      "Hands-free voice control across your apps",
+      "Fast answers and deep background work",
+      "Read and act on calendar, mail, notes, and browser",
+      "Everything in the monthly plan, free for a week",
     ],
   },
   {
     id: "pro",
-    name: "Pro",
+    name: "Personal",
     price: "$20",
     cadence: "/month",
-    blurb: "The full assistant for everyday use. 7-day trial, no charge until it ends.",
+    blurb: "The full assistant for everyday use. Free for 7 days, then $20/month.",
     featured: true,
     features: [
       "Unlimited voice control across your apps",
@@ -45,17 +50,17 @@ const TIERS: Tier[] = [
     ],
   },
   {
-    id: "ultra",
-    name: "Ultra",
-    price: "$50",
-    cadence: "/month",
-    blurb: "For heavy, long-running work that runs itself. 7-day trial.",
+    id: "contact",
+    name: "PRO",
+    price: "Custom",
+    cadence: "pricing",
+    blurb: "Bundles built for teams — architects, web agencies, and marketers.",
     features: [
-      "Long-running autonomous jobs",
-      "Deep research with the most capable models",
-      "Higher limits and priority responses",
-      "Several tasks at once",
-      "Priority support",
+      "Everything in the Personal plan",
+      "Bundles tailored to how your team works",
+      "Seats for your whole team",
+      "Onboarding and priority support",
+      "Pricing shaped to your use case",
     ],
   },
 ];
@@ -72,18 +77,24 @@ function Check() {
 }
 
 function Cta({ tier }: { tier: Tier }) {
-  if (tier.id === "free") {
+  if (tier.id === "contact") {
     return (
-      <a href="/pricing" className="btn-ghost w-full justify-center">
-        Get started free
+      <a
+        href={PRO_CONTACT_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="btn-ghost w-full justify-center"
+      >
+        Contact us
       </a>
     );
   }
+  // The free-trial and Personal cards both start the same $20 plan (7-day trial).
   return (
     <CheckoutButton
-      plan={tier.id}
-      label="Start 7-day trial"
-      variant="primary"
+      plan="pro"
+      label={tier.id === "trial" ? "Try free" : "Start 7-day trial"}
+      variant={tier.featured ? "primary" : "ghost"}
       className="w-full [&>button]:w-full"
     />
   );
@@ -98,8 +109,9 @@ export default function PricingPage() {
           Pick your level.
         </h1>
         <p className="mt-6 max-w-2xl text-lg leading-relaxed text-ink-dim">
-          Start free. Move up when you want more reach. Every paid plan includes
-          the intelligence, nothing to bring and nothing to configure.
+          Try the full assistant free for 7 days. Keep it for $20 a month —
+          nothing to bring and nothing to configure. Running a team? PRO bundles
+          are tailored to how you work.
         </p>
 
         <div className="mt-14 grid items-start gap-5 md:grid-cols-3">
