@@ -259,3 +259,16 @@ def test_big_consumer_sites_open_as_web():
                          ("open netflix", "netflix.com")]:
         a = server.detect_action_fast(phrase)
         assert a and a["action"] == "open_url" and host in a["target"], (phrase, a)
+
+
+def test_browser_tabs_and_claude_in_chrome():
+    # Tab control via keyboard shortcut; "open a new tab" is NOT web-searched.
+    for phrase, combo in [("open a new tab", "cmd+t"), ("new tab", "cmd+t"),
+                          ("close this tab", "cmd+w"), ("reopen the closed tab", "cmd+shift+t")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "browser_tab" and a["combo"] == combo, (phrase, a)
+    # "open Claude in chrome" = the web app, not the Claude Code terminal.
+    a = server.detect_action_fast("open claude in chrome")
+    assert a and a["action"] == "open_url" and "claude.ai" in a["target"], a
+    # bare "open claude" still opens the terminal.
+    assert server.detect_action_fast("open claude")["action"] == "open_terminal"

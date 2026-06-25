@@ -218,7 +218,8 @@ def test_hands_off_login_hands_off_then_resumes(monkeypatch):
     assert res["status"] == "done"
     # Never clicked the secure field — VALET handed it off instead.
     assert ("click", "e3") not in ex.actions
-    assert any("login" in t.lower() or "over to you" in t.lower() for _, t in emitted)
+    # Handed off at the credential step — message prompts for the password.
+    assert any("password" in t.lower() or "login" in t.lower() for _, t in emitted)
 
 
 def test_hands_off_login_timeout_pauses(monkeypatch):

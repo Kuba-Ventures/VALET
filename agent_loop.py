@@ -160,14 +160,36 @@ def _has_login_field(observation: dict) -> bool:
 
 
 def _is_login_page(observation: dict) -> bool:
-    """True if the focused screen is a login / account-chooser / sign-in step —
-    a credential field OR the wider sign-in cues. VALET hands the whole login to
-    the user here (and waits for it to clear before resuming)."""
+    """True if the focused screen is anywhere in the login flow — account chooser
+    OR credential entry. Used to detect when login is fully DONE (resume only once
+    none of this remains)."""
     if _has_login_field(observation):
         return True
     for e in observation.get("elements", []) or []:
         label = " ".join(filter(None, [e.get("title"), e.get("value")])).lower()
         if any(h in label for h in _LOGIN_PAGE_HINTS):
+            return True
+    return False
+
+
+# Credential-ENTRY cues (the password step) — distinct from the account chooser.
+# VALET clicks through the chooser itself and only HANDS OFF here, where secrets
+# are entered.
+_CREDENTIAL_PAGE_HINTS = (
+    "enter your password", "forgot password", "show password", "wrong password",
+    "couldn't sign you in", "your password", "passkey",
+)
+
+
+def _is_credential_page(observation: dict) -> bool:
+    """True only at the credential-ENTRY step (a secure field or 'enter your
+    password'), NOT the account chooser — so VALET picks the account itself and
+    hands off just for the password."""
+    if _has_login_field(observation):
+        return True
+    for e in observation.get("elements", []) or []:
+        label = " ".join(filter(None, [e.get("title"), e.get("value")])).lower()
+        if any(h in label for h in _CREDENTIAL_PAGE_HINTS):
             return True
     return False
 
@@ -254,6 +276,11 @@ _DECIDE_SYSTEM = (
     "- Use \"click\" only for buttons, links, menu items, checkboxes, popups. Never "
     "click a container (AXGroup, AXScrollArea, AXWindow) or an element with no label.\n"
     "- Use \"key\" for keyboard shortcuts (save = cmd+s, select-all = cmd+a).\n"
+    "- LOGIN: if a password field is ALREADY FILLED (it shows masked dots, e.g. the "
+    "browser autofilled a saved login), do NOT type — click the Sign in / Log in / "
+    "Submit / Next button to log in. Only when the password field is EMPTY should you "
+    "target it with \"type\" (which hands credential entry to the user). Never type a "
+    "made-up password.\n"
     "- You are ALREADY looking at FOCUSED APP — the elements shown ARE its current "
     "screen. Do NOT use open_app for the app you're already in (it's a no-op and wastes "
     "a step); act on the screen instead. Only use open_app to switch to a DIFFERENT app "
@@ -404,6 +431,7 @@ async def run_loop(
     ax_executor=None,
     emit: Optional[Callable[..., Awaitable[None]]] = None,
     hands_off: bool = False,
+    speak: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> dict:
     """Run the supervised observe→decide→act loop for `goal`.
 
@@ -429,6 +457,39 @@ async def run_loop(
     history: list = []
     consecutive_fails = 0
     forced_recheck = False
+
+    async def _login_handoff(step):
+        """Speak + show the credential hand-off, wait for the user to sign in,
+        then resume. Returns a terminal result dict to RETURN, or None to CONTINUE
+        the loop. Spoken AND panelled so the prompt isn't silent."""
+        prompt = ("Enter your password, sir — let the browser fill your saved one, "
+                  "and I'll carry on once you're in.")
+        await _emit("act", "Enter your password, sir.",
+                    detail="Let the browser fill your saved one — I'll carry on once "
+                           "you're in.", status="active")
+        if speak:
+            try:
+                await speak(prompt)
+            except Exception:
+                pass
+        outcome = await _await_login(executor, app, kill_switch, emit)
+        if outcome == "halted":
+            return {"status": "halted", "steps": step - 1, "history": history,
+                    "message": "Halted, sir."}
+        if outcome == "timeout":
+            return {"status": "paused", "steps": step - 1, "history": history,
+                    "message": "I'll leave the login with you, sir — pick your account "
+                               "and use your saved password, then say 'continue' when "
+                               "you're in."}
+        await _emit("act", "Signed in — carrying on, sir.", status="done")
+        if speak:
+            try:
+                await speak("Signed in — carrying on, sir.")
+            except Exception:
+                pass
+        history.append({"step": step, "action": "login", "target": "credentials",
+                        "ok": True, "msg": "handed off to user"})
+        return None
 
     for step in range(1, max_steps + 1):
         if kill_switch is not None and kill_switch.is_engaged():
@@ -503,28 +564,15 @@ async def run_loop(
                 continue
 
         # Hybrid autonomy: pick the actor (raw = no card, safe = card) per step,
-        # and hand the WHOLE login (account chooser + credentials) to the human —
-        # it's the sensitive part and the flaky-to-click part. Triggers on the
-        # login page itself, not just a focused credential field.
+        # Click through the account chooser ourselves, but hand off at the
+        # CREDENTIAL step — VALET picks the account, the user enters the password.
         actor = executor
         if hands_off:
             risk = _classify_step(decision, observation)
-            if _is_login_page(observation) or risk == "login":
-                await _emit("act", "The login's yours, sir.",
-                            detail="Pick your account and let the browser fill your "
-                                   "saved password — I'll carry on once you're in.",
-                            status="active")
-                outcome = await _await_login(executor, app, kill_switch, emit)
-                if outcome == "halted":
-                    return {"status": "halted", "steps": step - 1, "history": history,
-                            "message": "Halted, sir."}
-                if outcome == "timeout":
-                    return {"status": "paused", "steps": step - 1, "history": history,
-                            "message": "I'll leave the login with you, sir — pick your account and "
-                                       "use your saved password, then say 'continue' when you're in."}
-                await _emit("act", "Signed in — carrying on, sir.", status="done")
-                history.append({"step": step, "action": "login", "target": "credentials",
-                                "ok": True, "msg": "handed off to user"})
+            if risk == "login":          # the model targeted a credential field
+                _r = await _login_handoff(step)
+                if _r is not None:
+                    return _r
                 continue
             if risk == "auto" and ax_executor is not None:
                 # Un-carded — re-check the kill switch right before acting.
