@@ -2303,6 +2303,25 @@ async def _execute_open_app(target: str):
             await emit_error(task_id, "Open app failed", detail=str(e)[:200])
 
 
+async def _execute_browser_tab(combo: str, ack: str, ws):
+    """Send a browser tab keyboard shortcut (⌘T new / ⌘W close / ⇧⌘T reopen /
+    ⌥⌘→← switch) to the frontmost browser. Keyboard shortcuts are universal and
+    reliable — no clicking the tiny + / × targets."""
+    try:
+        front = ""
+        try:
+            front = next((a for a in await get_running_apps()
+                          if a.strip().lower() in _BROWSER_APPS), "")
+        except Exception:
+            pass
+        await _ax_executor.key_combo(combo, app=front or None)
+    except Exception as e:
+        log.error(f"browser_tab {combo} failed: {e}")
+        await _speak(ws, "I couldn't do that, sir.")
+        return
+    await _speak(ws, ack)
+
+
 async def _execute_open_url(url: str, browser: str = "chrome", label: str = ""):
     """Open a resolved web destination in the browser via `open -a` (no
     keystrokes / Accessibility). Backs the open_url fast-path for websites."""
@@ -4927,6 +4946,39 @@ _WEB_FLOW_RE = re.compile(
 _GO_BACK_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:go|take\s+me|head|navigate|click)\s+back\b(?!\s+to\s+sleep)', re.IGNORECASE)
+# Browser tab control via keyboard shortcuts (universal, reliable). Matched BEFORE
+# the web-search fallback so "open a new tab" isn't searched.
+_BROWSER_TAB_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?P<cmd>'
+    r'(?:open\s+(?:a\s+|another\s+)?new|new|open\s+another|add\s+a\s+new)\s+tab'
+    r'|close\s+(?:this|the|current|that)?\s*tab'
+    r'|reopen\s+(?:the\s+)?(?:closed|last)?\s*tab'
+    r'|(?:go\s+to\s+(?:the\s+)?)?next\s+tab'
+    r'|(?:go\s+to\s+(?:the\s+)?)?(?:previous|prev)\s+tab'
+    r')\s*[.?!]*$', re.IGNORECASE)
+
+
+def _tab_combo(cmd: str) -> tuple[str, str]:
+    """(key-combo, spoken-ack) for a browser-tab command."""
+    c = cmd.lower()
+    if "reopen" in c:                       # before "close" — "closed tab" contains it
+        return "cmd+shift+t", "Reopened, sir."
+    if "close" in c:
+        return "cmd+w", "Closed the tab, sir."
+    if "next" in c:
+        return "cmd+option+right", "Next tab, sir."
+    if "previous" in c or "prev" in c:
+        return "cmd+option+left", "Previous tab, sir."
+    return "cmd+t", "New tab, sir."
+# Last-resort "open X" → web search. Reached ONLY after app / known-site / folder
+# / settings / file / real-project routes all miss, so "open <any website>" (even
+# obscure ones) lands somewhere instead of dead-ending as "no project called X".
+_OPEN_SEARCH_FALLBACK_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:open|launch|pull\s+up|bring\s+up|fire\s+up|boot\s+up|visit|take\s+me\s+to|go\s+to)\s+'
+    r'(?:the\s+|my\s+|a\s+)?(?P<q>.+?)(?:\s+(?:website|site|web\s*site|page))?\s*[.?!]*$',
+    re.IGNORECASE)
 _SUMMARIZE_SCREEN_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:'
@@ -5133,6 +5185,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     ]):
         return {"action": "close_panel"}
 
+    # Browser tab control ("open a new tab", "close this tab", "reopen tab") via
+    # keyboard shortcut. Before the web-search fallback so it isn't searched.
+    _tabm = _BROWSER_TAB_RE.match(t)
+    if _tabm:
+        _combo, _ack = _tab_combo(_tabm.group("cmd"))
+        return {"action": "browser_tab", "combo": _combo, "ack": _ack}
+
     # Live field dictation: "dictate into here" / "type what I say" → enter a
     # mode that types each following utterance into the focused field.
     if _DICTATE_FIELD_RE.match(t):
@@ -5179,8 +5238,12 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                              "what's running on my", "whats running on my", "check my screen"]):
         return {"action": "describe_screen"}
 
-    # Terminal / Claude Code — explicit open requests
-    if any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"]):
+    # Terminal / Claude Code — explicit open requests. But "open Claude in chrome /
+    # in the browser" means the WEB app (claude.ai), so let that fall to the web
+    # route below.
+    if (any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"])
+            and not any(b in t for b in ("chrome", "browser", "safari", "firefox",
+                                         "the web", "claude.ai", "online"))):
         return {"action": "open_terminal"}
 
     # Show recent build
@@ -5385,13 +5448,18 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # Skipped when the captured name looks like an app (so "open Cursor",
     # "open my work gmail", "open the design panel" all route through the
     # LLM's OPEN_APP path instead of erroring on a missing project).
-    for pat in _OPEN_PROJECT_PATTERNS:
+    for _pi, pat in enumerate(_OPEN_PROJECT_PATTERNS):
         m = pat.match(t)
         if m:
             name = m.group("name").strip()
             if name and not _looks_like_app(name):
-                return {"action": "open_project", "target": name}
-            break  # Matched as "open <app>" — let the LLM handle via OPEN_APP
+                # Explicit "open the project called X" (pattern 0) always routes to
+                # a project. A BARE "open X" only does so when that project really
+                # exists — otherwise fall through to the web-search fallback below,
+                # so "open <any site>" doesn't dead-end as "no project called X".
+                if _pi == 0 or _find_project_dir(name):
+                    return {"action": "open_project", "target": name}
+            break  # app, or a non-existent bare name → fall through
 
     # Register a path → alias for projects outside any configured root.
     # Match against the ORIGINAL text (not lowercased `t`) so absolute paths
@@ -5450,6 +5518,18 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         if (_val and len(_val.split()) <= 3
                 and _val not in ("it", "that", "this", "default", "on", "off", "sleep")):
             return {"action": "ui_act", "ui_action": "click", "target": _val}
+
+    # Web-search fallback: an "open X" that matched no app / site / folder /
+    # settings / file / real project is treated as a destination — search the web
+    # for it so ANY site (even the crazy ones) is reachable by voice.
+    _osm = _OPEN_SEARCH_FALLBACK_RE.match(t)
+    if _osm:
+        _q = _osm.group("q").strip(" .?!")
+        if (_q and 1 <= len(_q.split()) <= 5
+                and _q not in ("it", "that", "this", "up", "there", "here", "me", "one")):
+            from urllib.parse import quote
+            return {"action": "open_url", "browser": "chrome", "label": _q,
+                    "target": f"https://www.google.com/search?q={quote(_q)}"}
 
     return None  # Everything else goes to the LLM for conversational routing
 
@@ -6795,6 +6875,10 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "start_field_dictation":
                             response_text = ""
                             asyncio.create_task(_execute_start_field_dictation(ws))
+                        elif action["action"] == "browser_tab":
+                            response_text = ""
+                            _track_uc(ws, _execute_browser_tab(
+                                action.get("combo", "cmd+t"), action.get("ack", "Done, sir."), ws))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
@@ -8427,9 +8511,9 @@ async def _handle_ui_act(action: dict, ws) -> None:
             import perception, agent_loop
             await asyncio.sleep(0.6)  # let the next page render
             obs = await perception.build_observation(executor)
-            if agent_loop._is_login_page(obs):
-                msg = ("You're at the sign-in, sir — enter your password, and let the "
-                       "browser fill your saved one if it offers.")
+            if agent_loop._is_credential_page(obs):
+                msg = ("You're at the password step, sir — enter your password, and let "
+                       "the browser fill your saved one if it offers.")
         except Exception as e:
             log.warning(f"post-click login check failed: {e}")
     await _speak(ws, msg)
@@ -8515,20 +8599,25 @@ async def api_latency_last():
 
 
 async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
-                       task_id: Optional[str] = None) -> dict:
+                       task_id: Optional[str] = None, ws=None) -> dict:
     """UC4 — run the supervised observe→decide→act loop for `goal`, streaming each
     beat to the process panel. Each mutating step is gated (confirm card) and the
-    kill switch is live throughout."""
+    kill switch is live throughout. When `ws` is given, mid-task prompts (the login
+    hand-off) are also SPOKEN, not just shown in the panel."""
     import agent_loop
 
     async def _emit(kind, title, detail="", status="active"):
         if task_id:
             await emit_step(task_id, title, detail=detail, status=status)
 
+    async def _speak_cb(text):
+        if ws and text:
+            await _speak(ws, text)
+
     return await agent_loop.run_loop(
         executor, goal, anthropic_client, app=app, max_steps=max_steps,
         kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit,
-        hands_off=True)
+        hands_off=True, speak=_speak_cb if ws else None)
 
 
 @app.post("/api/ui/task")
@@ -8645,7 +8734,7 @@ async def _handle_ui_task(goal: str, ws) -> None:
     free for per-step confirm replies + STOP), then speaks the outcome."""
     try:
         async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
-            result = await _run_ui_task(goal, task_id=task_id)
+            result = await _run_ui_task(goal, task_id=task_id, ws=ws)
     except Exception as e:
         log.error(f"ui_task error: {e}")
         await _speak(ws, "I ran into trouble with that, sir.")
