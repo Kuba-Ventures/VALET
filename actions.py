@@ -480,51 +480,162 @@ async def compose_text_message(recipient: str, body: str,
     }
 
 
-async def clock_stopwatch(mode: str) -> dict:
-    """Start or stop the Stopwatch in Apple's Clock app — deterministically.
+# ── Apple Clock app control (System Events GUI scripting) ───────────────────
+# The Clock app has no AppleScript dictionary, so we drive it by clicking named
+# AX controls. The tabs are an AXTabGroup of radio buttons (or toolbar buttons on
+# older macOS) titled "World Clock"/"Alarms"/"Stopwatch"/"Timers"; Start/Stop/Lap
+# are AXButtons titled exactly that. Clicking BY NAME is deterministic — the
+# vision loop mis-clicked the screen instead.
 
-    The vision loop mis-clicked (it hit the screen and toggled the view instead of
-    the green Start button). System Events clicks the button BY NAME, which is
-    exact: switch to the Stopwatch tab, then click the "Start" (or "Stop") button.
-    The button is an AXButton whose title is literally "Start"/"Stop".
-    """
-    want_start = mode in ("start", "begin")
-    btn = "Start" if want_start else "Stop"
-    script = (
-        'tell application "Clock" to activate\n'
-        'delay 0.7\n'
-        'tell application "System Events" to tell process "Clock"\n'
-        '  set frontmost to true\n'
-        '  delay 0.2\n'
+_CLOCK_TAB_NAMES = {
+    "world clock": "World Clock", "world": "World Clock", "clock": "World Clock",
+    "alarms": "Alarms", "alarm": "Alarms",
+    "stopwatch": "Stopwatch", "stop watch": "Stopwatch",
+    "timers": "Timers", "timer": "Timers",
+}
+
+
+def _clock_canonical_tab(s: str) -> str | None:
+    return _CLOCK_TAB_NAMES.get((s or "").strip().lower())
+
+
+def _clock_switch_snippet(tab: str) -> str:
+    """AppleScript that switches the Clock window to the named tab (tab group
+    radio button first, toolbar button as a fallback for older macOS)."""
+    return (
         '  try\n'
-        '    click (first button of toolbar 1 of window 1 whose name is "Stopwatch")\n'
+        f'    click (first radio button of tab group 1 of window 1 whose name is "{tab}")\n'
         '  on error\n'
         '    try\n'
-        '      click (first radio button of window 1 whose name is "Stopwatch")\n'
+        f'      click (first button of toolbar 1 of window 1 whose name is "{tab}")\n'
+        '    on error\n'
+        f'      try\n        click (first radio button of window 1 whose name is "{tab}")\n      end try\n'
         '    end try\n'
         '  end try\n'
-        '  delay 0.6\n'
+        '  delay 0.5\n'
+    )
+
+
+def _clock_click_button_snippet(btn: str) -> str:
+    """AppleScript that clicks an AXButton titled `btn` anywhere in the window."""
+    return (
         '  try\n'
         f'    click (first button of window 1 whose name is "{btn}")\n'
         '  on error\n'
         f'    click (first button of (entire contents of window 1) whose name is "{btn}")\n'
         '  end try\n'
+    )
+
+
+def _clock_wrap(steps: str) -> str:
+    return (
+        'tell application "Clock" to activate\n'
+        'delay 0.7\n'
+        'tell application "System Events" to tell process "Clock"\n'
+        '  set frontmost to true\n'
+        '  delay 0.2\n'
+        f'{steps}'
         'end tell\n'
     )
+
+
+async def _run_clock_script(script: str, fail_msg: str) -> dict:
     proc = await asyncio.create_subprocess_exec(
         "osascript", "-e", script,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         err = stderr.decode().strip()
-        log.error(f"clock_stopwatch failed: {err}")
+        log.error(f"clock script failed: {err}")
         if "1002" in err or "not authorized" in err.lower():
             return {"success": False,
                     "confirmation": "I need Accessibility permission to drive the Clock app, sir."}
-        return {"success": False,
-                "confirmation": f"Couldn't reach the Stopwatch {btn} button, sir."}
-    return {"success": True,
-            "confirmation": f"Stopwatch {'started' if want_start else 'stopped'}, sir."}
+        return {"success": False, "confirmation": fail_msg}
+    return {"success": True, "confirmation": ""}
+
+
+async def clock_stopwatch(mode: str) -> dict:
+    """Start or stop the Stopwatch in Apple's Clock app — deterministically."""
+    want_start = mode in ("start", "begin")
+    btn = "Start" if want_start else "Stop"
+    script = _clock_wrap(
+        _clock_switch_snippet("Stopwatch") + '  delay 0.2\n' + _clock_click_button_snippet(btn))
+    res = await _run_clock_script(script, f"Couldn't reach the Stopwatch {btn} button, sir.")
+    if res["success"]:
+        res["confirmation"] = f"Stopwatch {'started' if want_start else 'stopped'}, sir."
+    return res
+
+
+async def clock_switch_tab(tab_name: str) -> dict:
+    """Switch the Clock app to a named tab (World Clock / Alarms / Stopwatch / Timers)."""
+    tab = _clock_canonical_tab(tab_name)
+    if not tab:
+        return {"success": False, "confirmation": f"I don't know a '{tab_name}' tab in Clock, sir."}
+    script = _clock_wrap(_clock_switch_snippet(tab))
+    res = await _run_clock_script(script, f"Couldn't switch to the {tab} tab, sir.")
+    if res["success"]:
+        res["confirmation"] = f"Switched to {tab}, sir."
+    return res
+
+
+async def clock_set_timer(seconds: int, label: str = "") -> dict:
+    """Set and start a timer in the Clock app's Timers tab.
+
+    Switches to Timers, types the duration as HHMMSS digits (the field fills
+    right-aligned), then clicks Start. Best-effort: the Timers digit entry varies
+    by macOS version, so this may need a tweak after testing.
+    """
+    seconds = max(1, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    digits = f"{h:02d}{m:02d}{s:02d}"   # HHMMSS, e.g. 3 min → "000300"
+    steps = (
+        _clock_switch_snippet("Timers")
+        + '  delay 0.4\n'
+        + f'  keystroke "{digits}"\n'    # fills the duration field right-aligned
+        + '  delay 0.4\n'
+        + _clock_click_button_snippet("Start")
+    )
+    res = await _run_clock_script(_clock_wrap(steps), "Couldn't set the timer in Clock, sir.")
+    if res["success"]:
+        res["confirmation"] = f"Timer set for {label or f'{seconds} seconds'}, sir."
+    return res
+
+
+async def clock_add_alarm(hour_24: int, minute: int, label: str = "") -> dict:
+    """Add an alarm in the Clock app's Alarms tab (best-effort).
+
+    Switches to Alarms, clicks Add (+), types the time, and saves. The add-alarm
+    sheet's controls are version-specific, so this is the least certain of the
+    Clock actions and may need adjustment after testing.
+    """
+    hour_24 = max(0, min(23, int(hour_24)))
+    minute = max(0, min(59, int(minute)))
+    hr12 = hour_24 % 12 or 12
+    ampm = "AM" if hour_24 < 12 else "PM"
+    time_digits = f"{hr12:02d}{minute:02d}"
+    steps = (
+        _clock_switch_snippet("Alarms")
+        + '  delay 0.4\n'
+        + '  try\n'
+          '    click (first button of window 1 whose name is "Add")\n'
+          '  on error\n'
+          '    try\n      click (first button of window 1 whose description is "Add")\n    end try\n'
+          '  end try\n'
+        + '  delay 0.6\n'
+        + f'  keystroke "{time_digits}"\n'
+        + f'  keystroke "{ampm}"\n'
+        + '  delay 0.3\n'
+        + '  try\n'
+          '    click (first button of sheet 1 of window 1 whose name is "Save")\n'
+          '  on error\n'
+          '    try\n      keystroke return\n    end try\n'
+          '  end try\n'
+    )
+    res = await _run_clock_script(_clock_wrap(steps), "Couldn't set the alarm in Clock, sir.")
+    if res["success"]:
+        res["confirmation"] = f"Alarm set for {hr12}:{minute:02d} {ampm}, sir."
+    return res
 
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".tiff", ".tif", ".bmp", ".heic", ".webp"}
@@ -560,6 +671,100 @@ def copy_file_to_clipboard(path: str) -> dict:
     except Exception as e:
         log.error(f"copy_file_to_clipboard failed: {e}")
         return {"success": False, "confirmation": f"Couldn't copy {name}, sir."}
+
+
+async def compose_email(to: str, subject: str, body: str) -> dict:
+    """Open a pre-filled Gmail compose in the browser — and STOP (never sends).
+
+    Uses the Gmail compose URL (view=cm), which opens a compose window with To,
+    Subject and Body filled in, leaving the user to review and press Send. This
+    needs no Gmail API (the deferred integration) — just a browser logged into
+    Gmail. Compose-and-stop, like the Messages flow.
+    """
+    from urllib.parse import quote
+    to = (to or "").strip()
+    url = (
+        "https://mail.google.com/mail/?view=cm&fs=1"
+        f"&to={quote(to)}&su={quote((subject or '').strip())}&body={quote((body or '').strip())}"
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "open", url, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        await proc.wait()
+    except Exception as e:
+        log.error(f"compose_email failed: {e}")
+        return {"success": False, "confirmation": "Couldn't open the email draft, sir."}
+    who = to or "your recipient"
+    return {"success": True,
+            "confirmation": f"Drafted an email to {who}, sir — review it and press send."}
+
+
+async def compose_slack(target: str, body: str) -> dict:
+    """Open a Slack DM/channel and type a message — and STOP (never sends).
+
+    Uses Slack's ⌘K quick switcher to jump to the named person/channel, then
+    pastes the message into the (auto-focused) input. We never press Enter, so the
+    message is composed and left for the user to send. Compose-and-stop.
+    """
+    target = (target or "").strip()
+    body = (body or "").strip()
+    if not target or not body:
+        return {"success": False, "confirmation": "Who on Slack, and what should it say, sir?"}
+
+    t_esc = target.replace("\\", "\\\\").replace('"', '\\"')
+    # Save + set clipboard so we can paste the body atomically, then restore.
+    saved_clip = ""
+    try:
+        pb = await asyncio.create_subprocess_exec(
+            "pbpaste", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await pb.communicate()
+        saved_clip = out.decode(errors="replace")
+    except Exception:
+        pass
+    try:
+        cp = await asyncio.create_subprocess_exec("pbcopy", stdin=asyncio.subprocess.PIPE)
+        await cp.communicate(body.encode())
+    except Exception as e:
+        log.error(f"compose_slack pbcopy failed: {e}")
+        return {"success": False, "confirmation": "Couldn't prepare that Slack message, sir."}
+
+    script = (
+        'tell application "Slack" to activate\n'
+        'delay 0.8\n'
+        'tell application "System Events"\n'
+        '  keystroke "k" using {command down}\n'   # quick switcher
+        '  delay 0.9\n'
+        f'  keystroke "{t_esc}"\n'                  # type the person/channel
+        '  delay 1.1\n'
+        '  key code 36\n'                           # open the top match (DM/channel)
+        '  delay 1.2\n'
+        '  keystroke "v" using {command down}\n'   # paste body into the focused input (NOT sent)
+        '  delay 0.3\n'
+        'end tell\n'
+    )
+    proc = await asyncio.create_subprocess_exec(
+        "osascript", "-e", script,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    _, stderr = await proc.communicate()
+
+    try:
+        await asyncio.sleep(0.4)
+        rp = await asyncio.create_subprocess_exec("pbcopy", stdin=asyncio.subprocess.PIPE)
+        await rp.communicate(saved_clip.encode())
+    except Exception:
+        pass
+
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        log.error(f"compose_slack failed: {err}")
+        if "1002" in err or "not authorized" in err.lower():
+            return {"success": False,
+                    "confirmation": "I need Accessibility permission to drive Slack, sir."}
+        if "Slack" in err and ("not running" in err or "isn't running" in err or "-600" in err):
+            return {"success": False, "confirmation": "Slack doesn't seem to be open, sir."}
+        return {"success": False, "confirmation": "Couldn't compose that Slack message, sir."}
+    return {"success": True,
+            "confirmation": f"Slack message to {target} ready, sir — review and press send."}
 
 
 async def run_applescript(script: str) -> dict:

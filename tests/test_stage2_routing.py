@@ -277,15 +277,49 @@ def test_browser_tabs_and_claude_in_chrome():
 
 
 def test_timers_and_stopwatch():
-    # Timer still routes to the native Clock app via a UI task.
+    # Timer now drives the Clock app deterministically (Timers tab → duration → Start).
     a = server.detect_action_fast("set a timer for three minutes")
-    assert a and a["action"] == "ui_task" and "Clock" in a["goal"] and "Timers" in a["goal"], a
-    # Stopwatch is deterministic now — clicks the named Clock-app button (the
-    # vision UI task mis-clicked the screen instead of Start).
+    assert a and a["action"] == "clock_timer" and a["seconds"] == 180, a
+    # Stopwatch — clicks the named Clock-app button (vision mis-clicked the screen).
     a = server.detect_action_fast("start a stopwatch")
     assert a and a["action"] == "clock_stopwatch" and a["mode"] == "start", a
     a = server.detect_action_fast("stop the stopwatch")
     assert a and a["action"] == "clock_stopwatch" and a["mode"] == "stop", a
+
+
+def test_any_stopwatch_phrasing_uses_apple_clock():
+    # Every stopwatch phrasing must hit the Apple Clock app, never the web-search
+    # fallback (online-stopwatch.com). Pause/stop words → stop mode.
+    for phrase, mode in [("open a stopwatch", "start"), ("i need a stopwatch", "start"),
+                         ("use the stopwatch", "start"),
+                         ("pause the stopwatch", "stop"), ("reset the stopwatch", "stop")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "clock_stopwatch" and a["mode"] == mode, (phrase, a)
+
+
+def test_clock_tabs_and_alarms():
+    for phrase, tab in [("go to the timers tab", "timers"),
+                        ("switch to alarms in clock", "alarms"),
+                        ("switch to the stopwatch tab", "stopwatch")]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "clock_tab" and a["tab"].replace(" ", "") == tab, (phrase, a)
+    a = server.detect_action_fast("set an alarm for 7am")
+    assert a and a["action"] == "clock_alarm" and a["hour"] == 7 and a["minute"] == 0, a
+    a = server.detect_action_fast("set an alarm for 6:30 pm")
+    assert a and a["action"] == "clock_alarm" and a["hour"] == 18 and a["minute"] == 30, a
+    a = server.detect_action_fast("wake me at 6:30")
+    assert a and a["action"] == "clock_alarm" and a["hour"] == 6 and a["minute"] == 30, a
+
+
+def test_slack_compose_routes():
+    for phrase, target, body in [
+        ("slack Kuba saying the build is green", "Kuba", "the build is green"),
+        ("dm Sarah on slack saying hi there", "Sarah", "hi there"),
+        ("slack the design channel: assets are ready", "the design channel", "assets are ready"),
+    ]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "compose_slack", (phrase, a)
+        assert a["target"] == target and a["body"] == body, (phrase, a)
 
 
 def test_copy_file_to_clipboard_routes():
