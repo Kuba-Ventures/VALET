@@ -371,6 +371,76 @@ async def type_into_app(target: str, press_enter: bool = False, task_id: str | N
     return {"success": True, "confirmation": f"{verb} in {where}, sir."}
 
 
+async def compose_text_message(recipient: str, body: str,
+                               task_id: str | None = None) -> dict:
+    """Open Messages, start a NEW message addressed to `recipient`, type `body` —
+    and STOP. Never presses send.
+
+    This is the safe replacement for blindly typing into whatever Messages thread
+    happens to be focused (the bug that sent a text to the wrong contact). We open
+    a fresh compose window (⌘N), type the recipient name, accept the top contact
+    suggestion (Return → addresses the message and moves focus to the body field),
+    then type the body. The user reviews the recipient chip and presses send
+    themselves — VALET deliberately does not, because an autocomplete mismatch
+    must never auto-send to the wrong person.
+    """
+    recipient = (recipient or "").strip()
+    body = (body or "").strip()
+    if not recipient:
+        if task_id:
+            await emit_error(task_id, "Compose: missing recipient")
+        return {"success": False, "confirmation": "Who should I text, sir?"}
+    if not body:
+        if task_id:
+            await emit_error(task_id, "Compose: missing message")
+        return {"success": False, "confirmation": "What should the message say, sir?"}
+
+    # AppleScript string-literal escaping: backslashes first, then quotes.
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    r_esc, b_esc = _esc(recipient), _esc(body)
+    # key code 36 = Return (accepts the highlighted contact suggestion, which
+    # addresses the message and focuses the body field — it does NOT send while
+    # the cursor is in the recipient field). The final body keystroke leaves the
+    # message composed but unsent.
+    script = (
+        'tell application "Messages" to activate\n'
+        'delay 0.5\n'
+        'tell application "System Events"\n'
+        '  keystroke "n" using {command down}\n'   # new message
+        '  delay 0.6\n'
+        f'  keystroke "{r_esc}"\n'                  # type recipient name
+        '  delay 0.9\n'
+        '  key code 36\n'                           # accept top suggestion → addresses + focuses body
+        '  delay 0.5\n'
+        f'  keystroke "{b_esc}"\n'                  # type the message body (NOT sent)
+        'end tell\n'
+    )
+    proc = await asyncio.create_subprocess_exec(
+        "osascript", "-e", script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        log.error(f"compose_text_message failed: {err}")
+        if "1002" in err or "not authorized" in err.lower():
+            return {
+                "success": False,
+                "confirmation": "I need Accessibility permission to compose a text, sir. Open System Settings → Privacy & Security → Accessibility and enable the VALET process.",
+            }
+        return {"success": False, "confirmation": f"Couldn't compose that text, sir: {err[:120]}"}
+
+    if task_id:
+        await emit_text_write(task_id, "Messages", f"To {recipient}: {body}", sent=False)
+    return {
+        "success": True,
+        "confirmation": f"Composed a text to {recipient}, sir — check the recipient and press send.",
+    }
+
+
 async def run_applescript(script: str) -> dict:
     """Execute arbitrary AppleScript. Full system control — use sparingly."""
     if not script.strip():

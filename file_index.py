@@ -148,7 +148,13 @@ def _mdfind_args(scope_dirs: list[str], pred: str | None, q: str) -> list[str] |
     # Match files whose name contains ANY query word (OR), not the whole phrase as
     # one substring — so "gold rocket" still finds "Gold_copy-remove.png" and
     # rank_hits sorts by how many words actually matched.
-    toks = [w.replace('"', "") for w in q.split() if len(w) >= 2]
+    # Strip the two characters with special meaning inside an mdfind double-quoted
+    # literal — the quote itself and the backslash escape — so a token can't break
+    # out of the "*…*" value and corrupt the predicate (a word ending in '\' would
+    # otherwise escape the closing quote and malform the whole query). Spoken
+    # file-name words never legitimately contain these.
+    toks = [re.sub(r'["\\]', "", w) for w in q.split() if len(w) >= 2]
+    toks = [w for w in toks if len(w) >= 2]
     if toks:
         name_or = " || ".join(f'kMDItemDisplayName == "*{w}*"c' for w in toks)
         args.append(f"({pred}) && ({name_or})" if pred else f"({name_or})")
