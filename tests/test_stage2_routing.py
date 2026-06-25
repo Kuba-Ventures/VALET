@@ -192,14 +192,16 @@ def test_logout_login_routes_to_ui_loop():
                    "log back in", "log out of stripe"):
         a = server.detect_action_fast(phrase)
         assert a and a["action"] == "ui_task" and a.get("goal"), (phrase, a)
-    # Google/Gmail sign-OUT → deterministic logout endpoint, not the loop.
-    for phrase in ("log out of my gmail", "sign out of gmail", "log out of google"):
-        a = server.detect_action_fast(phrase)
-        assert a and a["action"] == "open_url" and "accounts.google.com/Logout" in a["target"], (phrase, a)
+    # Google/Gmail sign-OUT → deterministic in-place logout, not the loop. Gmail
+    # carries a continue= so re-login returns to Gmail.
+    a = server.detect_action_fast("sign out of gmail")
+    assert a and a["action"] == "google_signout" and a["gmail"] is True, a
+    a = server.detect_action_fast("log out of google")
+    assert a and a["action"] == "google_signout" and a["gmail"] is False, a
     # Must not hijack lookalikes.
     for phrase in ("open gmail", "logo design ideas", "log my workout"):
         a = server.detect_action_fast(phrase)
-        assert a is None or a["action"] not in ("ui_task", "open_url") or "Logout" not in (a.get("target") or ""), (phrase, a)
+        assert a is None or a["action"] not in ("ui_task", "google_signout"), (phrase, a)
 
 
 def test_go_back_clicks_back_button():
