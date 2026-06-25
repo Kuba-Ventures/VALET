@@ -2341,6 +2341,23 @@ async def _execute_stopwatch(mode: str, ws):
     await _speak(ws, f"{' and '.join(parts)}, sir.")
 
 
+async def _execute_clock_stopwatch(mode: str, ws):
+    """Drive Apple's Clock-app Stopwatch deterministically (click the named
+    Start/Stop button via System Events), then report aloud."""
+    from actions import clock_stopwatch
+    async with process_bus.task_context(f"Stopwatch {mode}") as task_id:
+        await emit_step(task_id, f"Clock app → Stopwatch → {mode.title()}", status="active")
+        try:
+            res = await clock_stopwatch(mode)
+        except Exception as e:
+            log.error(f"clock_stopwatch failed: {e}")
+            await emit_error(task_id, "Stopwatch failed", detail=str(e)[:200])
+            res = {"success": False, "confirmation": "Couldn't drive the Stopwatch, sir."}
+        await emit_step(task_id, res.get("confirmation", "Done, sir."),
+                        status="done" if res.get("success") else "error")
+    await _speak(ws, res.get("confirmation", "Done, sir."))
+
+
 async def _execute_google_signout(ws, gmail: bool = False):
     """Sign out of Google by navigating the FRONTMOST browser's active tab to the
     logout endpoint IN PLACE — no new window. /Logout ends the Google session (all
@@ -2515,11 +2532,26 @@ async def _execute_find_file(action: dict, ws):
     short voice pick-list on ambiguity. Falls back to a semantic (LLM-over-real-
     files) match when the literal search misses."""
     import file_index
+    import os as _os
+    from actions import copy_file_to_clipboard
     query = action.get("query", "")
     kind = action.get("kind")
     recent = bool(action.get("recent"))
+    to_clip = bool(action.get("clipboard"))   # "find X and copy it to clipboard"
     phrase = (action.get("phrase") or query or "that").strip()
     listing = ""
+
+    async def _deliver(path: str, name: str, task_id):
+        """Open the resolved file, or copy it to the clipboard when asked."""
+        if to_clip:
+            await emit_step(task_id, f"Copying {name} to clipboard", status="done")
+            res = copy_file_to_clipboard(path)
+            await _speak(ws, res.get("confirmation", f"Copied {name}, sir."))
+        else:
+            await emit_step(task_id, f"Opening {name}", status="done")
+            await open_app_or_path(path, task_id=task_id)
+            await _speak(ws, f"Opening {name}, sir.")
+
     async with process_bus.task_context(f"Finding: {phrase}"[:60]) as task_id:
         await emit_step(task_id, f"Searching for {phrase}…", status="active")
         hits = await file_index.find_files(query, kind=kind, recent=recent, limit=6)
@@ -2530,10 +2562,7 @@ async def _execute_find_file(action: dict, ws):
             await emit_step(task_id, "No exact name — matching by description…", status="active")
             match = await _semantic_file_match(query or phrase)
             if match:
-                import os as _os
-                await emit_step(task_id, f"Opening {_os.path.basename(match)}", status="done")
-                await open_app_or_path(match, task_id=task_id)
-                await _speak(ws, f"Opening {_os.path.basename(match)}, sir.")
+                await _deliver(match, _os.path.basename(match), task_id)
                 return
             await emit_error(task_id, "No file found", detail=phrase[:120])
             await _speak(ws, f"I couldn't find {phrase}, sir.")
@@ -2541,19 +2570,14 @@ async def _execute_find_file(action: dict, ws):
         top = hits[0]
         clear_winner = len(hits) == 1 or (top.score - hits[1].score) >= 30
         if clear_winner:
-            await emit_step(task_id, f"Opening {top.name}", status="done")
-            await open_app_or_path(top.path, task_id=task_id)
-            await _speak(ws, f"Opening {top.name}, sir.")
+            await _deliver(top.path, top.name, task_id)
             return
         # Ambiguous literal ranking ("escape velocity profile pic" ties the Admin
         # sheet with the profile pic) — let the model pick the best DESCRIPTION
         # match among the candidates before falling back to a spoken pick-list.
-        import os as _os
         match = await _semantic_file_match(query or phrase, [h.path for h in hits[:12]])
         if match:
-            await emit_step(task_id, f"Opening {_os.path.basename(match)}", status="done")
-            await open_app_or_path(match, task_id=task_id)
-            await _speak(ws, f"Opening {_os.path.basename(match)}, sir.")
+            await _deliver(match, _os.path.basename(match), task_id)
             return
         cands = hits[:3]
         for i, h in enumerate(cands):
@@ -5019,6 +5043,16 @@ _CURSOR_SYMBOL_RE = re.compile(
 # Both run LAST in detect_action_fast so every specific handler wins first.
 _FIND_FILE_RE = re.compile(
     r'^(?:find|look\s+for|locate|search\s+for)\s+(?P<query>.+?)\s*[.?!]*$', re.IGNORECASE)
+# "copy <file> to (the) clipboard" / "find <file> and copy it to clipboard" →
+# locate the file and put it on the clipboard (image data for images, file URL
+# otherwise) instead of opening it. The trailing "(and) copy (it) to clipboard"
+# is stripped so only the file description is searched.
+_COPY_CLIP_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:find|locate|grab|get|copy)\s+(?P<query>.+?)'
+    r'(?:\s+and)?\s+copy(?:\s+it)?\s+to\s+(?:the\s+|my\s+)?clipboard\s*[.?!]*$'
+    r'|^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'copy\s+(?P<query2>.+?)\s+to\s+(?:the\s+|my\s+)?clipboard\s*[.?!]*$', re.IGNORECASE)
 # Standard home folders openable by name ("open my downloads folder" / "open
 # Desktop"). open_app_or_path resolves a bare name under $HOME (or a full path).
 _HOME_FOLDERS = {
@@ -5428,11 +5462,10 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     _swm = _STOPWATCH_RE.match(t)
     if _swm:
         _mode = (_swm.group("mode") or "stop").lower()
-        if _mode in ("start", "begin"):
-            return {"action": "ui_task", "goal": "Open the Clock app, switch to the "
-                    "Stopwatch tab, and click the Start button"}
-        return {"action": "ui_task", "goal": "In the Clock app on the Stopwatch tab, "
-                "click the Stop button"}
+        # Deterministic: click the Clock app's named Start/Stop button via System
+        # Events (the vision loop mis-clicked the screen instead of the button).
+        return {"action": "clock_stopwatch",
+                "mode": "start" if _mode in ("start", "begin") else "stop"}
 
     # Timer → drive Apple's Clock app: open it, set the duration, click Start.
     _tm2 = _TIMER_RE.match(t)
@@ -5683,6 +5716,15 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                 return {"action": "open_settings", "label": _hit[0], "target": _hit[1]}
 
     import file_index
+    # "copy <file> to clipboard" → find the file and copy it (don't open).
+    _cc = _COPY_CLIP_RE.match(t)
+    if _cc:
+        _craw = (_cc.group("query") or _cc.group("query2") or "").strip(" .?!")
+        _ckind, _cname, _crecent = file_index.detect_kind(_craw)
+        if _ckind or _cname:
+            return {"action": "find_file", "query": _cname, "kind": _ckind,
+                    "recent": _crecent, "phrase": _craw, "clipboard": True}
+
     _fileq = None
     _fv = _FIND_FILE_RE.match(t)
     if _fv and "note" not in t and "setting" not in t:
@@ -7149,6 +7191,9 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "stopwatch":
                             response_text = ""
                             asyncio.create_task(_execute_stopwatch(action.get("mode", "stop"), ws))
+                        elif action["action"] == "clock_stopwatch":
+                            response_text = ""
+                            _track_uc(ws, _execute_clock_stopwatch(action.get("mode", "start"), ws))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
@@ -7513,6 +7558,19 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_run_gated_action(ws, executor.run_script(embedded_action["target"])))
                                 elif embedded_action["action"] == "type":
                                     asyncio.create_task(_execute_type(embedded_action["target"], press_enter=False))
+                                elif embedded_action["action"] == "compose_text":
+                                    # "recipient ||| body" → compose-and-stop in Messages
+                                    # (never auto-send). The bare "text Camille hi" form
+                                    # reaches here via the LLM; the explicit-separator form
+                                    # is handled on the fast path.
+                                    _ct = embedded_action.get("target", "")
+                                    _cr, _, _cb = _ct.partition("|||")
+                                    _cr, _cb = _cr.strip(), _cb.strip()
+                                    if _cr and _cb:
+                                        response_text = f"Composing a text to {_cr}, sir."
+                                        _track_uc(ws, _execute_compose_text(_cr, _cb, ws))
+                                    else:
+                                        response_text = "Who should I text, and what should it say, sir?"
                                 # NOTE: "send", "create_event" and "cancel_event" are in
                                 # _CONFIRM_ACTIONS and dispatched via _confirm_and_dispatch
                                 # above — no branch for them here.
