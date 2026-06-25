@@ -426,6 +426,7 @@ async def run_loop(
     ax_executor=None,
     emit: Optional[Callable[..., Awaitable[None]]] = None,
     hands_off: bool = False,
+    speak: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> dict:
     """Run the supervised observe→decide→act loop for `goal`.
 
@@ -535,6 +536,12 @@ async def run_loop(
                             detail="Let the browser fill your saved one — I'll carry "
                                    "on once you're in.",
                             status="active")
+                if speak:                       # say it aloud, not just in the panel
+                    try:
+                        await speak("Enter your password, sir — let the browser fill "
+                                    "your saved one, and I'll carry on once you're in.")
+                    except Exception:
+                        pass
                 outcome = await _await_login(executor, app, kill_switch, emit)
                 if outcome == "halted":
                     return {"status": "halted", "steps": step - 1, "history": history,
@@ -544,6 +551,11 @@ async def run_loop(
                             "message": "I'll leave the login with you, sir — pick your account and "
                                        "use your saved password, then say 'continue' when you're in."}
                 await _emit("act", "Signed in — carrying on, sir.", status="done")
+                if speak:
+                    try:
+                        await speak("Signed in — carrying on, sir.")
+                    except Exception:
+                        pass
                 history.append({"step": step, "action": "login", "target": "credentials",
                                 "ok": True, "msg": "handed off to user"})
                 continue

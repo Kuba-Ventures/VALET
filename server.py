@@ -8540,20 +8540,25 @@ async def api_latency_last():
 
 
 async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
-                       task_id: Optional[str] = None) -> dict:
+                       task_id: Optional[str] = None, ws=None) -> dict:
     """UC4 — run the supervised observe→decide→act loop for `goal`, streaming each
     beat to the process panel. Each mutating step is gated (confirm card) and the
-    kill switch is live throughout."""
+    kill switch is live throughout. When `ws` is given, mid-task prompts (the login
+    hand-off) are also SPOKEN, not just shown in the panel."""
     import agent_loop
 
     async def _emit(kind, title, detail="", status="active"):
         if task_id:
             await emit_step(task_id, title, detail=detail, status=status)
 
+    async def _speak_cb(text):
+        if ws and text:
+            await _speak(ws, text)
+
     return await agent_loop.run_loop(
         executor, goal, anthropic_client, app=app, max_steps=max_steps,
         kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit,
-        hands_off=True)
+        hands_off=True, speak=_speak_cb if ws else None)
 
 
 @app.post("/api/ui/task")
@@ -8670,7 +8675,7 @@ async def _handle_ui_task(goal: str, ws) -> None:
     free for per-step confirm replies + STOP), then speaks the outcome."""
     try:
         async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
-            result = await _run_ui_task(goal, task_id=task_id)
+            result = await _run_ui_task(goal, task_id=task_id, ws=ws)
     except Exception as e:
         log.error(f"ui_task error: {e}")
         await _speak(ws, "I ran into trouble with that, sir.")
