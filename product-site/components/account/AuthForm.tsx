@@ -44,7 +44,12 @@ export default function AuthForm({
         const { data, error } = await supabase.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo },
+          // Also stash the post-confirmation destination in user metadata. The
+          // `?next=` query on emailRedirectTo does NOT reliably survive Supabase's
+          // confirmation round-trip (the redirect-allowlist match can strip it),
+          // which sent VIP signups to /account ("enter license key") instead of
+          // /vip. Metadata always survives, so the callback can recover `next`.
+          options: { emailRedirectTo, data: { signup_next: next } },
         });
         if (error) throw error;
         // With email confirmation on, there is no session yet.
