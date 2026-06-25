@@ -399,22 +399,52 @@ async def compose_text_message(recipient: str, body: str,
     def _esc(s: str) -> str:
         return s.replace("\\", "\\\\").replace('"', '\\"')
 
-    r_esc, b_esc = _esc(recipient), _esc(body)
-    # key code 36 = Return (accepts the highlighted contact suggestion, which
-    # addresses the message and focuses the body field — it does NOT send while
-    # the cursor is in the recipient field). The final body keystroke leaves the
-    # message composed but unsent.
+    r_esc = _esc(recipient)
+
+    # Save the user's clipboard so we can restore it after pasting the body.
+    saved_clip = ""
+    try:
+        pb = await asyncio.create_subprocess_exec(
+            "pbpaste", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await pb.communicate()
+        saved_clip = out.decode(errors="replace")
+    except Exception:
+        pass
+    # Put the body on the clipboard (atomic paste is far more reliable than a
+    # per-character keystroke, which got dropped mid conversation-switch and left
+    # the field empty). pbcopy via stdin so the body can be any length/charset.
+    try:
+        cp = await asyncio.create_subprocess_exec(
+            "pbcopy", stdin=asyncio.subprocess.PIPE)
+        await cp.communicate(body.encode())
+    except Exception as e:
+        log.error(f"compose_text_message pbcopy failed: {e}")
+        return {"success": False, "confirmation": "Couldn't prepare that text, sir."}
+
+    # Sequence (each step needs a settle or the next keystroke is dropped/misrouted):
+    #   ⌘N            new compose, focus in the To field
+    #   type name     recipient autocomplete populates
+    #   key 36 Return accept the top suggestion → recipient becomes a chip. Focus
+    #                 STAYS in the To field (ready for more recipients) — it does
+    #                 NOT drop to the body. Pasting here is what put the text in the
+    #                 recipients bar.
+    #   key 48 Tab    advance To → message body field
+    #   ⌘V            paste the body atomically (NOT sent — we never press Return
+    #                 in the body, so it's composed and left for the user to send)
     script = (
         'tell application "Messages" to activate\n'
-        'delay 0.5\n'
+        'delay 0.7\n'
         'tell application "System Events"\n'
         '  keystroke "n" using {command down}\n'   # new message
-        '  delay 0.6\n'
-        f'  keystroke "{r_esc}"\n'                  # type recipient name
         '  delay 0.9\n'
-        '  key code 36\n'                           # accept top suggestion → addresses + focuses body
-        '  delay 0.5\n'
-        f'  keystroke "{b_esc}"\n'                  # type the message body (NOT sent)
+        f'  keystroke "{r_esc}"\n'                  # type recipient name
+        '  delay 1.3\n'                             # let autocomplete populate
+        '  key code 36\n'                           # Return: accept top suggestion → recipient chip
+        '  delay 0.7\n'                             # let the dropdown close / chip commit
+        '  key code 48\n'                           # Tab: move To → message body
+        '  delay 0.7\n'                             # let focus land in the body
+        '  keystroke "v" using {command down}\n'   # paste the body (atomic, NOT sent)
+        '  delay 0.3\n'
         'end tell\n'
     )
     proc = await asyncio.create_subprocess_exec(
@@ -423,6 +453,15 @@ async def compose_text_message(recipient: str, body: str,
         stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
+
+    # Restore the user's clipboard (after the paste has landed).
+    try:
+        await asyncio.sleep(0.4)
+        rp = await asyncio.create_subprocess_exec("pbcopy", stdin=asyncio.subprocess.PIPE)
+        await rp.communicate(saved_clip.encode())
+    except Exception:
+        pass
+
     if proc.returncode != 0:
         err = stderr.decode().strip()
         log.error(f"compose_text_message failed: {err}")
@@ -439,6 +478,88 @@ async def compose_text_message(recipient: str, body: str,
         "success": True,
         "confirmation": f"Composed a text to {recipient}, sir — check the recipient and press send.",
     }
+
+
+async def clock_stopwatch(mode: str) -> dict:
+    """Start or stop the Stopwatch in Apple's Clock app — deterministically.
+
+    The vision loop mis-clicked (it hit the screen and toggled the view instead of
+    the green Start button). System Events clicks the button BY NAME, which is
+    exact: switch to the Stopwatch tab, then click the "Start" (or "Stop") button.
+    The button is an AXButton whose title is literally "Start"/"Stop".
+    """
+    want_start = mode in ("start", "begin")
+    btn = "Start" if want_start else "Stop"
+    script = (
+        'tell application "Clock" to activate\n'
+        'delay 0.7\n'
+        'tell application "System Events" to tell process "Clock"\n'
+        '  set frontmost to true\n'
+        '  delay 0.2\n'
+        '  try\n'
+        '    click (first button of toolbar 1 of window 1 whose name is "Stopwatch")\n'
+        '  on error\n'
+        '    try\n'
+        '      click (first radio button of window 1 whose name is "Stopwatch")\n'
+        '    end try\n'
+        '  end try\n'
+        '  delay 0.6\n'
+        '  try\n'
+        f'    click (first button of window 1 whose name is "{btn}")\n'
+        '  on error\n'
+        f'    click (first button of (entire contents of window 1) whose name is "{btn}")\n'
+        '  end try\n'
+        'end tell\n'
+    )
+    proc = await asyncio.create_subprocess_exec(
+        "osascript", "-e", script,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        log.error(f"clock_stopwatch failed: {err}")
+        if "1002" in err or "not authorized" in err.lower():
+            return {"success": False,
+                    "confirmation": "I need Accessibility permission to drive the Clock app, sir."}
+        return {"success": False,
+                "confirmation": f"Couldn't reach the Stopwatch {btn} button, sir."}
+    return {"success": True,
+            "confirmation": f"Stopwatch {'started' if want_start else 'stopped'}, sir."}
+
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".tiff", ".tif", ".bmp", ".heic", ".webp"}
+
+
+def copy_file_to_clipboard(path: str) -> dict:
+    """Put a file on the clipboard so the user can ⌘V it.
+
+    For an image, the IMAGE DATA goes on the pasteboard (so it pastes into docs,
+    chats, image fields). For anything else, the file URL goes on the pasteboard
+    (so it pastes as a file in Finder/Mail). Uses NSPasteboard directly — there's
+    no CLI equivalent for image data (pbcopy is text-only).
+    """
+    import os
+    if not path or not os.path.exists(path):
+        return {"success": False, "confirmation": "I couldn't find that file, sir."}
+    name = os.path.basename(path)
+    try:
+        from AppKit import NSPasteboard, NSImage          # pyobjc (already used for AX)
+        from Foundation import NSURL
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        ext = os.path.splitext(path)[1].lower()
+        if ext in _IMAGE_EXTS:
+            img = NSImage.alloc().initWithContentsOfFile_(path)
+            if img is not None and pb.writeObjects_([img]):
+                return {"success": True, "confirmation": f"Copied {name} to your clipboard, sir."}
+            # Fall through to URL copy if the image couldn't be decoded.
+        url = NSURL.fileURLWithPath_(path)
+        if pb.writeObjects_([url]):
+            return {"success": True, "confirmation": f"Copied {name} to your clipboard, sir."}
+        return {"success": False, "confirmation": f"Couldn't copy {name} to the clipboard, sir."}
+    except Exception as e:
+        log.error(f"copy_file_to_clipboard failed: {e}")
+        return {"success": False, "confirmation": f"Couldn't copy {name}, sir."}
 
 
 async def run_applescript(script: str) -> dict:
