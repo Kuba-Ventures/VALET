@@ -5121,7 +5121,16 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # scary approval. The loop's login hand-off covers signing back in.
     _wf = _WEB_FLOW_RE.match(t)
     if _wf:
-        return {"action": "ui_task", "goal": _wf.group("goal").strip(" .?!")}
+        _goal = _wf.group("goal").strip(" .?!")
+        _gl = _goal.lower()
+        # Google/Gmail SIGN-OUT → the deterministic logout endpoint. Google's
+        # account menu is too hostile to click reliably (transient overlay,
+        # look-alike rows); navigating accounts.google.com/Logout signs out every
+        # account instantly. Sign-IN and non-Google logouts keep the UI loop.
+        if re.search(r'\bout\b', _gl) and re.search(r'\b(gmail|google)\b', _gl):
+            return {"action": "open_url", "target": "https://accounts.google.com/Logout",
+                    "browser": "chrome", "label": "Google sign-out"}
+        return {"action": "ui_task", "goal": _goal}
 
     # "Send this to Claude Code to fix" — read the screen, brief it, dispatch.
     # Before summarize/describe so "send this to Claude to fix" isn't read as a

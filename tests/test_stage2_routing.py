@@ -186,15 +186,20 @@ def test_field_dictation_and_repo_hint():
 
 
 def test_logout_login_routes_to_ui_loop():
-    # Log out/in flows → the supervised UI loop, NOT a brittle AppleScript.
-    for phrase in ("log out of my gmail", "sign out of gmail", "log back into gmail",
-                   "log into stripe", "sign in to stripe", "log back in"):
+    # Log-in flows and non-Google logouts → the supervised UI loop (not a brittle
+    # AppleScript). Google sign-OUT is the one exception (deterministic URL).
+    for phrase in ("log back into gmail", "log into stripe", "sign in to stripe",
+                   "log back in", "log out of stripe"):
         a = server.detect_action_fast(phrase)
         assert a and a["action"] == "ui_task" and a.get("goal"), (phrase, a)
+    # Google/Gmail sign-OUT → deterministic logout endpoint, not the loop.
+    for phrase in ("log out of my gmail", "sign out of gmail", "log out of google"):
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "open_url" and "accounts.google.com/Logout" in a["target"], (phrase, a)
     # Must not hijack lookalikes.
     for phrase in ("open gmail", "logo design ideas", "log my workout"):
         a = server.detect_action_fast(phrase)
-        assert a is None or a["action"] != "ui_task", (phrase, a)
+        assert a is None or a["action"] not in ("ui_task", "open_url") or "Logout" not in (a.get("target") or ""), (phrase, a)
 
 
 def test_stripe_speech_correction():
