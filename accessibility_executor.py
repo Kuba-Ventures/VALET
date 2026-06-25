@@ -68,12 +68,12 @@ _kMenuBar = "AXMenuBar"
 _kPressAction = "AXPress"
 
 # How deep / wide we walk an AX tree. Bounds latency and token cost downstream.
-_MAX_DEPTH = 30
+_MAX_DEPTH = 20
 # Web pages (esp. GitHub) expose hundreds of interactive elements once the full
 # a11y tree is built; keep the cap high enough that nav/toolbar controls aren't
 # truncated before the resolver ever sees them (the resolver shows the model the
 # first ~200 of these).
-_MAX_ELEMENTS = 400
+_MAX_ELEMENTS = 250
 
 
 # --------------------------------------------------------------------------- #

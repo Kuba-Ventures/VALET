@@ -2303,6 +2303,41 @@ async def _execute_open_app(target: str):
             await emit_error(task_id, "Open app failed", detail=str(e)[:200])
 
 
+async def _execute_set_timer(seconds: int, label: str, ws):
+    """Built-in timer: ack now, then announce when it's up. No Clock app needed."""
+    await _speak(ws, f"Timer set for {label}, sir.")
+    try:
+        async with process_bus.task_context(f"Timer · {label}") as task_id:
+            await emit_step(task_id, f"Counting down {label}…", status="active")
+            await asyncio.sleep(seconds)
+            await emit_step(task_id, "Time's up", status="done")
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        log.warning(f"timer error: {e}")
+        await asyncio.sleep(seconds)
+    await _speak(ws, f"Time's up, sir — your {label} timer's done.")
+
+
+# Per-connection stopwatch start time lives on the ws (set in voice_handler).
+async def _execute_stopwatch(mode: str, ws):
+    """Start or stop/check a simple stopwatch, reporting elapsed time aloud."""
+    if mode == "start":
+        ws.stopwatch_start = time.time()
+        await _speak(ws, "Stopwatch started, sir.")
+        return
+    start = getattr(ws, "stopwatch_start", None)
+    if not start:
+        await _speak(ws, "No stopwatch running, sir.")
+        return
+    elapsed = int(time.time() - start)
+    ws.stopwatch_start = None
+    m, s = divmod(elapsed, 60)
+    parts = ([f"{m} minute{'s' if m != 1 else ''}"] if m else []) + \
+            ([f"{s} second{'s' if s != 1 else ''}"] if s or not m else [])
+    await _speak(ws, f"{' and '.join(parts)}, sir.")
+
+
 async def _execute_browser_tab(combo: str, ack: str, ws):
     """Send a browser tab keyboard shortcut (⌘T new / ⌘W close / ⇧⌘T reopen /
     ⌥⌘→← switch) to the frontmost browser. Keyboard shortcuts are universal and
@@ -2376,9 +2411,69 @@ async def _execute_open_file(path: str, label: str, reveal: bool = False):
             await emit_error(task_id, "Open file failed", detail=str(e)[:200])
 
 
+async def _semantic_file_match(query: str, candidate_paths: list | None = None):
+    """Let a model pick the file that best matches the spoken description —
+    handles abbreviations ("EV" = escape velocity), partials, synonyms, word
+    order. When `candidate_paths` is given it chooses among them (disambiguation);
+    otherwise it lists the user's real files (literal-search miss). Path or None."""
+    import os, file_index
+    if not query or not anthropic_client:
+        return None
+    files: list[tuple[str, str]] = []
+    if candidate_paths:
+        files = [(os.path.basename(p), p) for p in candidate_paths if p]
+    else:
+        for d in file_index._doc_dirs(str(Path.home())):
+            try:
+                for entry in os.scandir(d):
+                    if entry.name.startswith("."):
+                        continue
+                    if entry.is_file():
+                        files.append((entry.name, entry.path))
+                    elif entry.is_dir():        # one level deep (e.g. Desktop/Work/…)
+                        try:
+                            for sub in os.scandir(entry.path):
+                                if sub.is_file() and not sub.name.startswith("."):
+                                    files.append((sub.name, sub.path))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if len(files) >= 500:
+                break
+        files = files[:500]
+    if not files:
+        return None
+    # Show the parent folder for context ("…/Desktop/EV social profile pic.png").
+    def _ctx(p):
+        try:
+            return f"{os.path.basename(os.path.dirname(p))}/{os.path.basename(p)}"
+        except Exception:
+            return os.path.basename(p)
+    numbered = "\n".join(f"{i}: {_ctx(p)}" for i, (_n, p) in enumerate(files))
+    try:
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=10,
+            system=("Pick the file that best matches the user's spoken description. "
+                    "Account for abbreviations (e.g. 'EV' = 'escape velocity'), partial "
+                    "names, synonyms, and word order. Reply with ONLY the file's number, "
+                    "or NONE if nothing reasonably matches."),
+            messages=[{"role": "user", "content": f"Wants: {query}\n\nFiles:\n{numbered}"}])
+        txt = (resp.content[0].text or "").strip()
+        m = re.search(r"\d+", txt)
+        if m:
+            idx = int(m.group())
+            if 0 <= idx < len(files):
+                return files[idx][1]
+    except Exception as e:
+        log.warning("semantic file match failed: %s", e)
+    return None
+
+
 async def _execute_find_file(action: dict, ws):
     """Resolve a spoken file query via mdfind and open the best hit, or offer a
-    short voice pick-list on ambiguity. No LLM — a confident match opens directly."""
+    short voice pick-list on ambiguity. Falls back to a semantic (LLM-over-real-
+    files) match when the literal search misses."""
     import file_index
     query = action.get("query", "")
     kind = action.get("kind")
@@ -2389,15 +2484,36 @@ async def _execute_find_file(action: dict, ws):
         await emit_step(task_id, f"Searching for {phrase}…", status="active")
         hits = await file_index.find_files(query, kind=kind, recent=recent, limit=6)
         if not hits:
+            # Literal search missed — try matching the DESCRIPTION against the real
+            # files (abbreviations, partials). "escape velocity profile pic" →
+            # "EV social profile pic.png".
+            await emit_step(task_id, "No exact name — matching by description…", status="active")
+            match = await _semantic_file_match(query or phrase)
+            if match:
+                import os as _os
+                await emit_step(task_id, f"Opening {_os.path.basename(match)}", status="done")
+                await open_app_or_path(match, task_id=task_id)
+                await _speak(ws, f"Opening {_os.path.basename(match)}, sir.")
+                return
             await emit_error(task_id, "No file found", detail=phrase[:120])
             await _speak(ws, f"I couldn't find {phrase}, sir.")
             return
         top = hits[0]
-        clear_winner = len(hits) == 1 or (top.score - hits[1].score) >= 25
+        clear_winner = len(hits) == 1 or (top.score - hits[1].score) >= 30
         if clear_winner:
             await emit_step(task_id, f"Opening {top.name}", status="done")
             await open_app_or_path(top.path, task_id=task_id)
             await _speak(ws, f"Opening {top.name}, sir.")
+            return
+        # Ambiguous literal ranking ("escape velocity profile pic" ties the Admin
+        # sheet with the profile pic) — let the model pick the best DESCRIPTION
+        # match among the candidates before falling back to a spoken pick-list.
+        import os as _os
+        match = await _semantic_file_match(query or phrase, [h.path for h in hits[:12]])
+        if match:
+            await emit_step(task_id, f"Opening {_os.path.basename(match)}", status="done")
+            await open_app_or_path(match, task_id=task_id)
+            await _speak(ws, f"Opening {_os.path.basename(match)}, sir.")
             return
         cands = hits[:3]
         for i, h in enumerate(cands):
@@ -4946,6 +5062,41 @@ _WEB_FLOW_RE = re.compile(
 _GO_BACK_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:go|take\s+me|head|navigate|click)\s+back\b(?!\s+to\s+sleep)', re.IGNORECASE)
+# Built-in timer + stopwatch (VALET announces when done — no Clock app needed).
+_TIMER_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:(?:set|start|create|make|put\s+on)\s+(?:a\s+|an\s+)?(?P<a>.+?)?\s*timer'
+    r'(?:\s+(?:for|of)\s+(?P<b>.+?))?'
+    r'|(?:a\s+|an\s+)?timer\s+(?:for\s+|of\s+)(?P<c>.+?))'
+    r'\s*[.?!]*$', re.IGNORECASE)
+_STOPWATCH_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?P<mode>start|begin|stop|end|check|how\s+long(?:\'s| is| has)?)\b.*\bstopwatch\b'
+    r'|^(?:stop|end|check)\s+the\s+stopwatch\s*[.?!]*$', re.IGNORECASE)
+_NUM_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40,
+    "forty-five": 45, "forty five": 45, "fifty": 50, "sixty": 60, "ninety": 90,
+    "half": 0.5,
+}
+
+
+def _parse_duration(text: str) -> tuple[int, str]:
+    """(seconds, spoken-label) from a duration phrase. Default unit = minutes."""
+    s = (text or "").lower().strip()
+    m = re.search(r'(\d+(?:\.\d+)?)', s)
+    n = float(m.group(1)) if m else next(
+        (v for w, v in sorted(_NUM_WORDS.items(), key=lambda x: -len(x[0]))
+         if re.search(rf'\b{re.escape(w)}\b', s)), 1)
+    if "hour" in s or re.search(r'\bhrs?\b', s):  # NOT "hr" in s — "three" has "hr"
+        secs, unit = n * 3600, "hour"
+    elif "second" in s or re.search(r'\bsec', s):
+        secs, unit = n, "second"
+    else:
+        secs, unit = n * 60, "minute"
+    label = f"{n:g} {unit}" + ("s" if n != 1 else "")
+    return max(1, int(secs)), label
 # Browser tab control via keyboard shortcuts (universal, reliable). Matched BEFORE
 # the web-search fallback so "open a new tab" isn't searched.
 _BROWSER_TAB_RE = re.compile(
@@ -5191,6 +5342,20 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if _tabm:
         _combo, _ack = _tab_combo(_tabm.group("cmd"))
         return {"action": "browser_tab", "combo": _combo, "ack": _ack}
+
+    # Stopwatch (start / stop / check) — before the timer so "stopwatch" wins.
+    _swm = _STOPWATCH_RE.match(t)
+    if _swm:
+        _mode = (_swm.group("mode") or "stop").lower()
+        return {"action": "stopwatch", "mode": "start" if _mode in ("start", "begin") else "stop"}
+
+    # Built-in timer: "set a timer for three minutes", "start a 5 minute timer".
+    _tm2 = _TIMER_RE.match(t)
+    if _tm2 and "stopwatch" not in t:
+        _dur = (_tm2.group("b") or _tm2.group("c") or _tm2.group("a") or "").strip()
+        if _dur:
+            _secs, _lbl = _parse_duration(_dur)
+            return {"action": "set_timer", "seconds": _secs, "label": _lbl}
 
     # Live field dictation: "dictate into here" / "type what I say" → enter a
     # mode that types each following utterance into the focused field.
@@ -6879,6 +7044,13 @@ async def voice_handler(ws: WebSocket):
                             response_text = ""
                             _track_uc(ws, _execute_browser_tab(
                                 action.get("combo", "cmd+t"), action.get("ack", "Done, sir."), ws))
+                        elif action["action"] == "set_timer":
+                            response_text = ""
+                            asyncio.create_task(_execute_set_timer(
+                                action.get("seconds", 60), action.get("label", "a minute"), ws))
+                        elif action["action"] == "stopwatch":
+                            response_text = ""
+                            asyncio.create_task(_execute_stopwatch(action.get("mode", "stop"), ws))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
@@ -8506,7 +8678,12 @@ async def _handle_ui_act(action: dict, ws) -> None:
     # If a click landed on a login / sign-in page (e.g. picking an account →
     # password screen), proactively hand off the credentials instead of a bare
     # "Clicked, sir" — same guidance as the multi-step loop's login hand-off.
-    if result.get("ok") and ui_action == "click":
+    # Only when the click was an ACCOUNT/navigation (→ a password page), not a
+    # submit. Clicking "Sign in" / "Next" SUBMITS, so prompting for the password
+    # afterward is stale (the user has already signed in).
+    _submit = any(h in (target or "").lower() for h in
+                  ("sign in", "log in", "login", "next", "submit", "continue", "done"))
+    if result.get("ok") and ui_action == "click" and not _submit:
         try:
             import perception, agent_loop
             await asyncio.sleep(0.6)  # let the next page render
