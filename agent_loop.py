@@ -276,6 +276,11 @@ _DECIDE_SYSTEM = (
     "- Use \"click\" only for buttons, links, menu items, checkboxes, popups. Never "
     "click a container (AXGroup, AXScrollArea, AXWindow) or an element with no label.\n"
     "- Use \"key\" for keyboard shortcuts (save = cmd+s, select-all = cmd+a).\n"
+    "- LOGIN: if a password field is ALREADY FILLED (it shows masked dots, e.g. the "
+    "browser autofilled a saved login), do NOT type — click the Sign in / Log in / "
+    "Submit / Next button to log in. Only when the password field is EMPTY should you "
+    "target it with \"type\" (which hands credential entry to the user). Never type a "
+    "made-up password.\n"
     "- You are ALREADY looking at FOCUSED APP — the elements shown ARE its current "
     "screen. Do NOT use open_app for the app you're already in (it's a no-op and wastes "
     "a step); act on the screen instead. Only use open_app to switch to a DIFFERENT app "
@@ -493,15 +498,6 @@ async def run_loop(
 
         await _emit("observe", f"Step {step}: looking at the screen")
         observation = await perception.build_observation(executor, app=app)
-
-        # Fast credential hand-off: the moment we SEE a password page, hand off —
-        # don't spend a ~2-3s model decide first (that's why "enter your password"
-        # used to lag). The account chooser still goes through decide → click.
-        if hands_off and _is_credential_page(observation):
-            _r = await _login_handoff(step)
-            if _r is not None:
-                return _r
-            continue
 
         decision = await _decide(client, goal, observation, history)
         act = decision.get("action")

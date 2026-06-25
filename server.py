@@ -2303,6 +2303,25 @@ async def _execute_open_app(target: str):
             await emit_error(task_id, "Open app failed", detail=str(e)[:200])
 
 
+async def _execute_browser_tab(combo: str, ack: str, ws):
+    """Send a browser tab keyboard shortcut (⌘T new / ⌘W close / ⇧⌘T reopen /
+    ⌥⌘→← switch) to the frontmost browser. Keyboard shortcuts are universal and
+    reliable — no clicking the tiny + / × targets."""
+    try:
+        front = ""
+        try:
+            front = next((a for a in await get_running_apps()
+                          if a.strip().lower() in _BROWSER_APPS), "")
+        except Exception:
+            pass
+        await _ax_executor.key_combo(combo, app=front or None)
+    except Exception as e:
+        log.error(f"browser_tab {combo} failed: {e}")
+        await _speak(ws, "I couldn't do that, sir.")
+        return
+    await _speak(ws, ack)
+
+
 async def _execute_open_url(url: str, browser: str = "chrome", label: str = ""):
     """Open a resolved web destination in the browser via `open -a` (no
     keystrokes / Accessibility). Backs the open_url fast-path for websites."""
@@ -4927,6 +4946,31 @@ _WEB_FLOW_RE = re.compile(
 _GO_BACK_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:go|take\s+me|head|navigate|click)\s+back\b(?!\s+to\s+sleep)', re.IGNORECASE)
+# Browser tab control via keyboard shortcuts (universal, reliable). Matched BEFORE
+# the web-search fallback so "open a new tab" isn't searched.
+_BROWSER_TAB_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?P<cmd>'
+    r'(?:open\s+(?:a\s+|another\s+)?new|new|open\s+another|add\s+a\s+new)\s+tab'
+    r'|close\s+(?:this|the|current|that)?\s*tab'
+    r'|reopen\s+(?:the\s+)?(?:closed|last)?\s*tab'
+    r'|(?:go\s+to\s+(?:the\s+)?)?next\s+tab'
+    r'|(?:go\s+to\s+(?:the\s+)?)?(?:previous|prev)\s+tab'
+    r')\s*[.?!]*$', re.IGNORECASE)
+
+
+def _tab_combo(cmd: str) -> tuple[str, str]:
+    """(key-combo, spoken-ack) for a browser-tab command."""
+    c = cmd.lower()
+    if "reopen" in c:                       # before "close" — "closed tab" contains it
+        return "cmd+shift+t", "Reopened, sir."
+    if "close" in c:
+        return "cmd+w", "Closed the tab, sir."
+    if "next" in c:
+        return "cmd+option+right", "Next tab, sir."
+    if "previous" in c or "prev" in c:
+        return "cmd+option+left", "Previous tab, sir."
+    return "cmd+t", "New tab, sir."
 # Last-resort "open X" → web search. Reached ONLY after app / known-site / folder
 # / settings / file / real-project routes all miss, so "open <any website>" (even
 # obscure ones) lands somewhere instead of dead-ending as "no project called X".
@@ -5141,6 +5185,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     ]):
         return {"action": "close_panel"}
 
+    # Browser tab control ("open a new tab", "close this tab", "reopen tab") via
+    # keyboard shortcut. Before the web-search fallback so it isn't searched.
+    _tabm = _BROWSER_TAB_RE.match(t)
+    if _tabm:
+        _combo, _ack = _tab_combo(_tabm.group("cmd"))
+        return {"action": "browser_tab", "combo": _combo, "ack": _ack}
+
     # Live field dictation: "dictate into here" / "type what I say" → enter a
     # mode that types each following utterance into the focused field.
     if _DICTATE_FIELD_RE.match(t):
@@ -5187,8 +5238,12 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                              "what's running on my", "whats running on my", "check my screen"]):
         return {"action": "describe_screen"}
 
-    # Terminal / Claude Code — explicit open requests
-    if any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"]):
+    # Terminal / Claude Code — explicit open requests. But "open Claude in chrome /
+    # in the browser" means the WEB app (claude.ai), so let that fall to the web
+    # route below.
+    if (any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"])
+            and not any(b in t for b in ("chrome", "browser", "safari", "firefox",
+                                         "the web", "claude.ai", "online"))):
         return {"action": "open_terminal"}
 
     # Show recent build
@@ -6820,6 +6875,10 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "start_field_dictation":
                             response_text = ""
                             asyncio.create_task(_execute_start_field_dictation(ws))
+                        elif action["action"] == "browser_tab":
+                            response_text = ""
+                            _track_uc(ws, _execute_browser_tab(
+                                action.get("combo", "cmd+t"), action.get("ack", "Done, sir."), ws))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
