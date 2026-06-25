@@ -5343,19 +5343,26 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         _combo, _ack = _tab_combo(_tabm.group("cmd"))
         return {"action": "browser_tab", "combo": _combo, "ack": _ack}
 
-    # Stopwatch (start / stop / check) — before the timer so "stopwatch" wins.
+    # Stopwatch → drive Apple's Clock app (native, clean AX). Start/stop is one
+    # button click. (The built-in stopwatch is still the handler if the Clock app
+    # can't be driven.)
     _swm = _STOPWATCH_RE.match(t)
     if _swm:
         _mode = (_swm.group("mode") or "stop").lower()
-        return {"action": "stopwatch", "mode": "start" if _mode in ("start", "begin") else "stop"}
+        if _mode in ("start", "begin"):
+            return {"action": "ui_task", "goal": "Open the Clock app, switch to the "
+                    "Stopwatch tab, and click the Start button"}
+        return {"action": "ui_task", "goal": "In the Clock app on the Stopwatch tab, "
+                "click the Stop button"}
 
-    # Built-in timer: "set a timer for three minutes", "start a 5 minute timer".
+    # Timer → drive Apple's Clock app: open it, set the duration, click Start.
     _tm2 = _TIMER_RE.match(t)
     if _tm2 and "stopwatch" not in t:
         _dur = (_tm2.group("b") or _tm2.group("c") or _tm2.group("a") or "").strip()
         if _dur:
             _secs, _lbl = _parse_duration(_dur)
-            return {"action": "set_timer", "seconds": _secs, "label": _lbl}
+            return {"action": "ui_task", "goal": f"Open the Clock app, switch to the "
+                    f"Timers tab, set a new timer for {_lbl}, and click Start"}
 
     # Live field dictation: "dictate into here" / "type what I say" → enter a
     # mode that types each following utterance into the focused field.

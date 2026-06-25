@@ -275,14 +275,13 @@ def test_browser_tabs_and_claude_in_chrome():
 
 
 def test_timers_and_stopwatch():
+    # Routed to the native Clock app via a UI task.
     a = server.detect_action_fast("set a timer for three minutes")
-    assert a and a["action"] == "set_timer" and a["seconds"] == 180, a
-    a = server.detect_action_fast("set a timer for 30 seconds")
-    assert a and a["seconds"] == 30, a
+    assert a and a["action"] == "ui_task" and "Clock" in a["goal"] and "Timers" in a["goal"], a
     a = server.detect_action_fast("start a stopwatch")
-    assert a and a["action"] == "stopwatch" and a["mode"] == "start", a
+    assert a and a["action"] == "ui_task" and "Stopwatch" in a["goal"] and "Start" in a["goal"], a
     a = server.detect_action_fast("stop the stopwatch")
-    assert a and a["action"] == "stopwatch" and a["mode"] == "stop", a
+    assert a and a["action"] == "ui_task" and "Stop" in a["goal"], a
 
 
 def test_file_search_strips_location():
