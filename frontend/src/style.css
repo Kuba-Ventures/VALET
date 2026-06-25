@@ -946,7 +946,7 @@ body.wake-sleeping #orb-canvas {
 .console-mono .mono-legend { display: flex; gap: 11px; font-size: 9.5px; color: #777; flex-shrink: 0; white-space: nowrap; }
 .console-mono .mono-legend-item { display: flex; align-items: center; gap: 5px; }
 .console-mono .mono-dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid #fff; box-sizing: border-box; }
-.console-mono .mono-dot.on { background: #fff; border-color: #fff; }
+.console-mono .mono-dot.on { background: #22c55e; border-color: #22c55e; box-shadow: 0 0 5px rgba(34, 197, 94, 0.45); }
 .console-mono .mono-divider { height: 1px; background: rgba(255,255,255,0.1); margin: 16px 0; }
 
 /* Segmented voice toggle */
@@ -983,7 +983,7 @@ body.wake-sleeping #orb-canvas {
 
 /* Permission + status dots → monochrome (filled = ok, outlined = needs action) */
 .console-mono .status-dot { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid #fff; box-sizing: border-box; background: transparent; flex-shrink: 0; }
-.console-mono .status-dot.status-green { background: #fff; border-color: #fff; }
+.console-mono .status-dot.status-green { background: #22c55e; border-color: #22c55e; box-shadow: 0 0 5px rgba(34, 197, 94, 0.45); }
 .console-mono .status-dot.status-yellow { background: #888; border-color: #888; }
 .console-mono .perm-list .account-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; color: #eaeaea; font-size: 13px; }
 
