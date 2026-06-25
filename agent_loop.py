@@ -398,7 +398,10 @@ async def _execute(actor, ax_executor, decision: dict, app: Optional[str],
         if _is_browser(obs_app) and fr and len(fr) == 4:
             cx, cy = fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0
             return await actor.click_element(point=(cx, cy), app=obs_app)
-        return await actor.click_element(ref=decision.get("ref"), app=app)
+        # Use the OBSERVED app (obs_app), like the branches above — not the
+        # run_loop `app` param, which can differ from what's actually focused and
+        # would send the click to the wrong app.
+        return await actor.click_element(ref=decision.get("ref"), app=obs_app)
     # done / fail never reach here
     from action_executor import ActionResult, Capability
     return ActionResult.failure(Capability.CLICK_ELEMENT, error="noop", message="nothing to do")
