@@ -2338,6 +2338,43 @@ async def _execute_stopwatch(mode: str, ws):
     await _speak(ws, f"{' and '.join(parts)}, sir.")
 
 
+async def _execute_google_signout(ws, gmail: bool = False):
+    """Sign out of Google by navigating the FRONTMOST browser's active tab to the
+    logout endpoint IN PLACE — no new window. /Logout ends the Google session (all
+    accounts/tabs — inherent to a real sign-out). For GMAIL, carry a continue= so
+    re-login returns to Gmail, not the generic account chooser."""
+    url = ("https://accounts.google.com/Logout?continue="
+           "https://mail.google.com/mail/u/0/&service=mail") if gmail \
+        else "https://accounts.google.com/Logout"
+    async with process_bus.task_context("Signing out of Google") as task_id:
+        await emit_step(task_id, "Signing out…", status="active")
+        try:
+            running = {a.lower() for a in await get_running_apps()}
+        except Exception:
+            running = set()
+        navigated = False
+        candidates = [
+            ("google chrome", f'tell application "Google Chrome"\nif (count of windows) > 0 then set URL of active tab of front window to "{url}"\nend tell'),
+            ("brave browser", f'tell application "Brave Browser"\nif (count of windows) > 0 then set URL of active tab of front window to "{url}"\nend tell'),
+            ("microsoft edge", f'tell application "Microsoft Edge"\nif (count of windows) > 0 then set URL of active tab of front window to "{url}"\nend tell'),
+            ("safari", f'tell application "Safari"\nif (count of documents) > 0 then set URL of front document to "{url}"\nend tell'),
+        ]
+        for app, script in candidates:
+            if app not in running:
+                continue
+            try:
+                res = await run_applescript(script)
+                if res.get("success", True):
+                    navigated = True
+                    break
+            except Exception as e:
+                log.warning("signout navigate via %s failed: %s", app, e)
+        if not navigated:
+            await open_browser(url, browser="chrome")  # last resort: new tab
+        await emit_step(task_id, "Signed out", status="done")
+    await _speak(ws, "Signed you out, sir." + (" Sign back in to land in Gmail." if gmail else ""))
+
+
 async def _execute_browser_tab(combo: str, ack: str, ws):
     """Send a browser tab keyboard shortcut (⌘T new / ⌘W close / ⇧⌘T reopen /
     ⌥⌘→← switch) to the frontmost browser. Keyboard shortcuts are universal and
@@ -5369,13 +5406,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if _wf:
         _goal = _wf.group("goal").strip(" .?!")
         _gl = _goal.lower()
-        # Google/Gmail SIGN-OUT → the deterministic logout endpoint. Google's
-        # account menu is too hostile to click reliably (transient overlay,
-        # look-alike rows); navigating accounts.google.com/Logout signs out every
-        # account instantly. Sign-IN and non-Google logouts keep the UI loop.
+        # Google/Gmail SIGN-OUT → navigate the CURRENT tab to the logout endpoint
+        # (in place, no new window). The account menu is too hostile to click; the
+        # URL ends the Google session instantly. For GMAIL specifically, carry a
+        # continue=Gmail so signing back in returns to Gmail (not the generic
+        # Google account chooser). Sign-IN / non-Google logouts keep the UI loop.
         if re.search(r'\bout\b', _gl) and re.search(r'\b(gmail|google)\b', _gl):
-            return {"action": "open_url", "target": "https://accounts.google.com/Logout",
-                    "browser": "chrome", "label": "Google sign-out"}
+            return {"action": "google_signout", "gmail": "gmail" in _gl}
         return {"action": "ui_task", "goal": _goal}
 
     # "go back" → click the on-screen back button (e.g. Gmail's back-to-inbox
@@ -7160,6 +7197,9 @@ async def voice_handler(ws: WebSocket):
                             response_text = f"Opening {label}, sir."
                             if url:
                                 asyncio.create_task(_execute_open_url(url, browser, label))
+                        elif action["action"] == "google_signout":
+                            response_text = "Signing you out, sir."
+                            _track_uc(ws, _execute_google_signout(ws, bool(action.get("gmail"))))
                         elif action["action"] == "open_note":
                             note_q = action.get("target", "").strip()
                             response_text = f"Opening your {note_q} note, sir." if note_q else "Which note, sir?"
