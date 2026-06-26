@@ -69,3 +69,9 @@ src-tauri/target/
 src-tauri/binaries/
 src-tauri/gen/
 *.dmg
+
+# Local agent tooling — installed/generated on each machine (skills installer,
+# Vercel/agent boilerplate). Not part of the app; keep out of version control.
+.agents/
+AGENTS.md
+skills-lock.json
