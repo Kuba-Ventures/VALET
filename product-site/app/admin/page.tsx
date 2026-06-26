@@ -7,6 +7,7 @@ import {
 } from "@/lib/admin";
 import { isAdminAuthed } from "@/lib/admin-auth";
 import { login, logout } from "./actions";
+import { TargetIcon } from "./TargetIcon";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -117,6 +118,8 @@ export default async function AdminDashboardPage({
   const mrr = active.reduce((sum, a) => sum + priceForPlan(a.planLabel), 0);
   const spend = accounts.reduce((sum, a) => sum + a.usage.estimated_cost_usd, 0);
   const maxAction = insights.topActions[0]?.count ?? 0;
+  const maxApp = insights.topApps[0]?.count ?? 0;
+  const maxSite = insights.topSites[0]?.count ?? 0;
 
   const renewOrTrial = (a: AdminAccount) =>
     a.status === "trialing" ? a.trialEndsAt : a.currentPeriodEnd;
@@ -157,7 +160,8 @@ export default async function AdminDashboardPage({
         <p className="mt-1 text-sm text-ink-dim">
           Aggregated across {insights.syncedAccounts} synced{" "}
           {insights.syncedAccounts === 1 ? "install" : "installs"}. No prompts or
-          content — just action counts and which connections are working.
+          content — just action counts, the apps and site domains opened, and
+          which connections are working.
         </p>
 
         <div className="mt-6 grid gap-6 lg:grid-cols-2">
@@ -221,6 +225,46 @@ export default async function AdminDashboardPage({
               })}
             </ul>
           </div>
+        </div>
+
+        <div className="mt-6 grid gap-6 lg:grid-cols-2">
+          {(
+            [
+              ["Top apps", "app", insights.topApps, maxApp],
+              ["Top websites", "site", insights.topSites, maxSite],
+            ] as const
+          ).map(([title, kind, items, max]) => (
+            <div key={title} className="panel p-6">
+              <div className="label-mono mb-4">{title}</div>
+              {items.length === 0 ? (
+                <p className="text-sm text-ink-dim">No usage synced yet.</p>
+              ) : (
+                <ul className="space-y-3">
+                  {items.map((it) => (
+                    <li key={it.label}>
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <TargetIcon kind={kind} label={it.label} />
+                          <span className="truncate text-ink">{it.label}</span>
+                        </span>
+                        <span className="shrink-0 text-ink-dim">
+                          {it.count.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-panel-border/40">
+                        <div
+                          className="h-full rounded-full bg-accent"
+                          style={{
+                            width: `${max ? (it.count / max) * 100 : 0}%`,
+                          }}
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
         </div>
       </section>
 

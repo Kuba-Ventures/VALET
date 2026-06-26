@@ -3895,6 +3895,57 @@ def _track_usage(action_type: str):
         pass
 
 
+# Folder names that flow through open_app but aren't apps — kept out of the
+# "Top apps" breakdown.
+_NON_APP_TARGETS = {"desktop", "downloads", "documents", "home", "applications"}
+
+
+def _clean_app_label(t: str) -> str:
+    """Privacy-safe app label for the usage breakdown, or '' to skip.
+
+    Skips paths/folders ('/' present or a known folder word) — only real app
+    names are counted. No content, just the app name."""
+    t = (t or "").strip()
+    if not t or "/" in t or t.lower() in _NON_APP_TARGETS:
+        return ""
+    return t[:40]
+
+
+def _domain_of(u: str) -> str:
+    """Bare site domain for the usage breakdown, or '' to skip.
+
+    Returns '' for anything that isn't a real URL or bare domain (so search
+    queries — which become google.com searches — are NOT recorded as sites).
+    Strips 'www.', lowercases. Domain only: no path, query, or content."""
+    u = (u or "").strip()
+    if not u:
+        return ""
+    if not u.startswith(("http://", "https://")):
+        # Only treat as a site if the first token looks like a hostname.
+        first = u.split()[0] if u.split() else ""
+        if "." not in first or " " in u:
+            return ""
+        u = "https://" + u
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(u).hostname or "").lower()
+    except Exception:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host[:60]
+
+
+def _track_target(kind: str, label: str):
+    """Record an opened app/site target (privacy-safe label). No-op safe."""
+    if not success_tracker or not label:
+        return
+    try:
+        success_tracker.log_usage(f"target:{kind}", label)
+    except Exception:
+        pass
+
+
 def _track_task(task_type: str, success: bool, duration: float = 0.0):
     """Record a completed task's outcome + duration. No-op safe."""
     if not success_tracker:
@@ -3954,6 +4005,16 @@ def _gather_sync_snapshot() -> dict:
             stats["top_actions"] = [
                 {"action": t["action_type"], "count": t["count"]}
                 for t in success_tracker.get_top_actions(limit=8)
+            ]
+            # Per-target breakdowns: which apps / site domains people open.
+            # Privacy-safe labels only (no URLs, paths, queries, or content).
+            stats["top_apps"] = [
+                {"label": t["label"], "count": t["count"]}
+                for t in success_tracker.get_top_targets("app", limit=10)
+            ]
+            stats["top_sites"] = [
+                {"label": t["label"], "count": t["count"]}
+                for t in success_tracker.get_top_targets("site", limit=10)
             ]
         except Exception as e:
             log.warning(f"sync stats gather failed: {e}")
@@ -7391,6 +7452,14 @@ async def voice_handler(ws: WebSocket):
 
                     if action:
                         _track_usage(action.get("action") or "")
+                        # Per-target breakdown (privacy-safe): which apps and
+                        # which site domains people open. App name / bare domain
+                        # only — no paths, URLs, queries, or content.
+                        _fa = action.get("action")
+                        if _fa == "open_app":
+                            _track_target("app", _clean_app_label(action.get("target") or ""))
+                        elif _fa == "open_url":
+                            _track_target("site", _domain_of(action.get("target") or ""))
                         if action["action"] == "open_app":
                             # Voice console — launch an installed app with no LLM
                             # round-trip. Timed via Stage 0 so launch latency is
