@@ -12,6 +12,42 @@ import { TargetIcon } from "./TargetIcon";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Human-readable names for the internal action codes shown in "Top actions".
+// The raw code is still shown beside the label for reference.
+const ACTION_LABELS: Record<string, string> = {
+  open_app: "Open app",
+  open_url: "Open website",
+  open_project: "Open project",
+  open_terminal: "Open terminal",
+  browse: "Browse the web",
+  research: "Research a question",
+  build: "Build (Claude Code)",
+  prompt_project: "Work on a project",
+  dispatch_to_agent: "Dispatch to sub-agent",
+  start_design: "Design session",
+  walkthrough: "Guided walkthrough",
+  ui_act: "On-screen click / type",
+  ui_open: "Open an on-screen item",
+  ui_task: "Multi-step on-screen task",
+  check_weather: "Weather",
+  world_time: "World clock",
+  check_calendar: "Check calendar",
+  check_mail: "Check mail",
+  check_tasks: "Check tasks",
+  check_dispatch: "Check build status",
+  compose_slack: "Compose Slack message",
+  compose_text: "Compose text message",
+  summarize_screen: "Summarize the screen",
+  describe_screen: "Describe the screen",
+};
+
+function actionLabel(code: string): string {
+  return (
+    ACTION_LABELS[code] ??
+    code.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
 function formatDate(iso: string | null): string {
   if (!iso) return "—";
   try {
@@ -164,69 +200,43 @@ export default async function AdminDashboardPage({
           which connections are working.
         </p>
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-2">
-          <div className="panel p-6">
-            <div className="label-mono mb-4">Top actions</div>
-            {insights.topActions.length === 0 ? (
-              <p className="text-sm text-ink-dim">No usage synced yet.</p>
-            ) : (
-              <ul className="space-y-3">
-                {insights.topActions.slice(0, 10).map((a) => (
-                  <li key={a.action}>
-                    <div className="flex items-baseline justify-between text-sm">
-                      <span className="text-ink">{a.action}</span>
-                      <span className="text-ink-dim">
-                        {a.count.toLocaleString()}
+        {/* What kinds of requests — internal action codes, friendly-labeled */}
+        <div className="panel mt-6 p-6">
+          <div className="label-mono mb-4">Top actions</div>
+          {insights.topActions.length === 0 ? (
+            <p className="text-sm text-ink-dim">No usage synced yet.</p>
+          ) : (
+            <ul className="space-y-3">
+              {insights.topActions.slice(0, 12).map((a) => (
+                <li key={a.action}>
+                  <div className="flex items-baseline justify-between gap-3 text-sm">
+                    <span className="flex min-w-0 items-baseline gap-2">
+                      <span className="truncate text-ink">
+                        {actionLabel(a.action)}
                       </span>
-                    </div>
-                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-panel-border/40">
-                      <div
-                        className="h-full rounded-full bg-accent"
-                        style={{
-                          width: `${maxAction ? (a.count / maxAction) * 100 : 0}%`,
-                        }}
-                      />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="panel p-6">
-            <div className="label-mono mb-4">Connections in use</div>
-            <ul className="space-y-4">
-              {(
-                [
-                  ["Calendar", insights.connections.calendar],
-                  ["Mail", insights.connections.mail],
-                  ["Notes", insights.connections.notes],
-                ] as const
-              ).map(([label, n]) => {
-                const pct = insights.syncedAccounts
-                  ? Math.round((n / insights.syncedAccounts) * 100)
-                  : 0;
-                return (
-                  <li key={label}>
-                    <div className="flex items-baseline justify-between text-sm">
-                      <span className="text-ink">{label}</span>
-                      <span className="text-ink-dim">
-                        {n} ({pct}%)
+                      <span className="shrink-0 font-mono text-[10px] text-ink-dim/50">
+                        {a.action}
                       </span>
-                    </div>
-                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-panel-border/40">
-                      <div
-                        className="h-full rounded-full bg-accent"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </li>
-                );
-              })}
+                    </span>
+                    <span className="shrink-0 text-ink-dim">
+                      {a.count.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-panel-border/40">
+                    <div
+                      className="h-full rounded-full bg-accent"
+                      style={{
+                        width: `${maxAction ? (a.count / maxAction) * 100 : 0}%`,
+                      }}
+                    />
+                  </div>
+                </li>
+              ))}
             </ul>
-          </div>
+          )}
         </div>
 
+        {/* Concrete breakdowns — which apps / sites (above connections) */}
         <div className="mt-6 grid gap-6 lg:grid-cols-2">
           {(
             [
@@ -265,6 +275,40 @@ export default async function AdminDashboardPage({
               )}
             </div>
           ))}
+        </div>
+
+        {/* Connections last */}
+        <div className="panel mt-6 p-6">
+          <div className="label-mono mb-4">Connections in use</div>
+          <ul className="space-y-4">
+            {(
+              [
+                ["Calendar", insights.connections.calendar],
+                ["Mail", insights.connections.mail],
+                ["Notes", insights.connections.notes],
+              ] as const
+            ).map(([label, n]) => {
+              const pct = insights.syncedAccounts
+                ? Math.round((n / insights.syncedAccounts) * 100)
+                : 0;
+              return (
+                <li key={label}>
+                  <div className="flex items-baseline justify-between text-sm">
+                    <span className="text-ink">{label}</span>
+                    <span className="text-ink-dim">
+                      {n} ({pct}%)
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-panel-border/40">
+                    <div
+                      className="h-full rounded-full bg-accent"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       </section>
 
