@@ -148,16 +148,42 @@ class SuccessTracker:
             return {"total": 0, "passed": 0, "failed": 0, "rate": 0.0}
 
     def get_top_actions(self, limit: int = 10) -> list[dict]:
-        """Get the most common action types."""
+        """Get the most common action types.
+
+        Excludes the per-target breakdown rows (action_type 'target:app' /
+        'target:site', written by log_usage with a non-empty keyword) so this
+        stays a clean per-action-type list — those are surfaced separately via
+        get_top_targets().
+        """
         try:
             rows = self.db.execute(
                 "SELECT action_type, keyword, count, last_used FROM usage_patterns "
+                "WHERE action_type NOT LIKE 'target:%' "
                 "ORDER BY count DESC LIMIT ?",
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
         except Exception as e:
             log.warning(f"Failed to get top actions: {e}")
+            return []
+
+    def get_top_targets(self, kind: str, limit: int = 10) -> list[dict]:
+        """Most-opened targets of a given kind ('app' or 'site'), highest first.
+
+        Reuses the usage_patterns table: target rows are stored with
+        action_type='target:<kind>' and the privacy-safe label (app name or
+        site domain) in the keyword column. Returns [{label, count}].
+        """
+        try:
+            rows = self.db.execute(
+                "SELECT keyword AS label, count FROM usage_patterns "
+                "WHERE action_type = ? AND keyword != '' "
+                "ORDER BY count DESC LIMIT ?",
+                (f"target:{kind}", limit),
+            ).fetchall()
+            return [{"label": r["label"], "count": r["count"]} for r in rows]
+        except Exception as e:
+            log.warning(f"Failed to get top targets: {e}")
             return []
 
     def get_avg_duration(self, task_type: str = None) -> float:
