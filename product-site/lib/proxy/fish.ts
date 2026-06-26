@@ -94,6 +94,9 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
         costUsd: 0,
         startTime,
         status: "error",
+        // The text to synthesize, captured only when PROXY_CAPTURE_PAYLOADS=true
+        // (gated in traceProxyCall). TTS has no text output — it returns audio.
+        input: text,
       }),
     );
     return NextResponse.json(
@@ -117,6 +120,9 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
         costUsd,
         startTime,
         status: "ok",
+        // The text to synthesize, captured only when PROXY_CAPTURE_PAYLOADS=true
+        // (gated in traceProxyCall). TTS has no text output — it returns audio.
+        input: text,
       }),
     ]),
   );
