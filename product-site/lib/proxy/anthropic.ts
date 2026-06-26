@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { authorizeLicense } from "@/lib/proxy/auth";
 import { recordUsage, enforceAllowance } from "@/lib/proxy/usage";
 import { traceProxyCall } from "@/lib/proxy/langfuse";
@@ -199,19 +199,19 @@ export async function handleAnthropicProxy(
       const replyText = Array.isArray(json.content)
         ? json.content.filter((b: { type?: string }) => b.type === "text").map((b: { text?: string }) => b.text ?? "").join("")
         : "";
-      // `after()` keeps the function alive until metering + tracing finish,
-      // without delaying this response.
-      after(() =>
-        meter(
-          {
-            input_tokens: json.usage.input_tokens ?? 0,
-            output_tokens: json.usage.output_tokens ?? 0,
-            cache_creation_input_tokens: json.usage.cache_creation_input_tokens ?? 0,
-            cache_read_input_tokens: json.usage.cache_read_input_tokens ?? 0,
-          },
-          "ok",
-          extractActions(replyText),
-        ),
+      // Await metering + tracing BEFORE returning. `after()`/`waitUntil`
+      // background work is dropped on this project (no Fluid Compute), so the
+      // only reliable delivery is to finish the Langfuse POST while the
+      // function is still alive. Adds ~the ingestion round-trip to latency.
+      await meter(
+        {
+          input_tokens: json.usage.input_tokens ?? 0,
+          output_tokens: json.usage.output_tokens ?? 0,
+          cache_creation_input_tokens: json.usage.cache_creation_input_tokens ?? 0,
+          cache_read_input_tokens: json.usage.cache_read_input_tokens ?? 0,
+        },
+        "ok",
+        extractActions(replyText),
       );
     }
     return NextResponse.json(json ?? { error: "Empty upstream response." }, {
