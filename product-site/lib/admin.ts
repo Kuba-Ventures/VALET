@@ -125,6 +125,10 @@ export interface UsageInsights {
   totalTasks: number;
   /** Most-used actions across all users, highest first. */
   topActions: { action: string; count: number }[];
+  /** Most-opened apps across all users, highest first. */
+  topApps: { label: string; count: number }[];
+  /** Most-opened site domains across all users, highest first. */
+  topSites: { label: string; count: number }[];
   /** How many synced accounts have each integration working. */
   connections: { calendar: number; mail: number; notes: number };
 }
@@ -132,6 +136,8 @@ export interface UsageInsights {
 interface SyncStats {
   total_tasks?: number;
   top_actions?: { action: string; count: number }[];
+  top_apps?: { label: string; count: number }[];
+  top_sites?: { label: string; count: number }[];
 }
 interface SyncConnections {
   calendar?: boolean;
@@ -156,14 +162,29 @@ export async function getUsageInsights(): Promise<UsageInsights> {
       syncedAccounts: 0,
       totalTasks: 0,
       topActions: [],
+      topApps: [],
+      topSites: [],
       connections: { calendar: 0, mail: 0, notes: 0 },
     };
   }
 
   const rows = data ?? [];
   const actionTotals = new Map<string, number>();
+  const appTotals = new Map<string, number>();
+  const siteTotals = new Map<string, number>();
   const connections = { calendar: 0, mail: 0, notes: 0 };
   let totalTasks = 0;
+
+  // Sum a [{label,count}] list from one snapshot into a running total map.
+  const addLabeled = (
+    into: Map<string, number>,
+    items?: { label: string; count: number }[],
+  ) => {
+    for (const it of items ?? []) {
+      if (!it?.label) continue;
+      into.set(it.label, (into.get(it.label) ?? 0) + (Number(it.count) || 0));
+    }
+  };
 
   for (const row of rows) {
     const stats = (row.stats as SyncStats | null) ?? null;
@@ -177,6 +198,8 @@ export async function getUsageInsights(): Promise<UsageInsights> {
           (actionTotals.get(a.action) ?? 0) + (Number(a.count) || 0),
         );
       }
+      addLabeled(appTotals, stats.top_apps);
+      addLabeled(siteTotals, stats.top_sites);
     }
     if (conns) {
       if (conns.calendar) connections.calendar += 1;
@@ -188,11 +211,18 @@ export async function getUsageInsights(): Promise<UsageInsights> {
   const topActions = [...actionTotals.entries()]
     .map(([action, count]) => ({ action, count }))
     .sort((a, b) => b.count - a.count);
+  const rankLabeled = (m: Map<string, number>) =>
+    [...m.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 12);
 
   return {
     syncedAccounts: rows.length,
     totalTasks,
     topActions,
+    topApps: rankLabeled(appTotals),
+    topSites: rankLabeled(siteTotals),
     connections,
   };
 }

@@ -20,7 +20,9 @@ export const maxDuration = 10;
  *
  * Body (all optional):
  *   profile:     { name, honorific, date_of_birth, location, work_email, personal_email }
- *   stats:       { total_tasks, success_rate, avg_duration_seconds, top_actions: [{action, count}] }
+ *   stats:       { total_tasks, success_rate, avg_duration_seconds,
+ *                  top_actions: [{action, count}],
+ *                  top_apps: [{label, count}], top_sites: [{label, count}] }
  *   connections: { calendar, mail, notes }
  *   app_version: string
  */
@@ -76,6 +78,20 @@ function sanitizeStats(s: unknown): Record<string, unknown> | null {
       })
       .filter(Boolean)
       .slice(0, 10);
+  }
+  // Per-target breakdowns: which apps / site domains people open. Same shape as
+  // top_actions but keyed by `label` (app name or bare domain — no content).
+  for (const key of ["top_apps", "top_sites"] as const) {
+    if (Array.isArray(src[key])) {
+      out[key] = (src[key] as unknown[])
+        .map((a) => {
+          const label = str((a as Record<string, unknown>)?.label, 80);
+          const count = num((a as Record<string, unknown>)?.count);
+          return label ? { label, count: count ? Math.round(count) : 0 } : null;
+        })
+        .filter(Boolean)
+        .slice(0, 10);
+    }
   }
   return Object.keys(out).length ? out : null;
 }
