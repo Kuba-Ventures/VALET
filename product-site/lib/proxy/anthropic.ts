@@ -60,7 +60,7 @@ function extractActions(text: string): string[] {
  * tally and the actions at stream end.
  */
 function meteringTransform(
-  onDone: (usage: TokenUsage, actions: string[]) => unknown,
+  onDone: (usage: TokenUsage, actions: string[], text: string) => unknown,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const usage = emptyUsage();
@@ -105,7 +105,7 @@ function meteringTransform(
       // Await metering/tracing here: the stream (and thus the serverless
       // function) stays alive until the trace is delivered. Without this the
       // Langfuse POST is dropped when the function suspends.
-      await onDone(usage, extractActions(text));
+      await onDone(usage, extractActions(text), text);
     },
   });
 }
@@ -140,6 +140,11 @@ export async function handleAnthropicProxy(
   const isStream = body.stream === true;
   const startTime = Date.now();
 
+  // The request prompt, captured into Langfuse ONLY when
+  // PROXY_CAPTURE_PAYLOADS=true (gated inside traceProxyCall). We always pass
+  // it and let the tracer decide, so the scrub stays in one place.
+  const tracedInput = { system: body.system, messages: body.messages };
+
   // Returns a promise that settles once usage is recorded AND the Langfuse
   // trace is delivered. Callers MUST keep the function alive until it settles
   // (via `after()` on the non-streaming path, or by awaiting it in the stream
@@ -149,6 +154,7 @@ export async function handleAnthropicProxy(
     usage: TokenUsage,
     status: "ok" | "error",
     actions: string[] = [],
+    output?: unknown,
   ): Promise<unknown> => {
     const costUsd = estimateModelCost(model, usage);
     return Promise.allSettled([
@@ -171,6 +177,8 @@ export async function handleAnthropicProxy(
         startTime,
         status,
         actionsRequested: actions,
+        input: tracedInput,
+        output,
       }),
     ]);
   };
@@ -212,6 +220,7 @@ export async function handleAnthropicProxy(
         },
         "ok",
         extractActions(replyText),
+        replyText,
       );
     }
     return NextResponse.json(json ?? { error: "Empty upstream response." }, {
@@ -230,7 +239,7 @@ export async function handleAnthropicProxy(
 
   // Streaming: tee through the metering transform; meter fires on stream end.
   const stream = upstream.body.pipeThrough(
-    meteringTransform((usage, actions) => meter(usage, "ok", actions)),
+    meteringTransform((usage, actions, text) => meter(usage, "ok", actions, text)),
   );
   return new Response(stream, {
     status: upstream.status,
