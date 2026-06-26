@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { authorizeLicense } from "@/lib/proxy/auth";
 import { recordUsage, enforceAllowance } from "@/lib/proxy/usage";
 import { traceProxyCall } from "@/lib/proxy/langfuse";
@@ -85,15 +85,17 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
 
   if (!upstream.ok || !upstream.body) {
     const detail = await upstream.text().catch(() => "");
-    traceProxyCall({
-      name: "tts",
-      action: "tts",
-      licenseKey: auth.licenseKey,
-      model: "fish-audio",
-      costUsd: 0,
-      startTime,
-      status: "error",
-    });
+    after(() =>
+      traceProxyCall({
+        name: "tts",
+        action: "tts",
+        licenseKey: auth.licenseKey,
+        model: "fish-audio",
+        costUsd: 0,
+        startTime,
+        status: "error",
+      }),
+    );
     return NextResponse.json(
       { error: "TTS upstream error.", detail: detail.slice(0, 500) },
       { status: upstream.status },
@@ -101,17 +103,23 @@ export async function handleTtsProxy(req: NextRequest): Promise<Response> {
   }
 
   // Meter on character count once, up front (audio length is proportional to it).
+  // `after()` keeps the function alive until usage + trace are delivered (an
+  // un-awaited side effect is dropped when the function suspends).
   const costUsd = estimateTtsCost(text.length);
-  void recordUsage({ licenseKey: auth.licenseKey, costUsd });
-  traceProxyCall({
-    name: "tts",
-    action: "tts",
-    licenseKey: auth.licenseKey,
-    model: "fish-audio",
-    costUsd,
-    startTime,
-    status: "ok",
-  });
+  after(() =>
+    Promise.allSettled([
+      recordUsage({ licenseKey: auth.licenseKey, costUsd }),
+      traceProxyCall({
+        name: "tts",
+        action: "tts",
+        licenseKey: auth.licenseKey,
+        model: "fish-audio",
+        costUsd,
+        startTime,
+        status: "ok",
+      }),
+    ]),
+  );
 
   return new Response(upstream.body, {
     status: 200,

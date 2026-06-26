@@ -29,14 +29,14 @@ export interface TraceArgs {
   actionsRequested?: string[];
 }
 
-export function traceProxyCall(args: TraceArgs): void {
+export function traceProxyCall(args: TraceArgs): Promise<void> {
   const host =
     process.env.LANGFUSE_HOST ||
     process.env.LANGFUSE_BASE_URL ||
     "https://cloud.langfuse.com";
   const pk = process.env.LANGFUSE_PUBLIC_KEY;
   const sk = process.env.LANGFUSE_SECRET_KEY;
-  if (!pk || !sk) return; // Langfuse not configured — no-op.
+  if (!pk || !sk) return Promise.resolve(); // Langfuse not configured — no-op.
 
   const capture = process.env.PROXY_CAPTURE_PAYLOADS === "true";
   const startIso = new Date(args.startTime).toISOString();
@@ -98,10 +98,16 @@ export function traceProxyCall(args: TraceArgs): void {
   };
 
   const auth = "Basic " + Buffer.from(`${pk}:${sk}`).toString("base64");
-  // Intentionally not awaited; swallow all errors.
-  fetch(`${host}/api/public/ingestion`, {
+  // Returns the POST promise so the caller can keep the serverless function
+  // alive until ingestion completes (via `after()` / awaiting in a stream
+  // flush). On Vercel an un-awaited fetch is dropped when the function
+  // suspends after the response — that silently lost every trace. Never
+  // rejects; failures are swallowed.
+  return fetch(`${host}/api/public/ingestion`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: auth },
     body: JSON.stringify(body),
-  }).catch(() => {});
+  })
+    .then(() => undefined)
+    .catch(() => undefined);
 }

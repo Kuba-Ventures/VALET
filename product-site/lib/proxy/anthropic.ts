@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { authorizeLicense } from "@/lib/proxy/auth";
 import { recordUsage, enforceAllowance } from "@/lib/proxy/usage";
 import { traceProxyCall } from "@/lib/proxy/langfuse";
@@ -60,7 +60,7 @@ function extractActions(text: string): string[] {
  * tally and the actions at stream end.
  */
 function meteringTransform(
-  onDone: (usage: TokenUsage, actions: string[]) => void,
+  onDone: (usage: TokenUsage, actions: string[]) => unknown,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const usage = emptyUsage();
@@ -101,8 +101,11 @@ function meteringTransform(
         }
       }
     },
-    flush() {
-      onDone(usage, extractActions(text));
+    async flush() {
+      // Await metering/tracing here: the stream (and thus the serverless
+      // function) stays alive until the trace is delivered. Without this the
+      // Langfuse POST is dropped when the function suspends.
+      await onDone(usage, extractActions(text));
     },
   });
 }
@@ -137,28 +140,39 @@ export async function handleAnthropicProxy(
   const isStream = body.stream === true;
   const startTime = Date.now();
 
-  const meter = (usage: TokenUsage, status: "ok" | "error", actions: string[] = []) => {
+  // Returns a promise that settles once usage is recorded AND the Langfuse
+  // trace is delivered. Callers MUST keep the function alive until it settles
+  // (via `after()` on the non-streaming path, or by awaiting it in the stream
+  // flush) — on Vercel an un-awaited side effect is dropped when the function
+  // suspends after the response, which silently lost all usage + traces.
+  const meter = (
+    usage: TokenUsage,
+    status: "ok" | "error",
+    actions: string[] = [],
+  ): Promise<unknown> => {
     const costUsd = estimateModelCost(model, usage);
-    void recordUsage({
-      licenseKey: auth.licenseKey,
-      inputTokens:
-        usage.input_tokens +
-        usage.cache_creation_input_tokens +
-        usage.cache_read_input_tokens,
-      outputTokens: usage.output_tokens,
-      costUsd,
-    });
-    traceProxyCall({
-      name: actionType,
-      action: actionType,
-      licenseKey: auth.licenseKey,
-      model,
-      usage,
-      costUsd,
-      startTime,
-      status,
-      actionsRequested: actions,
-    });
+    return Promise.allSettled([
+      recordUsage({
+        licenseKey: auth.licenseKey,
+        inputTokens:
+          usage.input_tokens +
+          usage.cache_creation_input_tokens +
+          usage.cache_read_input_tokens,
+        outputTokens: usage.output_tokens,
+        costUsd,
+      }),
+      traceProxyCall({
+        name: actionType,
+        action: actionType,
+        licenseKey: auth.licenseKey,
+        model,
+        usage,
+        costUsd,
+        startTime,
+        status,
+        actionsRequested: actions,
+      }),
+    ]);
   };
 
   let upstream: Response;
@@ -185,15 +199,19 @@ export async function handleAnthropicProxy(
       const replyText = Array.isArray(json.content)
         ? json.content.filter((b: { type?: string }) => b.type === "text").map((b: { text?: string }) => b.text ?? "").join("")
         : "";
-      meter(
-        {
-          input_tokens: json.usage.input_tokens ?? 0,
-          output_tokens: json.usage.output_tokens ?? 0,
-          cache_creation_input_tokens: json.usage.cache_creation_input_tokens ?? 0,
-          cache_read_input_tokens: json.usage.cache_read_input_tokens ?? 0,
-        },
-        "ok",
-        extractActions(replyText),
+      // `after()` keeps the function alive until metering + tracing finish,
+      // without delaying this response.
+      after(() =>
+        meter(
+          {
+            input_tokens: json.usage.input_tokens ?? 0,
+            output_tokens: json.usage.output_tokens ?? 0,
+            cache_creation_input_tokens: json.usage.cache_creation_input_tokens ?? 0,
+            cache_read_input_tokens: json.usage.cache_read_input_tokens ?? 0,
+          },
+          "ok",
+          extractActions(replyText),
+        ),
       );
     }
     return NextResponse.json(json ?? { error: "Empty upstream response." }, {
