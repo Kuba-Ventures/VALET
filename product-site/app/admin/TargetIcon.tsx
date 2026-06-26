@@ -3,12 +3,32 @@
 import { useState } from "react";
 
 /**
- * Small icon for an opened app or site, with a colored letter-avatar fallback
- * when the remote icon 404s or fails to load. Icons are fetched only here in
- * the admin dashboard:
- *   - site → favicon service, keyed by the bare domain
- *   - app  → simple-icons CDN, keyed by the lowercased, space-stripped name
+ * Small icon for an opened app or site.
+ *
+ * - **site**: real favicon via Google's favicon service (sites have domains).
+ *   Falls back to a letter badge if the favicon fails to load.
+ * - **app**: a colored letter badge. There's no reliable way to fetch an
+ *   arbitrary macOS app's icon from a web dashboard, so we render a clean,
+ *   consistent initial badge instead of a broken/abstract logo.
  */
+
+function LetterBadge({ label }: { label: string }) {
+  // Deterministic hue from the label so the same app/site is always one color.
+  let h = 0;
+  for (let i = 0; i < label.length; i++) {
+    h = (h * 31 + label.charCodeAt(i)) % 360;
+  }
+  return (
+    <span
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold text-white"
+      style={{ backgroundColor: `hsl(${h} 50% 45%)` }}
+      aria-hidden
+    >
+      {(label[0] || "?").toUpperCase()}
+    </span>
+  );
+}
+
 export function TargetIcon({
   kind,
   label,
@@ -18,35 +38,16 @@ export function TargetIcon({
 }) {
   const [failed, setFailed] = useState(false);
 
-  const src =
-    kind === "site"
-      ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(label)}&sz=64`
-      : `https://cdn.simpleicons.org/${encodeURIComponent(
-          label.toLowerCase().replace(/\s+/g, ""),
-        )}`;
-
-  if (failed) {
-    // Deterministic hue from the label so the same app/site is always the
-    // same color.
-    let h = 0;
-    for (let i = 0; i < label.length; i++) {
-      h = (h * 31 + label.charCodeAt(i)) % 360;
-    }
-    return (
-      <span
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-semibold text-white"
-        style={{ backgroundColor: `hsl(${h} 45% 45%)` }}
-        aria-hidden
-      >
-        {(label[0] || "?").toUpperCase()}
-      </span>
-    );
+  // Apps: no reliable web logo source — always use the letter badge.
+  if (kind === "app" || failed) {
+    return <LetterBadge label={label} />;
   }
 
+  // Sites: favicon, with a letter-badge fallback on load error.
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={src}
+      src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(label)}&sz=64`}
       alt=""
       width={20}
       height={20}
