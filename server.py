@@ -2305,6 +2305,8 @@ async def _execute_browse(target: str):
             else:
                 from urllib.parse import quote
                 url = f"https://www.google.com/search?q={quote(target)}"
+            # Usage breakdown: which site domains people open (LLM browse path).
+            _track_target("site", _domain_of(url))
             await emit_browser_action(task_id, "open in browser", url=url)
             await open_browser(url)
         except Exception as e:
@@ -2348,6 +2350,9 @@ async def _execute_open_terminal():
 async def _execute_open_app(target: str):
     """Wrap an [ACTION:OPEN_APP] call in a panel task_context so the launch
     shows up as a row in the process panel."""
+    # Usage breakdown: which apps people open (fast-path AND LLM paths both
+    # land here). Privacy-safe app name only; folders/paths are skipped.
+    _track_target("app", _clean_app_label(target))
     async with process_bus.task_context(f"Opening {target[:60]}") as task_id:
         try:
             await open_app_or_path(target, task_id=task_id)
@@ -2540,6 +2545,8 @@ async def _execute_browser_tab(combo: str, ack: str, ws):
 async def _execute_open_url(url: str, browser: str = "chrome", label: str = ""):
     """Open a resolved web destination in the browser via `open -a` (no
     keystrokes / Accessibility). Backs the open_url fast-path for websites."""
+    # Usage breakdown: which site domains people open. Bare domain only.
+    _track_target("site", _domain_of(url))
     async with process_bus.task_context(f"Opening {label or url}"[:60]) as task_id:
         try:
             await emit_step(task_id, f"Opening {url}", status="active")
@@ -3933,6 +3940,9 @@ def _domain_of(u: str) -> str:
         return ""
     if host.startswith("www."):
         host = host[4:]
+    # Skip local/dev hosts — they're noise in a "which sites" breakdown.
+    if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or host.endswith(".local"):
+        return ""
     return host[:60]
 
 
@@ -7452,14 +7462,9 @@ async def voice_handler(ws: WebSocket):
 
                     if action:
                         _track_usage(action.get("action") or "")
-                        # Per-target breakdown (privacy-safe): which apps and
-                        # which site domains people open. App name / bare domain
-                        # only — no paths, URLs, queries, or content.
-                        _fa = action.get("action")
-                        if _fa == "open_app":
-                            _track_target("app", _clean_app_label(action.get("target") or ""))
-                        elif _fa == "open_url":
-                            _track_target("site", _domain_of(action.get("target") or ""))
+                        # App/site target capture lives in _execute_open_app /
+                        # _execute_open_url / _execute_browse so BOTH the
+                        # fast-path and the LLM/embedded paths are counted once.
                         if action["action"] == "open_app":
                             # Voice console — launch an installed app with no LLM
                             # round-trip. Timed via Stage 0 so launch latency is
