@@ -25,6 +25,40 @@ function formatDate(iso: string | null): string {
   }
 }
 
+// A few action names read better with a hand-written label; everything else is
+// title-cased from its snake_case name (e.g. "check_weather" -> "Check weather").
+const ACTION_LABEL: Record<string, string> = {
+  open_app: "Open app",
+  open_url: "Open website",
+  browse: "Browse the web",
+  build: "Build / code task",
+  research: "Deep research",
+  check_weather: "Check weather",
+  check_date: "Check date",
+  compose_email: "Compose email",
+  draft_email: "Draft email",
+  compose_slack: "Send Slack message",
+  compose_text: "Send text message",
+  create_event: "Create calendar event",
+  cancel_event: "Cancel calendar event",
+  add_note: "Add note",
+  create_note: "Create note",
+  read_note: "Read note",
+  add_task: "Add task",
+  complete_task: "Complete task",
+  remember: "Remember something",
+  send_to_claude_code: "Dispatch to Claude Code",
+  dispatch_to_agent: "Dispatch to agent",
+  open_on_screen: "Point at the screen",
+};
+
+function formatActionLabel(action: string): string {
+  const known = ACTION_LABEL[action];
+  if (known) return known;
+  const words = action.replace(/[_-]+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : action;
+}
+
 const STATUS_LABEL: Record<string, string> = {
   active: "Active",
   trialing: "Trial",
@@ -119,6 +153,8 @@ export default async function AdminDashboardPage({
   const spend = accounts.reduce((sum, a) => sum + a.usage.estimated_cost_usd, 0);
   const maxApp = insights.topApps[0]?.count ?? 0;
   const maxSite = insights.topSites[0]?.count ?? 0;
+  const topActions = insights.topActions.slice(0, 12);
+  const maxAction = topActions[0]?.count ?? 0;
 
   const renewOrTrial = (a: AdminAccount) =>
     a.status === "trialing" ? a.trialEndsAt : a.currentPeriodEnd;
@@ -159,12 +195,42 @@ export default async function AdminDashboardPage({
         <p className="mt-1 text-sm text-ink-dim">
           Aggregated across {insights.syncedAccounts} synced{" "}
           {insights.syncedAccounts === 1 ? "install" : "installs"}. No prompts or
-          content — just the apps and site domains opened, and which connections
-          are working. (Per-action analytics live in Langfuse.)
+          content — just the kinds of actions run, the apps and site domains
+          opened, and which connections are working. (Verbatim commands live in
+          Langfuse, not here.)
         </p>
 
-        {/* Concrete breakdowns — which apps / sites (above connections).
-            Per-action-type counts now live in Langfuse, not here. */}
+        {/* Action-category counts: what kinds of things people ask for, no
+            verbatim wording. Those stay in Langfuse. */}
+        {topActions.length > 0 && (
+          <div className="panel mt-6 p-6">
+            <div className="label-mono mb-4">Top actions</div>
+            <ul className="space-y-3">
+              {topActions.map((a) => (
+                <li key={a.action}>
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-ink">
+                      {formatActionLabel(a.action)}
+                    </span>
+                    <span className="shrink-0 text-ink-dim">
+                      {a.count.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-panel-border/40">
+                    <div
+                      className="h-full rounded-full bg-accent"
+                      style={{
+                        width: `${maxAction ? (a.count / maxAction) * 100 : 0}%`,
+                      }}
+                    />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Concrete breakdowns — which apps / sites (above connections). */}
         <div className="mt-6 grid gap-6 lg:grid-cols-2">
           {(
             [
@@ -182,7 +248,11 @@ export default async function AdminDashboardPage({
                     <li key={it.label}>
                       <div className="flex items-center justify-between gap-3 text-sm">
                         <span className="flex min-w-0 items-center gap-2">
-                          <TargetIcon kind={kind} label={it.label} />
+                          <TargetIcon
+                            kind={kind}
+                            label={it.label}
+                            icon={"icon" in it ? it.icon : undefined}
+                          />
                           <span className="truncate text-ink">{it.label}</span>
                         </span>
                         <span className="shrink-0 text-ink-dim">
