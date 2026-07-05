@@ -516,11 +516,13 @@ setTimeout(() => {
   if (!isSleeping) updateStatus("idle");
 }, 1000);
 
-// Resume AudioContext on ANY user interaction (browser autoplay policy)
+// Resume AudioContext on ANY user interaction (browser autoplay policy).
+// Gate on "not running" so we also recover from WKWebView's "interrupted" state
+// (entered when the Tauri window is minimized), not just "suspended".
 function ensureAudioContext() {
   const ctx = audioPlayer.getAnalyser().context as AudioContext;
-  if (ctx.state === "suspended") {
-    ctx.resume().then(() => console.log("[audio] context resumed"));
+  if (ctx.state !== "running") {
+    ctx.resume().then(() => console.log("[audio] context resumed")).catch(() => {});
   }
 }
 document.addEventListener("click", ensureAudioContext);
@@ -530,6 +532,15 @@ document.addEventListener("click", ensureAudioContext);
 document.addEventListener("mousedown", ensureAudioContext);
 document.addEventListener("touchstart", ensureAudioContext);
 document.addEventListener("keydown", ensureAudioContext, { once: true });
+// Restoring from the menu bar / minimize does NOT fire a click or keydown inside
+// the webview when the ⌃⌥ global hotkey drove the wake — so proactively resume
+// the context whenever the window regains visibility or focus. This is the fix
+// for "hear the mic chime and it responds, but TTS is silent after minimize."
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") ensureAudioContext();
+});
+window.addEventListener("focus", ensureAudioContext);
+window.addEventListener("pageshow", ensureAudioContext);
 
 // True once the AudioContext is actually unlocked (running). Onboarding uses this
 // to decide whether a narration line will be audible now or must wait for the

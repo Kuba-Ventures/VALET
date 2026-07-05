@@ -235,9 +235,16 @@ export function createAudioPlayer(): AudioPlayer {
 
   return {
     async enqueue(base64: string) {
-      // Resume audio context (browser autoplay policy)
-      if (audioCtx.state === "suspended") {
-        await audioCtx.resume();
+      // Resume audio context (browser autoplay policy). WKWebView (Tauri on
+      // macOS) parks the context in "interrupted" — not "suspended" — after the
+      // window is minimized, so gate on "not running" to cover both states.
+      // Without this, TTS decodes and starts but plays silently on restore.
+      if (audioCtx.state !== "running") {
+        try {
+          await audioCtx.resume();
+        } catch (err) {
+          console.warn("[audio] resume failed:", err);
+        }
       }
 
       try {
