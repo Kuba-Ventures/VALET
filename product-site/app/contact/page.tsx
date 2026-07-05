@@ -1,6 +1,7 @@
 export const metadata = {
   title: "VALET: Contact",
   description: "Get in touch about questions, press, or partnership ideas.",
+  alternates: { canonical: "/contact" },
 };
 
 type Row = { label: string; email: string };

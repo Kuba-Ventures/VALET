@@ -1,6 +1,8 @@
 import type { MetadataRoute } from "next";
 
-const BASE = process.env.NEXT_PUBLIC_SITE_URL || "https://valet-voice.com";
+// Must match the canonical www host (see sitemap.ts) so the Sitemap: line and
+// the sitemap's own URLs don't point at the redirecting naked domain.
+const BASE = process.env.NEXT_PUBLIC_SITE_URL || "https://www.valet-voice.com";
 
 export default function robots(): MetadataRoute.Robots {
   return {

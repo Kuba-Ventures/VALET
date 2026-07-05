@@ -3,6 +3,7 @@ import CheckoutButton from "@/components/CheckoutButton";
 export const metadata = {
   title: "VALET: Pricing",
   description: "Try the full assistant free for 7 days. Keep it for $20 a month. Teams get tailored PRO bundles.",
+  alternates: { canonical: "/pricing" },
 };
 
 // PRO "Contact us" lead form — collects contact details + use case so the team
