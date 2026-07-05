@@ -3,6 +3,7 @@ import FaqAccordion from "@/components/FaqAccordion";
 export const metadata = {
   title: "VALET: FAQ",
   description: "Straight answers about what VALET runs on, the free trial, cancellation, and privacy.",
+  alternates: { canonical: "/faq" },
 };
 
 export default function FaqPage() {

@@ -1,6 +1,7 @@
 export const metadata = {
   title: "VALET: How it works",
   description: "Three steps to a working assistant: install and sign in, speak, and it gets done.",
+  alternates: { canonical: "/how-it-works" },
 };
 
 type Step = {

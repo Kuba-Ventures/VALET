@@ -3,6 +3,13 @@ import HomePushToTalk from "@/components/home/HomePushToTalk";
 import HomeShowcase from "@/components/home/HomeShowcase";
 import HomeConnections from "@/components/home/HomeConnections";
 import HomeClosing from "@/components/home/HomeClosing";
+import type { Metadata } from "next";
+
+// Self-referencing canonical on the www host (resolved via metadataBase in
+// layout.tsx) so Google indexes this URL rather than the redirecting non-www one.
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
 
 /**
  * Home page (redesign). The `.home` class scopes the violet brand skin to this
