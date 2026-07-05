@@ -41,6 +41,33 @@ function bool(v: unknown): boolean | null {
   return typeof v === "boolean" ? v : null;
 }
 
+// Max base64 length for an app icon — mirrors the desktop cap. A true-64px PNG
+// icon is a few KB, so this comfortably fits real icons while rejecting junk.
+const MAX_ICON_B64 = 40_000;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/**
+ * Accept a base64 string only if it decodes to something that actually starts
+ * with the PNG magic bytes and stays under the size cap. Anything else — wrong
+ * charset, oversized, not a PNG — is dropped. App icons are not user content
+ * (identical for everyone with the app), but we still validate strictly so the
+ * store only ever holds small, well-formed images.
+ */
+function sanitizeIconB64(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!s || s.length > MAX_ICON_B64) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return null;
+  let buf: Buffer;
+  try {
+    buf = Buffer.from(s, "base64");
+  } catch {
+    return null;
+  }
+  if (buf.length < 8 || PNG_SIGNATURE.some((b, i) => buf[i] !== b)) return null;
+  return s;
+}
+
 function sanitizeProfile(p: unknown): Record<string, string> | null {
   if (!p || typeof p !== "object") return null;
   const src = p as Record<string, unknown>;
@@ -81,13 +108,25 @@ function sanitizeStats(s: unknown): Record<string, unknown> | null {
   }
   // Per-target breakdowns: which apps / site domains people open. Same shape as
   // top_actions but keyed by `label` (app name or bare domain — no content).
+  // top_apps items may also carry an `icon` (base64 PNG of the app's macOS
+  // icon); it's validated here and later moved to the shared app_icons store.
   for (const key of ["top_apps", "top_sites"] as const) {
     if (Array.isArray(src[key])) {
       out[key] = (src[key] as unknown[])
         .map((a) => {
-          const label = str((a as Record<string, unknown>)?.label, 80);
-          const count = num((a as Record<string, unknown>)?.count);
-          return label ? { label, count: count ? Math.round(count) : 0 } : null;
+          const rec = a as Record<string, unknown>;
+          const label = str(rec?.label, 80);
+          if (!label) return null;
+          const count = num(rec?.count);
+          const item: { label: string; count: number; icon?: string } = {
+            label,
+            count: count ? Math.round(count) : 0,
+          };
+          if (key === "top_apps") {
+            const icon = sanitizeIconB64(rec?.icon);
+            if (icon) item.icon = icon;
+          }
+          return item;
         })
         .filter(Boolean)
         .slice(0, 10);
@@ -105,6 +144,37 @@ function sanitizeConnections(c: unknown): Record<string, boolean> | null {
     if (v !== null) out[key] = v;
   }
   return Object.keys(out).length ? out : null;
+}
+
+interface AppIconRow {
+  slug: string;
+  label: string;
+  png_base64: string;
+  updated_at: string;
+}
+
+/**
+ * Pull icon bytes out of stats.top_apps into shared app_icons rows, mutating
+ * stats so the per-license account_sync row never stores image bytes — they'd
+ * bloat every row and the cross-user read in getUsageInsights. The slug
+ * (normalised label) collapses the same app across users to one shared icon.
+ */
+function extractAppIcons(
+  stats: Record<string, unknown> | null,
+  updatedAt: string,
+): AppIconRow[] {
+  if (!stats || !Array.isArray(stats.top_apps)) return [];
+  const rows: AppIconRow[] = [];
+  for (const item of stats.top_apps as Record<string, unknown>[]) {
+    const icon = typeof item.icon === "string" ? item.icon : null;
+    const label = typeof item.label === "string" ? item.label : "";
+    const slug = label.trim().toLowerCase();
+    if (icon && slug) {
+      rows.push({ slug, label, png_base64: icon, updated_at: updatedAt });
+    }
+    delete item.icon; // never persist image bytes on the per-license row
+  }
+  return rows;
 }
 
 export async function POST(req: NextRequest) {
@@ -126,6 +196,8 @@ export async function POST(req: NextRequest) {
   const stats = sanitizeStats(body.stats);
   const connections = sanitizeConnections(body.connections);
   const appVersion = str(body.app_version, 40);
+  // Extract icon bytes BEFORE storing stats — this strips them from `stats` too.
+  const appIcons = extractAppIcons(stats, row.updated_at as string);
   if (profile) row.profile = profile;
   if (stats) row.stats = stats;
   if (connections) row.connections = connections;
@@ -133,6 +205,15 @@ export async function POST(req: NextRequest) {
 
   try {
     const supabase = getSupabaseAdmin();
+    // Shared, cross-user app-icon store. Best-effort and non-fatal: an icon
+    // write must never fail the sync. First writer wins (ignoreDuplicates) so
+    // we don't rewrite the same icon on every 15-minute sync.
+    if (appIcons.length) {
+      const { error: iconErr } = await supabase
+        .from("app_icons")
+        .upsert(appIcons, { onConflict: "slug", ignoreDuplicates: true });
+      if (iconErr) console.error("app_icons upsert failed:", iconErr.message);
+    }
     const { error } = await supabase
       .from("account_sync")
       .upsert(row, { onConflict: "license_key" });
