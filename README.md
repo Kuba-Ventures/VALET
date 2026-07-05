@@ -26,6 +26,7 @@ VALET connects to your Apple Calendar, Mail, and Notes. It can browse the web, s
 - **Plans your day** -- combines calendar, tasks, and priorities into a plan
 - **Sees your screen** -- knows what apps are open for context-aware responses
 - **Audio-reactive orb** -- a Three.js particle visualization that pulses with VALET's voice
+- **Live activity panel** -- a holographic feed shows what VALET is doing in real time as it browses, builds, opens apps, or dispatches to Claude Code
 
 ## Requirements
 
