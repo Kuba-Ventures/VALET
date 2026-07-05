@@ -166,7 +166,13 @@ export async function upsertLicenseFromSubscription(
   // CONFLICT DO NOTHING against the unique index on stripe_subscription_id, so
   // concurrent callers collapse to one row. The first writer's generated key
   // wins; the rest no-op here. (Requires migration_dedupe_licenses.sql.)
-  await supabase.from("licenses").upsert(
+  // supabase-js returns errors in `{ error }` rather than throwing, so each call
+  // is checked explicitly. Without this, a failed write (e.g. the 42P10 ON
+  // CONFLICT mismatch that took the webhook down) is swallowed and only surfaces
+  // later as a misleading "no row found after upsert" — see
+  // migration_licenses_onconflict_fix.sql. Surface the real Postgres error so
+  // the webhook's 500 body and logs name the actual cause.
+  const { error: insertError } = await supabase.from("licenses").upsert(
     {
       license_key: generateLicenseKey(),
       created_at: new Date().toISOString(),
@@ -174,20 +180,35 @@ export async function upsertLicenseFromSubscription(
     },
     { onConflict: "stripe_subscription_id", ignoreDuplicates: true },
   );
+  if (insertError) {
+    throw new Error(
+      `license upsert insert failed for subscription ${sub.id}: ${insertError.message}`,
+    );
+  }
 
   // Apply lifecycle fields to the (now guaranteed single) row WITHOUT touching
   // license_key — the key is generated once and never rotated.
-  await supabase
+  const { error: updateError } = await supabase
     .from("licenses")
     .update(base)
     .eq("stripe_subscription_id", sub.id);
+  if (updateError) {
+    throw new Error(
+      `license lifecycle update failed for subscription ${sub.id}: ${updateError.message}`,
+    );
+  }
 
   // Read back the canonical key for this subscription.
-  const { data: row } = await supabase
+  const { data: row, error: readError } = await supabase
     .from("licenses")
     .select("license_key")
     .eq("stripe_subscription_id", sub.id)
     .maybeSingle();
+  if (readError) {
+    throw new Error(
+      `license read-back failed for subscription ${sub.id}: ${readError.message}`,
+    );
+  }
   if (!row?.license_key) {
     throw new Error(
       `license upsert: no row found for subscription ${sub.id} after upsert`,
