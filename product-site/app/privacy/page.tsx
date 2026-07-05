@@ -1,6 +1,7 @@
 export const metadata = {
   title: "VALET: Privacy",
   description: "What VALET can access, what leaves your Mac, and what we never collect.",
+  alternates: { canonical: "/privacy" },
 };
 
 export default function PrivacyPage() {

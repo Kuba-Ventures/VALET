@@ -10,7 +10,13 @@ import Footer from "@/components/Footer";
 // (GA4, conversions, pixels) is configured in the GTM UI, no code changes.
 const GTM_ID = process.env.NEXT_PUBLIC_GTM_ID || "GTM-PV2FK8J3";
 
+// Canonical host — the www apex, which the naked domain 308-redirects to. Setting
+// metadataBase makes Next emit absolute canonical/OG URLs on this host, so Google
+// stops treating the redirecting non-www URLs as the pages to index.
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://www.valet-voice.com";
+
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "VALET: talk to your Mac, it does the work",
   description:
     "Say what you want in plain words. VALET reaches into the apps you already use and gets it done. Voice-first control for macOS.",

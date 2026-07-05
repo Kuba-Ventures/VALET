@@ -1,6 +1,7 @@
 export const metadata = {
   title: "VALET: Terms",
   description: "The terms for using VALET, the voice assistant for macOS.",
+  alternates: { canonical: "/terms" },
 };
 
 export default function TermsPage() {
