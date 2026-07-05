@@ -125,8 +125,9 @@ export interface UsageInsights {
   totalTasks: number;
   /** Most-used actions across all users, highest first. */
   topActions: { action: string; count: number }[];
-  /** Most-opened apps across all users, highest first. */
-  topApps: { label: string; count: number }[];
+  /** Most-opened apps across all users, highest first. `icon` is a data URI
+   *  of the app's real macOS icon when we have one, else undefined. */
+  topApps: { label: string; count: number; icon?: string }[];
   /** Most-opened site domains across all users, highest first. */
   topSites: { label: string; count: number }[];
   /** How many synced accounts have each integration working. */
@@ -217,11 +218,41 @@ export async function getUsageInsights(): Promise<UsageInsights> {
       .sort((a, b) => b.count - a.count)
       .slice(0, 12);
 
+  const topApps: { label: string; count: number; icon?: string }[] =
+    rankLabeled(appTotals);
+
+  // Attach real app icons (shared, deduped app_icons store) to the ranked apps.
+  // Best-effort: a lookup failure just leaves apps without an icon (the
+  // dashboard then renders a letter badge). Keyed by lower(trim(label)) to
+  // match the slug the sync route writes.
+  const slugFor = (label: string) => label.trim().toLowerCase();
+  const slugs = topApps.map((a) => slugFor(a.label));
+  if (slugs.length) {
+    const { data: iconRows, error: iconErr } = await supabase
+      .from("app_icons")
+      .select("slug, png_base64")
+      .in("slug", slugs);
+    if (iconErr) {
+      console.error("getUsageInsights app_icons failed:", iconErr.message);
+    } else {
+      const byslug = new Map(
+        (iconRows ?? []).map((r) => [
+          r.slug as string,
+          r.png_base64 as string,
+        ]),
+      );
+      for (const app of topApps) {
+        const png = byslug.get(slugFor(app.label));
+        if (png) app.icon = `data:image/png;base64,${png}`;
+      }
+    }
+  }
+
   return {
     syncedAccounts: rows.length,
     totalTasks,
     topActions,
-    topApps: rankLabeled(appTotals),
+    topApps,
     topSites: rankLabeled(siteTotals),
     connections,
   };

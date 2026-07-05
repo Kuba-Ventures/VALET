@@ -4018,10 +4018,19 @@ def _gather_sync_snapshot() -> dict:
             ]
             # Per-target breakdowns: which apps / site domains people open.
             # Privacy-safe labels only (no URLs, paths, queries, or content).
-            stats["top_apps"] = [
-                {"label": t["label"], "count": t["count"]}
-                for t in success_tracker.get_top_targets("app", limit=10)
-            ]
+            # Apps also carry their real macOS icon (a base64 PNG that is
+            # identical for everyone with that app) so the dashboard can render
+            # the true logo instead of a letter badge. Icon capture is
+            # best-effort and off-macOS returns None (icon key omitted).
+            from app_icons import get_app_icon_b64
+            top_apps = []
+            for t in success_tracker.get_top_targets("app", limit=10):
+                item = {"label": t["label"], "count": t["count"]}
+                icon = get_app_icon_b64(t["label"])
+                if icon:
+                    item["icon"] = icon
+                top_apps.append(item)
+            stats["top_apps"] = top_apps
             stats["top_sites"] = [
                 {"label": t["label"], "count": t["count"]}
                 for t in success_tracker.get_top_targets("site", limit=10)
