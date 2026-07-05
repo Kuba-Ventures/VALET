@@ -67,7 +67,11 @@ jobs:
           fetch-depth: 0
 
       - name: Supervised review
-        uses: anthropics/claude-code-action@v1
+        id: review
+        # Pinned to a commit SHA rather than the floating @v1 tag so the action
+        # code AND the claude-agent-sdk it bundles are frozen — runs stay
+        # reproducible instead of silently changing behavior when @v1 moves.
+        uses: anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           additional_permissions: |
@@ -100,16 +104,54 @@ jobs:
             Do NOT merge the PR under any circumstances.
 
       - name: Compute merge gate (fail-closed)
+        env:
+          # Path to the reviewer's full execution log (SDK messages), exposed by
+          # claude-code-action. Used as a fallback verdict source below.
+          EXEC_FILE: ${{ steps.review.outputs.execution_file }}
         run: |
-          # GREEN if the reviewer ran and produced a recognized verdict (low-risk OR escalate),
-          # so escalated PRs stay human-mergeable without an admin override. RED (fail-closed)
-          # only when no real review happened — a missing verdict file means the action skipped
-          # (e.g. a PR touching .github/**), which must never count as a pass.
-          if [ ! -f .factory-verdict ]; then
-            echo "::error::No .factory-verdict written — the reviewer did not run (e.g. a PR that modifies .github/** which the Claude action skips by design). Failing closed; a human admin must review and override."
+          # GREEN if the reviewer actually RAN and reached a recognized verdict
+          # (low-risk OR escalate), so escalated PRs stay human-mergeable without
+          # an admin override. RED (fail-closed) only when no real review happened.
+          #
+          # Verdict sources, in order:
+          #   1. `.factory-verdict` file — what the reviewer is asked to write.
+          #   2. The `VERDICT:` line in the reviewer's final message (parsed from
+          #      the execution log). This catches a review that reached a decision
+          #      but skipped the file write — a failure mode we hit when the agent
+          #      finished in prose without performing its side-effect tool calls.
+          #   3. Review ran (produced final output) but no parseable verdict ->
+          #      treat as ESCALATE so a human decides; never auto-merges.
+          # If the reviewer produced no output at all (e.g. it skipped a PR that
+          # touches .github/**), there is nothing to parse -> fail closed.
+          verdict=""
+
+          if [ -f .factory-verdict ]; then
+            verdict="$(tr -d '[:space:]' < .factory-verdict)"
+            echo "Verdict source: .factory-verdict file"
+          fi
+
+          # Parse the reviewer's final message text only (NOT the whole log — the
+          # input prompt echoes both tokens and would false-match). `-s` slurps
+          # JSONL into an array; `flatten` also collapses the single-array case, so
+          # this handles both log shapes. jq is preinstalled on GitHub runners.
+          final=""
+          if [ -z "$verdict" ] && [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
+            final="$(jq -rs 'flatten | map(select(type=="object" and .type=="result" and (.result|type)=="string") | .result) | last // ""' "$EXEC_FILE" 2>/dev/null || true)"
+            case "$final" in
+              *"VERDICT: APPROVE-LOWRISK"*) verdict="APPROVE-LOWRISK"; echo "Verdict source: VERDICT line in reviewer output" ;;
+              *"VERDICT: ESCALATE"*)        verdict="ESCALATE";        echo "Verdict source: VERDICT line in reviewer output" ;;
+            esac
+            if [ -z "$verdict" ] && [ -n "$final" ]; then
+              verdict="ESCALATE"
+              echo "::warning::Reviewer ran but emitted no VERDICT line; treating as ESCALATE (human must merge)."
+            fi
+          fi
+
+          if [ -z "$verdict" ]; then
+            echo "::error::No verdict from the reviewer — no .factory-verdict file and no reviewer output to parse (e.g. a PR touching .github/** which the action skips). Failing closed; a human admin must review and override."
             exit 1
           fi
-          verdict="$(tr -d '[:space:]' < .factory-verdict)"
+
           echo "Reviewer verdict: '${verdict}'"
           case "$verdict" in
             APPROVE-LOWRISK)
