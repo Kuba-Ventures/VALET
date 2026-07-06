@@ -9,7 +9,7 @@ import Footer from "@/components/Footer";
 // Override or point at a different container via NEXT_PUBLIC_GTM_ID. Everything
 // downstream (GA4, conversions, pixels) is configured in the GTM UI, no code
 // changes.
-const GTM_ID = process.env.NEXT_PUBLIC_GTM_ID || "GTM-NGPBB45T";
+const GTM_ID = process.env.NEXT_PUBLIC_GTM_ID || "GTM-MZ8P99HG";
 
 // Canonical host — the www apex, which the naked domain 308-redirects to. Setting
 // metadataBase makes Next emit absolute canonical/OG URLs on this host, so Google
