@@ -4,11 +4,12 @@ import "./globals.css";
 import Nav from "@/components/Nav";
 import Footer from "@/components/Footer";
 
-// Google Tag Manager container. The GTM ID is public (it appears in the page
-// source of every site that uses GTM), so it is safe to commit. Override or
-// point at a different container via NEXT_PUBLIC_GTM_ID. Everything downstream
-// (GA4, conversions, pixels) is configured in the GTM UI, no code changes.
-const GTM_ID = process.env.NEXT_PUBLIC_GTM_ID || "GTM-PV2FK8J3";
+// Google Tag Manager container (QSBS Rollover). The GTM ID is public (it appears
+// in the page source of every site that uses GTM), so it is safe to commit.
+// Override or point at a different container via NEXT_PUBLIC_GTM_ID. Everything
+// downstream (GA4, conversions, pixels) is configured in the GTM UI, no code
+// changes.
+const GTM_ID = process.env.NEXT_PUBLIC_GTM_ID || "GTM-NGPBB45T";
 
 // Canonical host — the www apex, which the naked domain 308-redirects to. Setting
 // metadataBase makes Next emit absolute canonical/OG URLs on this host, so Google
