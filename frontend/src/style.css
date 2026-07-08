@@ -929,6 +929,41 @@ body.wake-sleeping #orb-canvas {
 .win-light.close { background: #ff5f57; }
 .win-light.min { background: #febc2e; }
 
+/* Frameless-window resize grips. Thin edge/corner strips pinned to the window
+   border, above #drag-bar (z1) so a press near an edge resizes instead of
+   moving, but below #controls (z20) and #window-lights (z60) so those buttons
+   still win where they overlap. The container itself draws a faint 1px frame so
+   the borderless, now-resizable window reads as intentional. Wired in main.ts. */
+#resize-handles {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none; /* only the grips below are interactive */
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+#resize-handles .rz { position: absolute; pointer-events: auto; }
+.rz-n, .rz-s { left: 8px; right: 8px; height: 6px; }
+.rz-e, .rz-w { top: 8px; bottom: 8px; width: 6px; }
+.rz-n { top: 0; cursor: n-resize; }
+.rz-s { bottom: 0; cursor: s-resize; }
+.rz-e { right: 0; cursor: e-resize; }
+.rz-w { left: 0; cursor: w-resize; }
+/* Corners come after the edges in the DOM, so at the 8–14px overlap they paint
+   on top and the diagonal cursor wins. */
+.rz-nw, .rz-ne, .rz-sw, .rz-se { width: 14px; height: 14px; }
+.rz-nw { top: 0; left: 0; cursor: nwse-resize; }
+.rz-ne { top: 0; right: 0; cursor: nesw-resize; }
+.rz-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.rz-se { bottom: 0; right: 0; cursor: nwse-resize; }
+/* Subtle grip hint in the bottom-right corner so resizing is discoverable. */
+.rz-se::after {
+  content: "";
+  position: absolute; right: 3px; bottom: 3px;
+  width: 6px; height: 6px;
+  border-right: 1.5px solid rgba(255, 255, 255, 0.22);
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.22);
+}
+
 /* ═══ Console Settings — monochrome "refined dark" (scoped to .console-mono) ═══ */
 /* Inset the whole tab (sections normally carry the 24px side padding; we zero
    those and pad the container so dividers/Advanced line up too). */

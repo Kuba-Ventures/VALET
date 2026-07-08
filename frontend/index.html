@@ -17,6 +17,21 @@
          (#controls, reply, panels) sit above it and stay clickable. -->
     <div id="drag-bar" data-tauri-drag-region></div>
 
+    <!-- Frameless-window resize grips: thin edge/corner strips that sit above the
+         drag layer and ask Tauri for a native resize drag (macOS gives a
+         decorations:false window no resize border of its own). Wired in main.ts;
+         gated by the orb-drag capability (start-resize-dragging). -->
+    <div id="resize-handles" aria-hidden="true">
+      <div class="rz rz-n" data-dir="North"></div>
+      <div class="rz rz-s" data-dir="South"></div>
+      <div class="rz rz-e" data-dir="East"></div>
+      <div class="rz rz-w" data-dir="West"></div>
+      <div class="rz rz-nw" data-dir="NorthWest"></div>
+      <div class="rz rz-ne" data-dir="NorthEast"></div>
+      <div class="rz rz-sw" data-dir="SouthWest"></div>
+      <div class="rz rz-se" data-dir="SouthEast"></div>
+    </div>
+
     <!-- Native-style window controls (top-left), available across the whole app
          (not just onboarding): close hides the popover, minimize hides to the
          menu bar. They sit above the drag layer so clicks land on them. -->
