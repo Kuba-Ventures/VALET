@@ -130,6 +130,28 @@ orb.setAnalyser(audioPlayer.getAnalyser());
   document.getElementById("win-close")?.addEventListener("click", () => winCtl("close"));
 }
 
+// Frameless-window resize — the edge/corner grips (#resize-handles) sit above
+// the drag layer and ask Tauri to run a native resize drag. macOS gives a
+// decorations:false window no resize border of its own, so this is what makes
+// the window actually resizable. Gated by the orb-drag capability
+// (core:window:allow-start-resize-dragging); a no-op in a plain browser.
+{
+  document.querySelectorAll<HTMLElement>("#resize-handles .rz").forEach((h) => {
+    h.addEventListener("mousedown", (e) => {
+      const dir = h.dataset.dir;
+      if (!dir) return;
+      e.preventDefault();
+      e.stopPropagation(); // don't let the press fall through to #drag-bar (a move)
+      try {
+        const w = (window as unknown as {
+          __TAURI__?: { window?: { getCurrentWindow?: () => { startResizeDragging?: (d: string) => void } } };
+        }).__TAURI__?.window?.getCurrentWindow?.();
+        w?.startResizeDragging?.(dir);
+      } catch { /* ignore — no Tauri in dev/browser */ }
+    });
+  });
+}
+
 // Live "what VALET is doing" panel. Hidden until the first event arrives.
 const processPanel = createProcessPanel();
 const designPanel = createDesignPanel();
