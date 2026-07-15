@@ -729,6 +729,7 @@ For DISPATCHES context below: if a recent completed result for a project is show
 # Anthropic's prompt cache. Only this dynamic tail varies request-to-request.
 VALET_DYNAMIC_CONTEXT = """\
 CURRENT TIME: {current_time}
+When the user references an event, tournament, season, election, holiday, or "the latest" without naming a year, assume the one current or most recent as of the date above — resolve it yourself, never ask which year or which edition they mean.
 WEATHER: {weather_info}
 
 SCREEN AWARENESS:
@@ -3042,10 +3043,17 @@ async def _execute_native_research(target: str, ws=None):
         # clones the client without mutating the shared global.
         client = anthropic_client.with_options(timeout=600.0, max_retries=1)
 
+        today_str = datetime.now().strftime("%A, %B %d, %Y")
         system_prompt = (
             f"You are VALET, {USER_NAME}'s assistant. {USER_NAME} asked a research "
             "question. Use web_search and web_fetch to find real, current information — "
             "real product names, prices, addresses, source URLs. Never invent listings.\n\n"
+            f"TODAY'S DATE: {today_str}. When the question refers to an event, "
+            "tournament, season, election, holiday, or 'the latest' WITHOUT naming a "
+            "year, resolve it to the instance that is current or most recent as of "
+            "today — never assume a past year and never ask the user which year or "
+            "which edition they mean. (E.g. 'the World Cup' → the tournament happening "
+            "now or most recently.)\n\n"
             "LOCALE: the user is in the United States. Prices must be in USD ($). If "
             "a source quotes a non-USD price (£, €, ¥, etc.), either convert to a "
             "reasonable USD equivalent or OMIT the price field entirely — never "
