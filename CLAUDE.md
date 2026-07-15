@@ -36,6 +36,7 @@ When a user clones this repo and starts Claude Code, help them:
 - `actions.py` — System actions (Terminal, Chrome, Claude Code)
 - `browser.py` — Playwright web automation
 - `work_mode.py` — Persistent Claude Code sessions
+- `sports.py` — Live scores/schedules via ESPN's keyless site API (no key needed); powers [ACTION:SPORTS]. Modeled on `weather.py`.
 
 ## Environment Variables
 - `ANTHROPIC_API_KEY` (required) — Claude API access

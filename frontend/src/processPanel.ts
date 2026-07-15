@@ -50,6 +50,7 @@ export type EventType =
   | "result.image"
   | "result.markdown"
   | "result.weather"
+  | "result.sports"
   // Per-source preview card emitted during research (live), one per
   // successful web_fetch. Distinct from `result.web` which is the
   // model's final reading list summary.
@@ -601,6 +602,13 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       return;
     }
 
+    // Sports scores card — dedicated layout (league header → live / upcoming /
+    // recent game rows). Payload built by sports.build_card_payload.
+    if (kind === "sports") {
+      populateSportsCard(card, event);
+      return;
+    }
+
     // (markdown branch handled in renderResultCard before reaching here.)
 
     const p = (event.payload || {}) as Record<string, unknown>;
@@ -673,6 +681,77 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       const display = sourceUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
       link.textContent = (display.length > 48 ? display.slice(0, 45) + "…" : display) + " ↗";
       card.appendChild(link);
+    }
+  }
+
+  /** Native sports scores card. Payload built by sports.build_card_payload
+   * (see sports.py). Layout: league header (+ updated stamp) → up to three
+   * sections — Live, Upcoming, Recent — each a list of game rows (matchup +
+   * status/kickoff). Live rows get an accent dot. */
+  function populateSportsCard(card: HTMLElement, event: ProcessEvent) {
+    interface Side { name?: string; abbrev?: string; score?: string | null; }
+    interface Game {
+      matchup: string;
+      state?: "pre" | "in" | "post" | string;
+      detail?: string;
+      venue?: string;
+      home?: Side; away?: Side;
+    }
+    interface SportsPayload {
+      league: string;
+      live: Game[]; recent: Game[]; upcoming: Game[];
+      updated_at?: string;
+    }
+    const p = (event.payload || {}) as unknown as SportsPayload;
+
+    // Header
+    const head = document.createElement("div");
+    head.className = "pp-sports-head";
+    const league = document.createElement("div");
+    league.className = "pp-sports-league";
+    league.textContent = p.league || "Scores";
+    head.appendChild(league);
+    if (p.updated_at) {
+      const upd = document.createElement("div");
+      upd.className = "pp-sports-updated";
+      upd.textContent = p.updated_at;
+      head.appendChild(upd);
+    }
+    card.appendChild(head);
+
+    const section = (label: string, games: Game[]) => {
+      if (!games || games.length === 0) return;
+      const sec = document.createElement("div");
+      sec.className = "pp-sports-section";
+      const lbl = document.createElement("div");
+      lbl.className = "pp-sports-section-label";
+      lbl.textContent = label;
+      sec.appendChild(lbl);
+      for (const g of games) {
+        const row = document.createElement("div");
+        row.className = "pp-sports-row" + (g.state === "in" ? " pp-sports-live" : "");
+        const matchup = document.createElement("div");
+        matchup.className = "pp-sports-matchup";
+        matchup.textContent = g.matchup || "";
+        row.appendChild(matchup);
+        const detail = document.createElement("div");
+        detail.className = "pp-sports-detail";
+        detail.textContent = g.detail || "";
+        row.appendChild(detail);
+        sec.appendChild(row);
+      }
+      card.appendChild(sec);
+    };
+
+    section("Live", p.live);
+    section("Upcoming", p.upcoming);
+    section("Final", p.recent);
+
+    if ((!p.live || !p.live.length) && (!p.upcoming || !p.upcoming.length) && (!p.recent || !p.recent.length)) {
+      const empty = document.createElement("div");
+      empty.className = "pp-sports-detail";
+      empty.textContent = "No games found.";
+      card.appendChild(empty);
     }
   }
 
