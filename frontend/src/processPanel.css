@@ -1082,3 +1082,77 @@
     max-width: 420px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Sports scores card (result.sports) — league header + Live/Upcoming/Final
+   sections of game rows. Uses the same holographic palette as the panel.
+   --------------------------------------------------------------------------- */
+.pp-sports-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.pp-sports-league {
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--pp-accent);
+  text-transform: uppercase;
+}
+.pp-sports-updated {
+  font-family: var(--pp-mono);
+  font-size: 10px;
+  color: var(--pp-text-faint);
+}
+.pp-sports-section {
+  margin-top: 8px;
+}
+.pp-sports-section-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--pp-text-dim);
+  margin-bottom: 4px;
+}
+.pp-sports-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid var(--pp-border);
+  border-radius: 8px;
+  margin-bottom: 4px;
+  background: rgba(70, 220, 255, 0.04);
+}
+.pp-sports-row.pp-sports-live {
+  border-color: var(--pp-active);
+  box-shadow: 0 0 12px rgba(124, 255, 176, 0.25);
+}
+.pp-sports-row.pp-sports-live::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pp-active);
+  box-shadow: 0 0 6px var(--pp-active);
+  flex: 0 0 auto;
+  margin-right: 2px;
+}
+.pp-sports-matchup {
+  font-size: 12px;
+  color: var(--pp-card-body);
+  font-weight: 500;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pp-sports-detail {
+  font-family: var(--pp-mono);
+  font-size: 10px;
+  color: var(--pp-text-dim);
+  text-align: right;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}

@@ -663,6 +663,13 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "what's the time in Tokyo right now" → [ACTION:WORLD_TIME] Tokyo
   "what time is it" → [ACTION:WORLD_TIME]
   "how late is it in London" → [ACTION:WORLD_TIME] London
+- [ACTION:SPORTS] query — live scores, results, schedules, fixtures, and standings from ESPN. Renders a floating scores card AND reads a concise summary aloud. Pass the user's question through as the query (include the league/team/event so it resolves — "FIFA World Cup", "NBA", "Arsenal"). Use this for ANY sports question: scores, who won, what the score was, when/what time a game or match is, upcoming fixtures, standings. ALWAYS prefer this over RESEARCH for sports. Emit the tag ALONE with NO preamble — the system speaks the answer.
+  "what time is the third place World Cup match" → [ACTION:SPORTS] FIFA World Cup third place match
+  "what's the score of the game" → [ACTION:SPORTS] (pass the team/league if the user named one)
+  "did the Lakers win" → [ACTION:SPORTS] Lakers
+  "when do the Chiefs play next" → [ACTION:SPORTS] Chiefs next game
+  "who's winning the Premier League" → [ACTION:SPORTS] Premier League standings
+  SPORTS vs RESEARCH: a question about a game's score/result/schedule/standings is SPORTS. Only use RESEARCH for sports questions that aren't about live results (e.g. "history of the World Cup", "who's the best striker ever").
 - [ACTION:CREATE_EVENT] title ||| start_iso ||| duration_min_or_end ||| description? ||| location? — schedule an event on the user's Mac Calendar (Apple Calendar, via EventKit). Always resolve relative times ("tomorrow at 3pm") to absolute ISO timestamps using the CURRENT TIME context above. Use 30 if no duration mentioned.
   "schedule a meeting tomorrow at 3pm called design review" → [ACTION:CREATE_EVENT] design review ||| 2026-05-16 3:00 PM ||| 30
   "block 2-3pm Friday for deep work" → [ACTION:CREATE_EVENT] Deep work ||| 2026-05-16 2:00 PM ||| 2026-05-16 3:00 PM
@@ -817,7 +824,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2295,6 +2302,52 @@ async def _execute_world_time(target: str, ws):
             await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
         except Exception:
             pass
+
+
+async def _execute_sports(query: str, ws):
+    """Live scores, results, schedules, and fixtures via ESPN's keyless site API
+    (sports.py). Self-speaking like _execute_world_time: emits a result.sports
+    card and voices a concise summary itself. When the league/team can't be
+    resolved (an unusual sport, or a team not in the small popular-team map) or
+    the fetch fails, falls back to web RESEARCH so the question is still
+    answered."""
+    import sports as _sp
+
+    try:
+        result = await _sp.get_sports(query)
+    except Exception as e:
+        log.warning("sports lookup failed for %r: %s", query[:80], e)
+        result = None
+
+    if not result:
+        # Unresolvable league/team or fetch error → let web research handle it.
+        log.info("sports unresolved, falling back to research: %r", query[:80])
+        await _execute_native_research(query, ws)
+        return
+
+    # Floating card — same bus discipline as result.weather (a raw top-level
+    # frame is dropped by main.ts; it MUST go through the bus).
+    try:
+        await process_bus.emit(ProcessEvent(
+            type="result.sports",
+            task_id="sports",
+            id=_uuid.uuid4().hex[:10],
+            status="done",
+            title=result["payload"].get("league", "Scores"),
+            payload=result["payload"],
+        ))
+    except Exception as e:
+        log.debug(f"result.sports emit failed: {e}")
+
+    msg = result["summary"]
+    audio = await synthesize_speech(msg)
+    if audio and ws:
+        try:
+            await ws.send_json({"type": "status", "state": "speaking"})
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+        except Exception:
+            pass
+    log.info(f"VALET: {msg}")
 
 
 async def _execute_browse(target: str):
@@ -6011,6 +6064,27 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     if _tm2:
         return {"action": "world_time", "target": _tm2.group("place").strip()}
 
+    # ── Live sports scores / schedules. Deliberately conservative: fire ONLY
+    # when the query both (a) names a league/team the sports module recognizes
+    # AND (b) carries a scores/schedule intent cue. The resolve_league() gate is
+    # what keeps common words ("game", "match", "did") from poaching non-sports
+    # phrasings — no known league/team, no trigger. Anything this misses still
+    # routes through the LLM [ACTION:SPORTS] path.
+    _sports_cues = (
+        "score", "who won", "winning", "final", "result", "standings",
+        "what time is the", "when do", "when is the", "when's the", "whens the",
+        "next game", "next match", "play next", "playing", "fixture",
+        "kickoff", "kick off", " vs ", " versus ", "beat", "match", "game",
+        "did ",
+    )
+    if any(c in t for c in _sports_cues):
+        try:
+            import sports as _sp
+            if _sp.resolve_league(t):
+                return {"action": "sports", "target": text.strip()}
+        except Exception:
+            pass
+
     # Dispatch / build status check
     if any(p in t for p in ["where are we", "where were we", "project status", "how's the build",
                              "hows the build", "status update", "status report", "where is that",
@@ -7620,6 +7694,11 @@ async def voice_handler(ws: WebSocket):
                             # the spoken answer itself, so leave response_text empty.
                             response_text = ""
                             asyncio.create_task(_execute_world_time(action.get("target", ""), ws))
+                        elif action["action"] == "sports":
+                            # Self-speaking handler (emits card + voices summary);
+                            # no preamble.
+                            response_text = ""
+                            asyncio.create_task(_execute_sports(action.get("target", ""), ws))
                         elif action["action"] == "check_dispatch":
                             recent = dispatch_registry.get_most_recent()
                             if not recent:
@@ -7793,6 +7872,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _handle_screen shows the panel + speaks
                                     elif action_type == "summarize_screen":
                                         response_text = ""  # _handle_summarize shows the panel + speaks
+                                    elif action_type == "sports":
+                                        response_text = ""  # _execute_sports emits the card + speaks
                                     else:
                                         response_text = "Right away, sir."
 
@@ -7954,6 +8035,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_check_date(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "world_time":
                                     asyncio.create_task(_execute_world_time(embedded_action.get("target", ""), ws))
+                                elif embedded_action["action"] == "sports":
+                                    asyncio.create_task(_execute_sports(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "check_weather":
                                     wx_t = (embedded_action.get("target") or "").strip()
                                     # LLM tag carries no time scope — recover it
