@@ -105,6 +105,58 @@ _NATIONS: list[tuple[str, str, str, str]] = [
 # multi-word name isn't shadowed by a shorter substring.
 _ALL_TEAMS = sorted(_TEAMS + _NATIONS, key=lambda e: -len(e[0]))
 
+# A resolver keyword ("usa") may not appear verbatim in ESPN's event names
+# ("United States"), so filtering by the raw keyword found nothing. Map each
+# keyword that differs to the substrings that DO appear in event names, plus a
+# spoken display name (so "usa" is voiced as "USA", not "Usa"). Keywords not
+# listed here match themselves and title-case for display.
+_TEAM_ALIASES: dict[str, tuple[str, ...]] = {
+    "usa": ("united states", "usa"),
+    "korea": ("korea",),
+    "manchester": ("manchester",),  # matches City or United — fine for a hint
+}
+_TEAM_DISPLAY: dict[str, str] = {
+    "usa": "USA",
+    "united states": "USA",
+}
+
+
+def _match_terms(hint: str) -> tuple[str, ...]:
+    """Substrings that identify `hint` inside an event/team name."""
+    return _TEAM_ALIASES.get(hint, (hint,))
+
+
+def _display_name(hint: str, espn_name: str | None = None) -> str:
+    """Prefer ESPN's own team name; else a nice form of the hint (USA, not Usa)."""
+    if espn_name:
+        return espn_name
+    return _TEAM_DISPLAY.get(hint, hint.title())
+
+
+def _name_matches(hint: str, name: str | None) -> bool:
+    low = (name or "").lower()
+    return any(term in low for term in _match_terms(hint))
+
+
+# Team names that read naturally with a leading article ("the United States lost")
+# — most nations don't ("Argentina beat England"). Clubs are left bare too
+# ("Arsenal beat"), which is idiomatic for soccer.
+_TAKES_THE = {
+    "united states", "usa", "netherlands", "philippines", "czech republic",
+    "ivory coast", "republic of ireland", "gambia",
+}
+
+
+def _team_phrase(name: str) -> str:
+    """`name` with a leading article only when it reads naturally."""
+    return f"the {name}" if name.lower() in _TAKES_THE else name
+
+
+# Cup competitions where results span weeks and questions are often historical
+# ("who did USA lose to", "how far did England get"). These fetch the whole
+# event, not just a few days around today, so past matches are answerable.
+_TOURNAMENTS = {"fifa.world", "uefa.champions", "uefa.europa", "uefa.euro"}
+
 
 def resolve_league(query: str) -> tuple[str, str, str] | None:
     """Map a free-text sports query to (sport_slug, league_slug, display_name).
@@ -197,12 +249,15 @@ async def fetch_scoreboard(
     return out
 
 
-def _default_range() -> str:
-    """A window around today: recent results (−3d) through upcoming fixtures
-    (+10d). One call covers both "what was the score" and "when do they play"."""
+def _range_for(league: str) -> str:
+    """ESPN dates window. Domestic leagues: recent results (−3d) through upcoming
+    fixtures (+14d) — enough for "did they win" / "when do they play". Cup
+    tournaments: reach back ~9 weeks so the whole event (group stage → final) is
+    covered, making "who did USA lose to" answerable from the fixtures list."""
     today = datetime.now()
-    start = (today - timedelta(days=3)).strftime("%Y%m%d")
-    end = (today + timedelta(days=10)).strftime("%Y%m%d")
+    back = 63 if league in _TOURNAMENTS else 3
+    start = (today - timedelta(days=back)).strftime("%Y%m%d")
+    end = (today + timedelta(days=14)).strftime("%Y%m%d")
     return f"{start}-{end}"
 
 
@@ -220,51 +275,79 @@ def _bucket(events: list[dict]) -> dict[str, list[dict]]:
     }
 
 
+async def _fetch_events(sport: str, league: str) -> list[dict] | None:
+    """Fetch the games we reason over. ESPN's scoreboard caps a single date-range
+    response at ~100 events, so a wide window over a 100+-game tournament silently
+    DROPS the most recent games (the semifinals/final happening now). For
+    tournaments we therefore fetch TWO smaller windows — recent (−17d..+16d) and
+    history (−72d..−17d) — each safely under the cap, and merge them; the union
+    has both the current games and the earlier rounds. Non-tournament leagues use
+    a single near window."""
+    today = datetime.now()
+
+    def win(a: int, b: int) -> str:
+        return (f"{(today + timedelta(days=a)).strftime('%Y%m%d')}"
+                f"-{(today + timedelta(days=b)).strftime('%Y%m%d')}")
+
+    if league in _TOURNAMENTS:
+        recent = await fetch_scoreboard(sport, league, win(-17, 16))
+        history = await fetch_scoreboard(sport, league, win(-72, -17))
+        if recent is None and history is None:
+            return None
+        merged: dict[str, dict] = {}
+        for e in (history or []) + (recent or []):
+            merged[e.get("id")] = e
+        out = list(merged.values())
+        out.sort(key=lambda e: e.get("date") or "")
+        return out
+
+    events = await fetch_scoreboard(sport, league, _range_for(league))
+    if events is None:
+        return None
+    # Some leagues return nothing for a date window but do have a "current"
+    # slate — retry the default scoreboard once.
+    if not events:
+        events = await fetch_scoreboard(sport, league) or []
+    return events
+
+
 async def get_sports(query: str) -> dict | None:
-    """Top-level lookup used by the server. Resolves the league, fetches a
-    window of games, optionally filters to a named team, and returns a dict
-    with a card `payload` and a spoken `summary`. None → let the caller fall
-    back to web research."""
+    """Top-level lookup used by the server. Resolves the league, fetches the
+    games window(s), optionally filters to a named team, and returns a dict with
+    a card `payload` and a spoken `summary`. None → let the caller fall back to
+    web research."""
     resolved = resolve_league(query)
     if not resolved:
         return None
     sport, league, display = resolved
 
-    events = await fetch_scoreboard(sport, league, _default_range())
+    events = await _fetch_events(sport, league)
     if events is None:
         return None
-    # Some leagues (e.g. mid-tournament) return nothing for a date window but
-    # do have a "current" slate — retry the default scoreboard once.
-    if not events:
-        events = await fetch_scoreboard(sport, league) or []
 
     hint = _team_hint(query)
     if hint:
         def _has(e: dict) -> bool:
-            blob = " ".join(
-                filter(None, [
-                    (e.get("home") or {}).get("name", ""),
-                    (e.get("away") or {}).get("name", ""),
-                    e.get("short_name") or "",
-                ])
-            ).lower()
-            return hint in blob
+            return (
+                _name_matches(hint, (e.get("home") or {}).get("name"))
+                or _name_matches(hint, (e.get("away") or {}).get("name"))
+                or _name_matches(hint, e.get("short_name"))
+            )
         filtered = [e for e in events if _has(e)]
         # The user named a team: if it has no games in the window, say so —
         # never fall back to speaking an unrelated game from the same league.
         if not filtered:
             empty = {"live": [], "recent": [], "upcoming": []}
-            team = hint.title()
             return {
                 "payload": build_card_payload(display, empty),
-                "summary": f"I found no recent or upcoming {team} fixtures, sir.",
+                "summary": f"I found no recent or upcoming {_display_name(hint)} fixtures, sir.",
             }
         events = filtered
 
     buckets = _bucket(events)
     return {
         "payload": build_card_payload(display, buckets),
-        "summary": format_voice_summary(display, buckets, query),
+        "summary": format_voice_summary(display, buckets, query, hint),
     }
 
 
@@ -328,6 +411,58 @@ def _recent_line(display: str, buckets: dict[str, list[dict]]) -> str | None:
     return None
 
 
+def _sides_for(g: dict, hint: str) -> tuple[dict | None, dict | None]:
+    """Return (team_side, opponent_side) for the hinted team in a game."""
+    for a, b in (("home", "away"), ("away", "home")):
+        s, o = g.get(a) or {}, g.get(b) or {}
+        if _name_matches(hint, s.get("name")):
+            return s, o
+    return None, None
+
+
+def _team_result_line(display: str, buckets: dict[str, list[dict]], hint: str, q: str) -> str | None:
+    """Team-centric result phrasing ("The USA lost to Belgium, 4 to 1").
+    Honors "lose"/"beat" intent by picking the most recent loss/win; otherwise
+    the team's most recent completed game."""
+    posts = buckets["recent"]
+    if not posts:
+        return None
+    # "who did X lose to" → most recent loss; "who did X beat/defeat" → most
+    # recent win. NOTE: bare "win"/"won" ("did they win?") is NOT a win-hunt —
+    # it's a yes/no about the last game, so it falls through to "most recent".
+    want_loss = any(w in q for w in ("lose", "lost", "knocked out", "eliminat"))
+    want_win = (not want_loss) and any(w in q for w in ("beat", "defeat"))
+
+    def lost(g: dict) -> bool:
+        _, o = _sides_for(g, hint)
+        return bool(o and o.get("winner"))
+
+    def won(g: dict) -> bool:
+        s, _ = _sides_for(g, hint)
+        return bool(s and s.get("winner"))
+
+    cand = posts
+    if want_loss:
+        cand = [g for g in posts if lost(g)] or posts
+    elif want_win:
+        cand = [g for g in posts if won(g)] or posts
+
+    g = cand[-1]
+    s, o = _sides_for(g, hint)
+    if not (s and o):
+        return f"{display}, sir. Final: {_score_line(g)}."
+    subj = _team_phrase(_display_name(hint, s.get("name")))
+    oname = o.get("name", "their opponent")
+    ts, os_ = s.get("score"), o.get("score")
+    if o.get("winner"):
+        line = f"{subj} lost to {oname}, {os_} to {ts}, sir."
+    elif s.get("winner"):
+        line = f"{subj} beat {oname}, {ts} to {os_}, sir."
+    else:
+        line = f"{subj} drew with {oname}, {ts} to {os_}, sir."
+    return line[0].upper() + line[1:]
+
+
 def _upcoming_line(display: str, buckets: dict[str, list[dict]]) -> str | None:
     if buckets["upcoming"]:
         parts = [
@@ -339,12 +474,15 @@ def _upcoming_line(display: str, buckets: dict[str, list[dict]]) -> str | None:
     return None
 
 
-def format_voice_summary(display: str, buckets: dict[str, list[dict]], query: str = "") -> str:
+def format_voice_summary(
+    display: str, buckets: dict[str, list[dict]], query: str = "", hint: str | None = None
+) -> str:
     """Concise butler-style spoken line, prioritized by what the user asked:
 
     - Live game in progress → always leads (most timely).
-    - A RESULT question ("what was the score", "did they win", "how did they
-      do", "final/result") → the most recent final.
+    - A RESULT question about a specific team ("who did USA lose to", "did they
+      win") → team-centric result ("The USA lost to Belgium, 4 to 1").
+    - A RESULT question with no team → the most recent final.
     - A SCHEDULE question ("when", "what time", "next", "upcoming") → the next
       fixtures.
     - Otherwise → next fixture if any, else the last result.
@@ -357,7 +495,7 @@ def format_voice_summary(display: str, buckets: dict[str, list[dict]], query: st
     result_intent = any(
         w in q for w in (
             "score", "did ", "won", " win", "beat", "result", "final",
-            "how did", "was the", "lose", "lost", "outcome",
+            "how did", "was the", "lose", "lost", "outcome", "knocked out",
         )
     )
     schedule_intent = any(
@@ -367,10 +505,14 @@ def format_voice_summary(display: str, buckets: dict[str, list[dict]], query: st
         )
     )
 
-    order = (
-        [_recent_line, _upcoming_line] if result_intent and not schedule_intent
-        else [_upcoming_line, _recent_line]
-    )
+    if result_intent and not schedule_intent:
+        if hint:
+            line = _team_result_line(display, buckets, hint, q)
+            if line:
+                return line
+        order = [_recent_line, _upcoming_line]
+    else:
+        order = [_upcoming_line, _recent_line]
     for fn in order:
         line = fn(display, buckets)
         if line:
