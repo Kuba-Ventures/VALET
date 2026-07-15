@@ -81,27 +81,51 @@ _TEAMS: list[tuple[str, str, str, str]] = [
     ("barcelona", "soccer", "esp.1", "La Liga"),
 ]
 
+# National soccer teams → the FIFA World Cup scoreboard. A question that names
+# only the countries ("score of the Argentina England game") carries no league
+# keyword, so without this it fell through to slow web research. Mapping nations
+# to fifa.world is the right default while a World Cup is on; off-cycle the
+# scoreboard window is empty and get_sports degrades to a clean "no fixtures"
+# (and the LLM/research fallback still covers non-scores questions). Ordered so
+# multi-word names ("united states", "south korea") match before bare tokens.
+_NATIONS_WORDS = [
+    "united states", "south korea", "saudi arabia", "costa rica", "new zealand",
+    "ivory coast", "south africa", "czech republic",
+    "argentina", "england", "france", "spain", "brazil", "portugal", "germany",
+    "netherlands", "italy", "belgium", "croatia", "morocco", "uruguay",
+    "colombia", "mexico", "canada", "japan", "australia", "denmark", "poland",
+    "switzerland", "senegal", "ghana", "nigeria", "cameroon", "ecuador", "iran",
+    "usa", "korea", "wales", "scotland",
+]
+_NATIONS: list[tuple[str, str, str, str]] = [
+    (w, "soccer", "fifa.world", "FIFA World Cup") for w in _NATIONS_WORDS
+]
+
+# Everything the team filter / resolver scans, longest keywords first so a
+# multi-word name isn't shadowed by a shorter substring.
+_ALL_TEAMS = sorted(_TEAMS + _NATIONS, key=lambda e: -len(e[0]))
+
 
 def resolve_league(query: str) -> tuple[str, str, str] | None:
     """Map a free-text sports query to (sport_slug, league_slug, display_name).
 
-    Tries explicit league keywords first, then a small popular-team map.
-    Returns None when nothing matches (caller falls back to web research).
+    Tries explicit league keywords first, then the team/nation map. Returns None
+    when nothing matches (caller falls back to web research).
     """
     q = (query or "").lower()
     for kw, sport, league, name in _LEAGUES:
         if kw in q:
             return sport, league, name
-    for kw, sport, league, name in _TEAMS:
+    for kw, sport, league, name in _ALL_TEAMS:
         if kw in q:
             return sport, league, name
     return None
 
 
 def _team_hint(query: str) -> str | None:
-    """A lowercase team token to filter events by, if the query names one."""
+    """A lowercase team/nation token to filter events by, if the query names one."""
     q = (query or "").lower()
-    for kw, *_ in _TEAMS:
+    for kw, *_ in _ALL_TEAMS:
         if kw in q:
             return kw
     return None
@@ -240,7 +264,7 @@ async def get_sports(query: str) -> dict | None:
     buckets = _bucket(events)
     return {
         "payload": build_card_payload(display, buckets),
-        "summary": format_voice_summary(display, buckets),
+        "summary": format_voice_summary(display, buckets, query),
     }
 
 
@@ -297,18 +321,58 @@ def _fmt_when(iso: str | None, detail_full: str | None) -> str:
         return iso
 
 
-def format_voice_summary(display: str, buckets: dict[str, list[dict]]) -> str:
-    """Concise butler-style spoken line: live > next upcoming > most recent."""
-    if buckets["live"]:
-        e = buckets["live"][0]
-        return f"{display}, sir: {_score_line(e)}, {e.get('detail') or 'in progress'}."
-    if buckets["upcoming"]:
-        parts = []
-        for e in buckets["upcoming"][:2]:
-            parts.append(f"{_score_line(e)} — {_fmt_when(e.get('date'), e.get('detail_full'))}")
-        lead = "Next up" if len(parts) == 1 else "Upcoming fixtures"
-        return f"{display}, sir. {lead}: " + "; ".join(parts) + "."
+def _recent_line(display: str, buckets: dict[str, list[dict]]) -> str | None:
     if buckets["recent"]:
         e = buckets["recent"][-1]
         return f"{display}, sir. Final: {_score_line(e)}."
+    return None
+
+
+def _upcoming_line(display: str, buckets: dict[str, list[dict]]) -> str | None:
+    if buckets["upcoming"]:
+        parts = [
+            f"{_score_line(e)} — {_fmt_when(e.get('date'), e.get('detail_full'))}"
+            for e in buckets["upcoming"][:2]
+        ]
+        lead = "Next up" if len(parts) == 1 else "Upcoming fixtures"
+        return f"{display}, sir. {lead}: " + "; ".join(parts) + "."
+    return None
+
+
+def format_voice_summary(display: str, buckets: dict[str, list[dict]], query: str = "") -> str:
+    """Concise butler-style spoken line, prioritized by what the user asked:
+
+    - Live game in progress → always leads (most timely).
+    - A RESULT question ("what was the score", "did they win", "how did they
+      do", "final/result") → the most recent final.
+    - A SCHEDULE question ("when", "what time", "next", "upcoming") → the next
+      fixtures.
+    - Otherwise → next fixture if any, else the last result.
+    """
+    q = (query or "").lower()
+    if buckets["live"]:
+        e = buckets["live"][0]
+        return f"{display}, sir: {_score_line(e)}, {e.get('detail') or 'in progress'}."
+
+    result_intent = any(
+        w in q for w in (
+            "score", "did ", "won", " win", "beat", "result", "final",
+            "how did", "was the", "lose", "lost", "outcome",
+        )
+    )
+    schedule_intent = any(
+        w in q for w in (
+            "when", "what time", "next", "upcoming", "schedule", "fixture",
+            "play", "kick", "start",
+        )
+    )
+
+    order = (
+        [_recent_line, _upcoming_line] if result_intent and not schedule_intent
+        else [_upcoming_line, _recent_line]
+    )
+    for fn in order:
+        line = fn(display, buckets)
+        if line:
+            return line
     return f"I found no current {display} fixtures, sir."
