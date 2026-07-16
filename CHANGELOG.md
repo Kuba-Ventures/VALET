@@ -3,6 +3,27 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.25] — 2026-07-16
+
+### Fixed
+- **VALET no longer argues with its own live stats.** The butler rephrase on
+  the new STATS path was fact-checking the (current, correct) StatMuse line
+  against its own out-of-date training and "correcting" it — reporting Man
+  United's actual top scorers as *"Mbeumo plays for Brentford and Šeško for RB
+  Leipzig, neither of whom are Manchester United players, sir"* after both had
+  transferred. The rephrase is now a strict style transform, backed by a
+  deterministic faithfulness check that discards any restatement which disputes
+  the source or drops/invents a figure, falling back to the raw stat line.
+- **Numbers spoken in the wrong language.** Fish's multilingual voice read bare
+  digits in whichever language it guessed — "Argentina beat England, 2 to 1"
+  came out *"dua to uno"*. Plain integers are now spelled out in English for the
+  audio only (captions keep the digits); years, seasons, decimals, times and
+  ordinals are left untouched so "2025-26" still reads correctly.
+- **"Tell me more about [headline]" summarized the screen** instead of opening
+  the article. Follow-ups about items VALET just surfaced are now always
+  READ_ARTICLE — the screen actions are explicitly excluded, and topic-based
+  references ("the Falklands banner issue") are matched, not just ordinals.
+
 ## [0.2.24] — 2026-07-16
 
 ### Added
