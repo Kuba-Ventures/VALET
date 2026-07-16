@@ -52,6 +52,7 @@ export type EventType =
   | "result.weather"
   | "result.sports"
   | "result.markets"
+  | "result.news"
   // Per-source preview card emitted during research (live), one per
   // successful web_fetch. Distinct from `result.web` which is the
   // model's final reading list summary.
@@ -616,6 +617,12 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       return;
     }
 
+    // News card — topic header → headline rows (title + source, linked).
+    if (kind === "news") {
+      populateNewsCard(card, event);
+      return;
+    }
+
     // (markdown branch handled in renderResultCard before reaching here.)
 
     const p = (event.payload || {}) as Record<string, unknown>;
@@ -688,6 +695,40 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       const display = sourceUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
       link.textContent = (display.length > 48 ? display.slice(0, 45) + "…" : display) + " ↗";
       card.appendChild(link);
+    }
+  }
+
+  /** Native news card. Payload built by news.build_card_payload:
+   * { topic, items: [{title, source, link}] }. Topic header → headline rows. */
+  function populateNewsCard(card: HTMLElement, event: ProcessEvent) {
+    interface NewsItem { title: string; source: string; link: string; }
+    interface NewsPayload { topic: string; items: NewsItem[]; }
+    const p = (event.payload || {}) as unknown as NewsPayload;
+
+    const head = document.createElement("div");
+    head.className = "pp-news-topic";
+    head.textContent = p.topic || "News";
+    card.appendChild(head);
+
+    for (const it of (p.items || []).slice(0, 6)) {
+      const row = it.link ? document.createElement("a") : document.createElement("div");
+      row.className = "pp-news-row";
+      if (it.link) {
+        (row as HTMLAnchorElement).href = it.link;
+        (row as HTMLAnchorElement).target = "_blank";
+        (row as HTMLAnchorElement).rel = "noopener noreferrer";
+      }
+      const title = document.createElement("div");
+      title.className = "pp-news-title";
+      title.textContent = it.title;
+      row.appendChild(title);
+      if (it.source) {
+        const src = document.createElement("div");
+        src.className = "pp-news-source";
+        src.textContent = it.source;
+        row.appendChild(src);
+      }
+      card.appendChild(row);
     }
   }
 

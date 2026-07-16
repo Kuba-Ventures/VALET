@@ -1192,3 +1192,35 @@
 .pp-mkt-up { color: var(--pp-active); }
 .pp-mkt-down { color: var(--pp-error); }
 .pp-mkt-flat { color: var(--pp-text-dim); }
+
+/* ---------------------------------------------------------------------------
+   News card (result.news) — topic header → headline rows (title + source).
+   --------------------------------------------------------------------------- */
+.pp-news-topic {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pp-accent);
+  margin-bottom: 8px;
+}
+.pp-news-row {
+  display: block;
+  text-decoration: none;
+  padding: 6px 8px;
+  border-left: 2px solid var(--pp-border);
+  margin-bottom: 6px;
+  transition: border-color 0.15s ease;
+}
+.pp-news-row:hover { border-left-color: var(--pp-accent); }
+.pp-news-title {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--pp-card-body);
+}
+.pp-news-source {
+  font-family: var(--pp-mono);
+  font-size: 10px;
+  color: var(--pp-text-faint);
+  margin-top: 2px;
+}

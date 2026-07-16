@@ -700,6 +700,10 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "bitcoin price" → [ACTION:MARKETS] bitcoin
   "how's Tesla stock doing" → [ACTION:MARKETS] Tesla
   "what's gold at" → [ACTION:MARKETS] gold
+- [ACTION:NEWS] topic_or_empty — top headlines, or news on a topic, from Google News (instant). Renders headline cards AND speaks the top few. Use for "what's the news / headlines", "what's happening", "what's the latest on X", "any news about X". Empty target → top headlines. Emit the tag ALONE, no preamble.
+  "what's the news" → [ACTION:NEWS]
+  "what's the latest on AI" → [ACTION:NEWS] artificial intelligence
+  "any news about the world cup" → [ACTION:NEWS] world cup
 - [ACTION:CREATE_EVENT] title ||| start_iso ||| duration_min_or_end ||| description? ||| location? — schedule an event on the user's Mac Calendar (Apple Calendar, via EventKit). Always resolve relative times ("tomorrow at 3pm") to absolute ISO timestamps using the CURRENT TIME context above. Use 30 if no duration mentioned.
   "schedule a meeting tomorrow at 3pm called design review" → [ACTION:CREATE_EVENT] design review ||| 2026-05-16 3:00 PM ||| 30
   "block 2-3pm Friday for deep work" → [ACTION:CREATE_EVENT] Deep work ||| 2026-05-16 2:00 PM ||| 2026-05-16 3:00 PM
@@ -854,7 +858,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|MARKETS|LOOKUP|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|MARKETS|NEWS|LOOKUP|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2378,6 +2382,41 @@ async def _execute_sports(query: str, ws):
         except Exception:
             pass
     log.info(f"VALET: {msg}")
+
+
+async def _execute_news(query: str, ws):
+    """Top headlines or topic news via Google News RSS (news.py), keyless.
+    Self-speaking; emits a result.news card. Falls back to fast lookup if the
+    feed is unavailable."""
+    import news as _nw
+    try:
+        result = await _nw.get_news(query)
+    except Exception as e:
+        log.warning("news lookup failed for %r: %s", query[:80], e)
+        result = None
+    if not result or not result["payload"].get("items"):
+        await _execute_quick_lookup(query, ws)
+        return
+    try:
+        await process_bus.emit(ProcessEvent(
+            type="result.news",
+            task_id="news",
+            id=_uuid.uuid4().hex[:10],
+            status="done",
+            title=result["payload"].get("topic", "News"),
+            payload=result["payload"],
+        ))
+    except Exception as e:
+        log.debug(f"result.news emit failed: {e}")
+    msg = result["summary"]
+    audio = await synthesize_speech(msg)
+    if audio and ws:
+        try:
+            await ws.send_json({"type": "status", "state": "speaking"})
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+        except Exception:
+            pass
+    log.info(f"VALET (news): {msg}")
 
 
 async def _execute_markets(query: str, ws):
@@ -6243,8 +6282,17 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # doesn't. Dynamic name resolution happens in the async handler.
     try:
         import markets as _mk
-        if any(c in t for c in _mk.MARKET_CUES) and _mk.resolve_symbol_sync(t):
+        _is_news = any(w in t for w in ("news", "headlines", "happening"))
+        if not _is_news and any(c in t for c in _mk.MARKET_CUES) and _mk.resolve_symbol_sync(t):
             return {"action": "markets", "target": text.strip()}
+    except Exception:
+        pass
+
+    # ── News / headlines. News cues are specific enough to gate on directly.
+    try:
+        import news as _nw
+        if any(c in t for c in _nw.NEWS_CUES):
+            return {"action": "news", "target": text.strip()}
     except Exception:
         pass
 
@@ -7865,6 +7913,9 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "markets":
                             response_text = ""
                             asyncio.create_task(_execute_markets(action.get("target", ""), ws))
+                        elif action["action"] == "news":
+                            response_text = ""
+                            asyncio.create_task(_execute_news(action.get("target", ""), ws))
                         elif action["action"] == "check_dispatch":
                             recent = dispatch_registry.get_most_recent()
                             if not recent:
@@ -8044,6 +8095,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _execute_quick_lookup speaks the answer
                                     elif action_type == "markets":
                                         response_text = ""  # _execute_markets emits the card + speaks
+                                    elif action_type == "news":
+                                        response_text = ""  # _execute_news emits the card + speaks
                                     else:
                                         response_text = "Right away, sir."
 
@@ -8211,6 +8264,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_quick_lookup(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "markets":
                                     asyncio.create_task(_execute_markets(embedded_action.get("target", ""), ws))
+                                elif embedded_action["action"] == "news":
+                                    asyncio.create_task(_execute_news(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "check_weather":
                                     wx_t = (embedded_action.get("target") or "").strip()
                                     # LLM tag carries no time scope — recover it
