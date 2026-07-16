@@ -577,16 +577,14 @@ ANSWER DIRECTLY vs RESEARCH — DEFAULT TO ANSWERING FROM YOUR OWN KNOWLEDGE, an
 - [ACTION:LOOKUP] query — a FAST (~2s) single web check for ONE current/volatile fact. Use this the moment you'd otherwise say you're unsure or that a fact "changes frequently": a current ranking or record-holder ("world number one in X"), a current coach/CEO/officeholder, a live price, "who is the current …", "the latest …" of a single fact. The system fetches it and speaks the answer — emit the tag ALONE, NO preamble, NO spoken words before it.
   NEVER punt. You are FORBIDDEN from saying "I'd need to check", "I don't have that information", "I don't have access", "I'm afraid I can't recall", "rankings change frequently", or any variant. If you're not certain of a current fact → emit [ACTION:LOOKUP], don't apologize.
   LOOKUP vs RESEARCH: LOOKUP is for ONE quick fact — a name, a number, a date, a single statistic — that needs the web (fast, spoken, ~2s). RESEARCH is ONLY for rich/multi-item results with cards ("show me options", "compare prices", "find listings near me"). A single number is NEVER research.
-  A SINGLE STATISTIC OR COUNT is a LOOKUP, not RESEARCH: a player's goals/points/assists/appearances in a season or tournament, a team's win total, a record figure, "how many X did Y have". These want one spoken number, not a page of source cards — emit [ACTION:LOOKUP], NEVER [ACTION:RESEARCH]. RESEARCH would fetch 3-5 full pages and take many seconds for a number a single search answers in two.
+  A SINGLE STATISTIC OR COUNT is never RESEARCH: sports stats (a player's goals/points/assists, a top scorer) → [ACTION:STATS]; any other single number/date/name that needs the web → [ACTION:LOOKUP]. Both want one spoken fact, not a page of source cards. RESEARCH would fetch 3-5 full pages and take many seconds for a number a single request answers in one or two.
   "who is the world number one in professional squash" → [ACTION:LOOKUP] current men's world number one professional squash PSA
   "who's the CEO of Stripe now" → [ACTION:LOOKUP] current CEO of Stripe
   "what's the price of bitcoin" → [ACTION:MARKETS] bitcoin (any stock/crypto/index price → MARKETS, not LOOKUP)
   "who is the coach of UVA basketball" → [ACTION:LOOKUP] current UVA men's basketball head coach
   "who is the CEO of Apple" → [ACTION:LOOKUP] current CEO of Apple
   "who is the prime minister of the UK" → [ACTION:LOOKUP] current UK prime minister
-  "how many goals did Mbappé score for Real Madrid this season" → [ACTION:LOOKUP] Kylian Mbappé goals for Real Madrid this season
-  "how many goals has Mbappé scored this World Cup" → [ACTION:LOOKUP] Kylian Mbappé goals this World Cup
-  "how many points did LeBron score last night" → [ACTION:LOOKUP] LeBron James points last game (NOTE: a live game SCORE is [ACTION:SPORTS], but a single PLAYER'S stat line is [ACTION:LOOKUP] — sports scores ≠ player stats)
+  (Sports stats like "how many goals did Mbappé score this season" or "top scorer" → [ACTION:STATS], see below — NOT LOOKUP.)
 
 RESEARCH vs BUILD — distinguish by the user's verb at the front of the request, not by any word that appears later:
   Research verbs ("show me", "find me", "what are", "what's the best", "tell me about", "research", "compare", "where can I", "who makes") → [ACTION:RESEARCH]
@@ -699,6 +697,13 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "when do the Chiefs play next" → [ACTION:SPORTS] Chiefs next game
   "who's winning the Premier League" → [ACTION:SPORTS] Premier League standings
   SPORTS vs RESEARCH: a question about a game's score/result/schedule/standings is SPORTS. Only use RESEARCH for sports questions that aren't about live results (e.g. "history of the World Cup", "who's the best striker ever").
+  SPORTS vs STATS: SPORTS is scores/schedules/standings only — it does NOT know player or team STATISTICS. A question about a STAT (a player's goals/points/assists/home runs, a top scorer / leading scorer / golden boot, "how many X did Y get") is [ACTION:STATS], NOT SPORTS. ("who's the Premier League top scorer" → STATS, not SPORTS.)
+- [ACTION:STATS] query — sports STATISTICS via StatMuse (keyless, ~1-2s, one spoken sentence, no card clutter). Use for ANY player or team stat: goals/points/assists/rebounds/home runs/touchdowns/yards in a season or tournament, "top scorer / leading scorer / golden boot / most goals / MVP", per-game averages, batting average, records. Pass the user's question through verbatim (StatMuse understands "this season" / "last season" and auto-detects the sport). ALWAYS prefer STATS over SPORTS (which only knows scores) and over RESEARCH (slow) for statistics. Emit the tag ALONE, NO preamble — the system speaks the answer.
+  "how many goals did Mbappé score for Real Madrid this season" → [ACTION:STATS] how many goals did Mbappé score for Real Madrid this season
+  "who is the leading scorer of the Premier League last season" → [ACTION:STATS] Premier League top scorer last season
+  "who is the leading scorer for Manchester United" → [ACTION:STATS] Manchester United top scorer this season
+  "how many points is LeBron averaging" → [ACTION:STATS] LeBron James points per game this season
+  "how many home runs does Aaron Judge have" → [ACTION:STATS] Aaron Judge home runs this season
 - [ACTION:MARKETS] query — a live stock / crypto / index / commodity quote (keyless, instant). Renders a quote card AND speaks the price + daily move. Use for ANY price/quote question: a stock or ticker, "how's the market / S&P / Dow / Nasdaq", a crypto price, gold/oil. ALWAYS prefer this over LOOKUP/RESEARCH for prices. Emit the tag ALONE, no preamble.
   "what's the price of Apple" → [ACTION:MARKETS] Apple
   "how's the S&P today" → [ACTION:MARKETS] S&P 500
@@ -863,7 +868,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|MARKETS|NEWS|LOOKUP|READ_ARTICLE|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|STATS|MARKETS|NEWS|LOOKUP|READ_ARTICLE|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2575,6 +2580,55 @@ async def _ddg_snippets(query: str, n: int = 8) -> list[str]:
     except Exception as e:
         log.warning("ddg lookup failed for %r: %s", query[:80], e)
         return []
+
+
+async def _execute_stats(query: str, ws):
+    """Sports STAT questions via StatMuse (statmuse.py) — one correct sentence,
+    ~1-2s, single source. Player/team season & tournament stats, top scorers,
+    leaders. On any miss (non-sports, no data, network) falls back to the quick
+    web LOOKUP (which itself falls back to deep RESEARCH). Self-speaking like
+    _execute_quick_lookup: emits the spoken answer, no preamble."""
+    import statmuse
+    async with process_bus.task_context(f"Checking stats: {query[:44]}") as task_id:
+        await emit_step(task_id, "Checking the stats…", status="active")
+        result = await statmuse.get_stat(query)
+        if not result:
+            # Not a stat StatMuse can answer — hand off to the quick web lookup.
+            await emit_step(task_id, "No stat match — checking the web…", status="done")
+            await _execute_quick_lookup(query, ws)
+            return
+        raw = result["answer"]
+        # Light butler rephrase: keep every number/name EXACTLY, add VALET's
+        # voice + "sir". Falls back to the raw StatMuse sentence if Haiku fails,
+        # so a synth hiccup never costs us the (already correct) answer.
+        msg = raw
+        try:
+            resp = await anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=120,
+                system=(
+                    f"You are VALET, {USER_NAME}'s British butler. Rephrase the given "
+                    "sports statistic as ONE concise spoken sentence in your voice — dry "
+                    "wit, economy of language, end with 'sir.' CRITICAL: preserve every "
+                    "number, name, team, competition and season EXACTLY as given; do not "
+                    "add, drop, round, or infer any figure. Output only the sentence."
+                ),
+                messages=[{"role": "user", "content": raw}],
+            )
+            synth = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+            if synth:
+                msg = synth
+        except Exception as e:
+            log.debug("stats rephrase failed, speaking raw: %s", e)
+        await emit_step(task_id, "Answered", detail=msg[:120], status="done")
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
+        log.info(f"VALET (stats): {msg}")
 
 
 async def _execute_quick_lookup(query: str, ws):
@@ -5581,6 +5635,17 @@ _UI_POINT_RE = re.compile(
     r'^(?:where(?:\'s|\s+is|\s+are)?|show\s+me(?:\s+where)?|point\s+(?:to|at)|'
     r'find\s+me)\s+(?:the\s+)?(?P<target>.+?)(?:\s+button|\s+is|\s+are)?\s*[.?!]*$',
     re.IGNORECASE)
+# "show me the X" is point-and-teach ONLY when X is an on-screen element. A
+# research-shaped target — a superlative ("best/top/cheapest"), a request for
+# options/reviews, "near me", "how to", or a leading count ("three best…") —
+# means the user wants information, so let it fall through to the LLM's RESEARCH
+# path instead of trying to point at a UI element. Fixes "show me the three best
+# fishing poles" being answered with "I don't see a … to point at, sir."
+_RESEARCHY_POINT_RE = re.compile(
+    r'\b(best|top|cheapest|cheap|greatest|worst|good|better|options?|reviews?|'
+    r'recommend\w*|compare|versus|vs|near\s+me|how\s+to)\b|'
+    r'^(?:a\s+few|some|several|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b',
+    re.IGNORECASE)
 # Voice console (Stage 1): "open/launch/fire up X" → launch an installed app with
 # NO model round-trip. The verb anchors it; the installed-app fuzzy match gates
 # it, so "open a new tab" / "open the pod bay doors" find no app and fall through
@@ -5890,18 +5955,6 @@ _WALKTHROUGH_RE = re.compile(
 _SETTINGS_VOICE_RE = re.compile(
     r'^(?:open|go\s+to|show\s+me|take\s+me\s+to|jump\s+to|launch)\s+'
     r'(?:the\s+|my\s+)?(?P<target>.+?)\s*[.?!]*$', re.IGNORECASE)
-# Stat nouns for the "how many <stat>…" player/team-stat fast-path (see
-# detect_action_fast). Word-boundary matched so "run" doesn't fire on
-# "brunch", "cap" on "capital", "point" on "appointment", etc. Plurals
-# handled by the optional trailing s/es; multi-word terms allow a space or
-# hyphen ("home run", "hat-trick", "clean sheet", "three-pointer").
-_STAT_NOUN_RE = re.compile(
-    r'\b('
-    r'goals?|points?|assists?|rebounds?|touchdowns?|home[ -]runs?|homers?|'
-    r'wickets?|saves?|tackles?|yards?|caps|appearances?|wins|titles?|'
-    r'championships?|trophies|hat[ -]tricks?|clean[ -]sheets?|strikeouts?|'
-    r'interceptions?|three[ -]pointers?'
-    r')\b', re.IGNORECASE)
 
 
 def detect_action_fast(text: str, ws=None) -> dict | None:
@@ -5989,7 +6042,7 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     _pm = _UI_POINT_RE.match(text.strip())
     if _pm:
         tgt = _pm.group("target").strip(" .?!")
-        if tgt and len(tgt.split()) <= 6:
+        if tgt and len(tgt.split()) <= 6 and not _RESEARCHY_POINT_RE.search(tgt):
             return {"action": "ui_act", "ui_action": "point", "target": tgt}
     _cm = _UI_CLICK_RE.match(text.strip())
     if _cm:
@@ -6407,17 +6460,21 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     )):
         return None
 
-    # ── Player / team STAT questions ("how many goals did X score…") are a
-    # SINGLE NUMBER, not a live score. sports.py only knows scores / schedules /
-    # standings — it has no player-stat support — so these would otherwise hit
-    # the SPORTS fast-path below and get answered with an unrelated match score
-    # (e.g. "how many goals has Mbappé scored this World Cup" → "Final:
-    # Argentina 2, England 1"). Route them to the fast (~2s) LOOKUP path, which
-    # returns one spoken number, instead of SPORTS (wrong) or RESEARCH (slow,
-    # fetches 3-5 pages). Gate: "how many" + a stat noun — a real live-score
-    # query never phrases itself this way ("what's the score", "who won").
-    if ("how many" in t or "how much" in t or "how far" in t) and _STAT_NOUN_RE.search(t):
-        return {"action": "quick_lookup", "target": text.strip()}
+    # ── Player / team STAT questions ("how many goals did X score…", "who's the
+    # top scorer…") are a SINGLE STATISTIC, not a live score. sports.py only
+    # knows scores / schedules / standings — no player-stat support — so these
+    # would otherwise hit the SPORTS fast-path below and get answered with an
+    # unrelated match score ("how many goals has Mbappé scored this World Cup" →
+    # "Final: Argentina 2, England 1"; "leading scorer of the Premier League" →
+    # a fixture). Route them to the StatMuse fast-path (~1-2s, one correct
+    # sentence, single source), which falls back to LOOKUP→RESEARCH on a miss.
+    # Placed BEFORE the sports-cue block so "scorer"/"goals" don't poach it.
+    try:
+        import statmuse as _sm
+        if _sm.looks_like_stat_query(t):
+            return {"action": "stats", "target": text.strip()}
+    except Exception:
+        pass
 
     if any(c in t for c in _sports_cues):
         try:
@@ -8060,9 +8117,14 @@ async def voice_handler(ws: WebSocket):
                             # no preamble.
                             response_text = ""
                             asyncio.create_task(_execute_sports(action.get("target", ""), ws))
+                        elif action["action"] == "stats":
+                            # Sports STAT question (e.g. "how many goals…", "top
+                            # scorer…") → StatMuse fast-path; self-speaking, ~1-2s,
+                            # single source, falls back to LOOKUP→RESEARCH. No preamble.
+                            response_text = ""
+                            asyncio.create_task(_execute_stats(action.get("target", ""), ws))
                         elif action["action"] == "quick_lookup":
-                            # Single-fact stat question (e.g. "how many goals…")
-                            # routed off the SPORTS fast-path — self-speaking,
+                            # Single quick fact routed off a fast-path — self-speaking,
                             # ~2s DDG+Haiku answer; no preamble.
                             response_text = ""
                             asyncio.create_task(_execute_quick_lookup(action.get("target", ""), ws))
@@ -8247,6 +8309,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _handle_summarize shows the panel + speaks
                                     elif action_type == "sports":
                                         response_text = ""  # _execute_sports emits the card + speaks
+                                    elif action_type == "stats":
+                                        response_text = ""  # _execute_stats speaks the answer
                                     elif action_type == "lookup":
                                         response_text = ""  # _execute_quick_lookup speaks the answer
                                     elif action_type == "markets":
@@ -8418,6 +8482,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_world_time(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "sports":
                                     asyncio.create_task(_execute_sports(embedded_action.get("target", ""), ws))
+                                elif embedded_action["action"] == "stats":
+                                    asyncio.create_task(_execute_stats(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "lookup":
                                     asyncio.create_task(_execute_quick_lookup(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "markets":

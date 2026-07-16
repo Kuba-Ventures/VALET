@@ -3,6 +3,27 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.24] — 2026-07-16
+
+### Added
+- **Sports statistics via StatMuse (`[ACTION:STATS]`).** A new keyless source
+  (`statmuse.py`) that answers player and team stat questions — "how many goals
+  did Mbappé score for Real Madrid this season", "who's the Premier League top
+  scorer", "LeBron's points per game" — with one correct spoken sentence in
+  ~1–2 seconds from a single source, no stack of research panels. StatMuse
+  auto-detects the sport and understands "this season"/"last season"; on any
+  miss it falls back to the quick web LOOKUP, then deep RESEARCH.
+
+### Fixed
+- **Sports stat questions were answered wrong or slowly.** They previously hit
+  either the SPORTS path (which only knows scores/schedules, so "leading scorer
+  of the Premier League" returned a *fixture*) or the multi-page RESEARCH crawl
+  (slow, many source cards, often punting on "conflicting figures"). They now
+  route to the StatMuse fast-path.
+- **"Show me the three best fishing poles"** (and other superlative/"options"
+  research requests) no longer get grabbed by the on-screen point-and-teach
+  handler ("I don't see a … to point at, sir") — they correctly reach RESEARCH.
+
 ## [0.2.23] — 2026-07-16
 
 ### Fixed
