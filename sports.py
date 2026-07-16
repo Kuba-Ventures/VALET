@@ -191,7 +191,6 @@ def _norm(ev: dict) -> dict | None:
                 "score": _score_str(c),
                 "winner": _is_winner(c),
             }
-            (home if c.get("homeAway") == "home" else away) and None
             if c.get("homeAway") == "home":
                 home = side
             else:
@@ -203,6 +202,9 @@ def _norm(ev: dict) -> dict | None:
             "state": status.get("state"),  # pre | in | post
             "detail": status.get("shortDetail") or status.get("detail"),
             "detail_full": status.get("detail"),
+            # Knockout round slug (fifa.world etc.): "final", "3rd-place-match",
+            # "semifinals", … — lets us name "the final" vs "the third-place match".
+            "round": (ev.get("season") or {}).get("slug"),
             "home": home,
             "away": away,
         }
@@ -478,10 +480,27 @@ def _recent_line(display: str, buckets: dict) -> str | None:
     return None
 
 
+_ROUND_LABELS = {
+    "final": "the final",
+    "3rd-place-match": "the third-place match",
+    "third-place-match": "the third-place match",
+    "semifinals": "a semifinal",
+    "quarterfinals": "a quarterfinal",
+    "round-of-16": "the round of 16",
+}
+
+
+def _round_label(slug: str | None) -> str | None:
+    return _ROUND_LABELS.get((slug or "").lower())
+
+
 def _upcoming_line(display: str, buckets: dict) -> str | None:
     if buckets["upcoming"]:
-        parts = [f"{_score_line(e)} — {_fmt_when(e.get('date'), e.get('detail_full'))}"
-                 for e in buckets["upcoming"][:2]]
+        parts = []
+        for e in buckets["upcoming"][:3]:
+            rl = _round_label(e.get("round"))
+            suffix = f" ({rl})" if rl else ""
+            parts.append(f"{_score_line(e)}{suffix} — {_fmt_when(e.get('date'), e.get('detail_full'))}")
         lead = "Next up" if len(parts) == 1 else "Upcoming fixtures"
         return f"{display}, sir. {lead}: " + "; ".join(parts) + "."
     return None
@@ -496,6 +515,21 @@ def _summary(display: str, buckets: dict, query: str, hint: str | None) -> str:
     # upcoming fixture, even though "final" would otherwise read as a result.
     if any(w in q for w in ("who is playing", "who's playing", "whos playing",
                             "playing in", "who is in", "who's in", "who plays", "matchup")):
+        up = buckets["upcoming"]
+        # If a specific round is named, pinpoint it ("the final" → the final).
+        want = None
+        if "final" in q and "semi" not in q:
+            want = "final"
+        elif "third place" in q or "3rd place" in q:
+            want = "3rd-place-match"
+        elif "semi" in q:
+            want = "semifinals"
+        if want and up:
+            m = next((e for e in up if (e.get("round") or "").lower() == want), None)
+            if m:
+                rl = (_round_label(want) or "the match").capitalize()
+                return (f"{display}, sir. {rl}: {_score_line(m)} — "
+                        f"{_fmt_when(m.get('date'), m.get('detail_full'))}.")
         return (_upcoming_line(display, buckets) or _recent_line(display, buckets)
                 or f"I found no upcoming {display} fixtures, sir.")
     result_intent = any(w in q for w in (
@@ -676,6 +710,8 @@ _CUE_WORDS = {
     "winning", "whats", "what", "s", "games", "game", "and", "whos", "playing",
     "final", "finals", "semifinal", "semifinals", "semis", "quarterfinal",
     "quarterfinals", "playoff", "playoffs", "table", "standing", "next", "on",
+    "third", "place", "match", "matchup", "semi", "quarter", "plays", "are",
+    "upcoming", "fixtures", "fixture",
 }
 
 
