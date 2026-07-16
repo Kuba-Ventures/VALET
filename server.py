@@ -554,6 +554,7 @@ ACTION SYSTEM:
 When you decide the user needs something DONE (not just discussed), include an action tag in your response:
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
 - [ACTION:SUMMARIZE_SCREEN] — read the FOCUSED content (the open email, doc, dashboard, article…) and speak a tight summary plus what the user needs to DO. Use when the user asks to summarize / TL;DR / "give me the gist" / "what do I need to do here" / "what does this say" about what's in front of them. Distinct from SCREEN, which just names what's open; this reads the content and extracts action items.
+  NEVER use SUMMARIZE_SCREEN (or SCREEN) for a follow-up about something YOU just told the user about — a headline, article, or source you surfaced. Those live under RECENTLY SHOWN, not on their screen: "tell me more about the Falklands banner issue" after reading them the news is [ACTION:READ_ARTICLE], NOT a screen summary. Screen actions require the user to clearly mean what is literally in front of them ("summarize THIS page", "what's on my screen").
 - [ACTION:SEND_TO_CLAUDE_CODE] — read what's on screen (e.g. an error report, an issue email, a failing dashboard), turn it into a concrete fix task, infer the right repo, and after a confirmation dispatch it to Claude Code to fix. Use when the user says "send this to Claude Code", "have Claude Code fix this", "dispatch this to Claude to fix", etc. Vee shows the brief + target repo and asks before sending.
 - [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
 - [ACTION:OPEN_ON_SCREEN] description — open or click ONE thing the user can see on screen, named in plain words: an email in the open inbox ("the email from Stripe"), a file in a Finder window ("the resume PDF"), a link, a button, a row. Vee clicks it where it sits; if it isn't on the current screen it navigates there first (e.g. opens the Downloads folder, then the file). Use this for "open/read/click the X" when X is on-screen content rather than an installed app or a website. Pass the description verbatim. For launching an app use OPEN_APP; for a website use the web route; for a genuine multi-step "do X then Y" use UI_TASK.
@@ -2582,6 +2583,49 @@ async def _ddg_snippets(query: str, n: int = 8) -> list[str]:
         return []
 
 
+# Phrases that mean the rephrase model started ARGUING with the source stat
+# instead of restating it — the stale-training failure described in
+# _execute_stats. Deterministic backstop: prompt wording alone can't be trusted.
+_DISPUTE_MARKERS = (
+    "mix-up", "mix up", "mixup", "inconsistency", "inconsisten",
+    "incorrect", "not correct", "isn't correct", "is wrong", "seems wrong",
+    "appears wrong", "error in", "an error", "mistake", "mistaken",
+    "does not play", "doesn't play", "do not play", "don't play",
+    "neither", "no longer play", "never played", "not a ", "aren't ",
+    "i'm afraid there", "i am afraid there", "curious", "however,",
+    "actually", "in fact", "cannot confirm", "can't confirm", "unable to confirm",
+    "you've asked me to", "you asked me to", "that assertion", "the briefing",
+)
+_NUM_RE = re.compile(r"\d[\d,\.]*")
+
+
+def _rephrase_is_faithful(synth: str, raw: str) -> bool:
+    """True when `synth` restates `raw` rather than disputing or mangling it.
+
+    Guards the stats rephrase against two failure modes:
+      1. The model fact-checks the (live, correct) stat against its own stale
+         training and "corrects" it — see _execute_stats.
+      2. It drops or invents a figure.
+    Conservative: on any doubt return False and the caller speaks the raw line,
+    which is already a clean, correct sentence.
+    """
+    s = (synth or "").strip()
+    if not s:
+        return False
+    low = s.lower()
+    if any(m in low for m in _DISPUTE_MARKERS):
+        return False
+    # Every number in the source must survive; no new numbers invented.
+    src_nums = {n.replace(",", "").rstrip(".") for n in _NUM_RE.findall(raw or "")}
+    out_nums = {n.replace(",", "").rstrip(".") for n in _NUM_RE.findall(s)}
+    if not src_nums.issubset(out_nums) or not out_nums.issubset(src_nums):
+        return False
+    # A restatement shouldn't balloon; a lecture/correction usually does.
+    if len(s) > len(raw or "") * 2 + 40:
+        return False
+    return True
+
+
 async def _execute_stats(query: str, ws):
     """Sports STAT questions via StatMuse (statmuse.py) — one correct sentence,
     ~1-2s, single source. Player/team season & tournament stats, top scorers,
@@ -2598,26 +2642,46 @@ async def _execute_stats(query: str, ws):
             await _execute_quick_lookup(query, ws)
             return
         raw = result["answer"]
-        # Light butler rephrase: keep every number/name EXACTLY, add VALET's
-        # voice + "sir". Falls back to the raw StatMuse sentence if Haiku fails,
-        # so a synth hiccup never costs us the (already correct) answer.
+        # Light butler rephrase: a PURE STYLE TRANSFORM. The model must never
+        # fact-check the statistic against its own training — that training is
+        # STALE and the StatMuse line is live. Without an explicit ban it does
+        # exactly that: it "corrected" a correct answer about Man United's top
+        # scorers into "Mbeumo plays for Brentford and Šeško for RB Leipzig,
+        # neither of whom are Manchester United players, sir" (both had since
+        # transferred). Same stale-training hazard the LOOKUP path guards against.
+        # Falls back to the raw StatMuse sentence if Haiku fails or argues, so a
+        # rephrase hiccup never costs us the (already correct) answer.
         msg = raw
         try:
             resp = await anthropic_client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=120,
                 system=(
-                    f"You are VALET, {USER_NAME}'s British butler. Rephrase the given "
-                    "sports statistic as ONE concise spoken sentence in your voice — dry "
-                    "wit, economy of language, end with 'sir.' CRITICAL: preserve every "
-                    "number, name, team, competition and season EXACTLY as given; do not "
-                    "add, drop, round, or infer any figure. Output only the sentence."
+                    f"You are VALET, {USER_NAME}'s British butler. You are given ONE "
+                    "sports statistic from a live, authoritative stats database. Restate "
+                    "it as ONE concise spoken sentence in your voice — dry wit, economy "
+                    "of language, end with 'sir.'\n"
+                    "THIS IS A STYLE TRANSFORM ONLY. The statistic is CURRENT and CORRECT; "
+                    "your own knowledge is OUT OF DATE and MUST NOT be used. Players "
+                    "transfer clubs, rosters change — if the line says a player scored for "
+                    "a club, they play for that club. You are FORBIDDEN from disputing, "
+                    "doubting, correcting, second-guessing, or commenting on the fact, and "
+                    "from mentioning any club/team not named in the line. NEVER say there "
+                    "is a mix-up, an error, an inconsistency, or that something seems "
+                    "wrong. Preserve every number, name, team, competition and season "
+                    "EXACTLY; do not add, drop, round, or infer any figure.\n"
+                    "Output only the restated sentence."
                 ),
                 messages=[{"role": "user", "content": raw}],
             )
             synth = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
-            if synth:
+            # Safety net: if the rephrase argues with the data anyway, or drops a
+            # figure the source stated, discard it and speak the raw line.
+            if synth and _rephrase_is_faithful(synth, raw):
                 msg = synth
+            elif synth:
+                log.warning("stats rephrase unfaithful, speaking raw. got=%r src=%r",
+                            synth[:160], raw[:160])
         except Exception as e:
             log.debug("stats rephrase failed, speaking raw: %s", e)
         await emit_step(task_id, "Answered", detail=msg[:120], status="done")
@@ -3865,12 +3929,81 @@ def _tts_request(text: str, voice_id: str, speed: float, *, via_proxy: bool,
     return payload, headers
 
 
+_ONES = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+         "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+         "sixteen", "seventeen", "eighteen", "nineteen")
+_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+         "eighty", "ninety")
+
+
+def _int_to_words(n: int) -> str:
+    """English words for 0..9999. Small and dependency-free — only used to keep
+    the TTS from reading bare digits in the wrong language (see _spell_numbers)."""
+    if n < 20:
+        return _ONES[n]
+    if n < 100:
+        return _TENS[n // 10] + ("-" + _ONES[n % 10] if n % 10 else "")
+    if n < 1000:
+        rest = n % 100
+        return _ONES[n // 100] + " hundred" + (" " + _int_to_words(rest) if rest else "")
+    rest = n % 1000
+    return _ONES[n // 1000] + " thousand" + (" " + _int_to_words(rest) if rest else "")
+
+
+# Patterns whose digits must stay untouched: seasons/years ("2025-26", "1998"),
+# decimals ("20.9"), times ("3:00"), and ordinals ("2nd"). Everything else that
+# is a plain integer gets spelled out.
+_TTS_KEEP_RE = re.compile(
+    r"(?:\b(?:19|20)\d{2}(?:\s*[-–/]\s*\d{2,4})?\b)"   # year / season range
+    r"|(?:\d+\.\d+)"                                    # decimal
+    r"|(?:\d{1,2}:\d{2})"                               # time
+    r"|(?:\b\d+(?:st|nd|rd|th)\b)"                      # ordinal
+)
+_TTS_INT_RE = re.compile(r"\b\d{1,4}(?:,\d{3})*\b")
+
+
+def _spell_numbers(text: str) -> str:
+    """Spell plain integers as English words for the TTS ONLY.
+
+    Fish's multilingual voice picks a language per token, so bare digits get read
+    in whatever language it guesses — "Argentina beat England, 2 to 1" came out
+    "dua to uno" (Indonesian/Spanish). English words are unambiguous. Years,
+    seasons, decimals, times and ordinals are left alone (they already read
+    correctly, and spelling them would garble "2025-26").
+    """
+    if not text:
+        return text
+    # Protect keep-patterns by carving the string around them, converting only
+    # the gaps. Avoids the classic "already-replaced text gets re-matched" bug.
+    out: list[str] = []
+    last = 0
+    for m in _TTS_KEEP_RE.finditer(text):
+        out.append(_TTS_INT_RE.sub(lambda x: _spell_one(x.group(0)), text[last:m.start()]))
+        out.append(m.group(0))          # verbatim
+        last = m.end()
+    out.append(_TTS_INT_RE.sub(lambda x: _spell_one(x.group(0)), text[last:]))
+    return "".join(out)
+
+
+def _spell_one(tok: str) -> str:
+    try:
+        n = int(tok.replace(",", ""))
+    except ValueError:
+        return tok
+    if n > 9999:
+        return tok
+    return _int_to_words(n)
+
+
 async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio. Routes through the proxy's TTS endpoint when
     licensed (Fish Audio upstream); falls back to direct Fish in dev only."""
     # Audio-only pronunciation fix: the TTS reads "VALET" like "valley"; spell it
     # phonetically so it says "val-AY". The on-screen caption keeps "VALET".
     text = re.sub(r"\bVALET\b", "Valay", text, flags=re.IGNORECASE)
+    # Audio-only: bare digits get read in a guessed language ("2 to 1" → "dua to
+    # uno"). Spell them in English. Caption keeps the digits.
+    text = _spell_numbers(text)
     voice_id = _active_voice_id()
     speed = _voice_speed()
     latency = _fish_latency()
@@ -4027,7 +4160,18 @@ def _build_chat_request(
             "item: 'tell me more' / 'what does it say' / 'read it' → "
             "[ACTION:READ_ARTICLE] <its headline text> (this opens the article in "
             "the browser AND speaks a short summary). Only 'just open it' with no "
-            "summary → [ACTION:BROWSE] <its url>.\n" + lines
+            "summary → [ACTION:BROWSE] <its url>.\n"
+            "The reference is usually a TOPIC from the headline, not an ordinal — "
+            "'tell me more about the Falklands banner issue', 'what's the story with "
+            "the Tuchel criticism'. Match the user's words against the headline text "
+            "below (a partial, fuzzy, or paraphrased match counts) and emit "
+            "[ACTION:READ_ARTICLE] with THAT item's headline.\n"
+            "CRITICAL — these items are NOT on the user's screen: they are things YOU "
+            "just told them about. A follow-up about one of them is ALWAYS "
+            "READ_ARTICLE, NEVER [ACTION:SUMMARIZE_SCREEN] / [ACTION:SCREEN] / "
+            "[ACTION:OPEN_ON_SCREEN]. Only use the screen actions when the user "
+            "clearly means what is literally in front of them ('summarize THIS page', "
+            "'what's on my screen') and it does not match anything below.\n" + lines
         )
 
     # Runtime self-introspection — live wake phrases, agent registry, etc.
