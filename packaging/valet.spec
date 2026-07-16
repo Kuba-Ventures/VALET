@@ -40,6 +40,7 @@ if os.path.exists(os.path.join(ROOT, "google_credentials.json")):
 hiddenimports = [
     "sports",
     "markets",
+    "news",
     "licensing", "action_executor", "applescript_executor", "safe_executor",
     "safety", "voice_text", "task_manager", "project_scanner", "design_partner",
     "accessibility_executor", "composite_executor", "apple_calendar",
