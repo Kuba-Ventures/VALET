@@ -697,7 +697,6 @@ function renderBody(state: State, root: HTMLElement): void {
 type WinApi = {
   minimize?: () => void;
   close?: () => void;
-  setAlwaysOnTop?: (on: boolean) => void;
 };
 
 /** The Tauri window API, or undefined in a plain browser (dev/tests). */
@@ -707,15 +706,6 @@ function tauriWindow(): WinApi | undefined {
       __TAURI__?: { window?: { getCurrentWindow?: () => WinApi } };
     }).__TAURI__?.window?.getCurrentWindow?.();
   } catch { return undefined; }
-}
-
-/** The orb is a menu-bar popover and floats above everything (tauri.conf
- *  alwaysOnTop) — right for a glanceable widget, wrong for a full-screen setup
- *  wizard the user wants to park while they go grant a permission in System
- *  Settings. Drop it for the duration of onboarding and restore it on finish.
- *  Gated by the orb-drag capability (core:window:allow-set-always-on-top). */
-function setAlwaysOnTop(on: boolean): void {
-  try { tauriWindow()?.setAlwaysOnTop?.(on); } catch { /* ignore */ }
 }
 
 /** Controls that must keep their own mouse behavior — never drag handles. */
@@ -797,7 +787,6 @@ function render(state: State, root: HTMLElement): void {
       localStorage.setItem(SEEN_KEY, state.buildId);
       localStorage.removeItem("valet_force_onboarding"); // clear the replay/test flag
       root.remove();
-      setAlwaysOnTop(true); // wizard's gone — the orb goes back to floating
       return;
     }
     state.step++;
@@ -882,11 +871,6 @@ export async function maybeShowOnboarding(
   const root = document.createElement("div");
   root.id = "valet-onboarding";
   document.body.appendChild(root);
-  // Setup is a sit-down task, not a glance: let the user push the wizard behind
-  // System Settings while granting a permission. Restored when they finish. If
-  // they quit mid-setup instead, the next launch re-runs onboarding and lands
-  // here again — and tauri.conf re-applies alwaysOnTop on every fresh start.
-  setAlwaysOnTop(false);
   render(state, root);
   return true;
 }
