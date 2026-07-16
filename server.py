@@ -576,16 +576,21 @@ ANSWER DIRECTLY vs RESEARCH — DEFAULT TO ANSWERING FROM YOUR OWN KNOWLEDGE, an
 
 - [ACTION:LOOKUP] query — a FAST (~2s) single web check for ONE current/volatile fact. Use this the moment you'd otherwise say you're unsure or that a fact "changes frequently": a current ranking or record-holder ("world number one in X"), a current coach/CEO/officeholder, a live price, "who is the current …", "the latest …" of a single fact. The system fetches it and speaks the answer — emit the tag ALONE, NO preamble, NO spoken words before it.
   NEVER punt. You are FORBIDDEN from saying "I'd need to check", "I don't have that information", "I don't have access", "I'm afraid I can't recall", "rankings change frequently", or any variant. If you're not certain of a current fact → emit [ACTION:LOOKUP], don't apologize.
-  LOOKUP vs RESEARCH: LOOKUP is for ONE quick fact (fast, spoken). RESEARCH is for rich/multi-item results with cards ("show me options", "compare", "find listings near me").
+  LOOKUP vs RESEARCH: LOOKUP is for ONE quick fact — a name, a number, a date, a single statistic — that needs the web (fast, spoken, ~2s). RESEARCH is ONLY for rich/multi-item results with cards ("show me options", "compare prices", "find listings near me"). A single number is NEVER research.
+  A SINGLE STATISTIC OR COUNT is a LOOKUP, not RESEARCH: a player's goals/points/assists/appearances in a season or tournament, a team's win total, a record figure, "how many X did Y have". These want one spoken number, not a page of source cards — emit [ACTION:LOOKUP], NEVER [ACTION:RESEARCH]. RESEARCH would fetch 3-5 full pages and take many seconds for a number a single search answers in two.
   "who is the world number one in professional squash" → [ACTION:LOOKUP] current men's world number one professional squash PSA
   "who's the CEO of Stripe now" → [ACTION:LOOKUP] current CEO of Stripe
   "what's the price of bitcoin" → [ACTION:MARKETS] bitcoin (any stock/crypto/index price → MARKETS, not LOOKUP)
   "who is the coach of UVA basketball" → [ACTION:LOOKUP] current UVA men's basketball head coach
   "who is the CEO of Apple" → [ACTION:LOOKUP] current CEO of Apple
   "who is the prime minister of the UK" → [ACTION:LOOKUP] current UK prime minister
+  "how many goals did Mbappé score for Real Madrid this season" → [ACTION:LOOKUP] Kylian Mbappé goals for Real Madrid this season
+  "how many goals has Mbappé scored this World Cup" → [ACTION:LOOKUP] Kylian Mbappé goals this World Cup
+  "how many points did LeBron score last night" → [ACTION:LOOKUP] LeBron James points last game (NOTE: a live game SCORE is [ACTION:SPORTS], but a single PLAYER'S stat line is [ACTION:LOOKUP] — sports scores ≠ player stats)
 
 RESEARCH vs BUILD — distinguish by the user's verb at the front of the request, not by any word that appears later:
-  Research verbs ("show me", "find me", "what are", "what's the best", "tell me about", "research", "look up", "compare", "how much", "where can I", "who makes") → [ACTION:RESEARCH]
+  Research verbs ("show me", "find me", "what are", "what's the best", "tell me about", "research", "compare", "where can I", "who makes") → [ACTION:RESEARCH]
+  BUT a question asking for ONE fact or ONE number ("how many", "how much", "who is", "when did", "what is X's Y") is a [ACTION:LOOKUP], not RESEARCH — reserve RESEARCH for genuinely multi-item asks that want a panel of cards.
   Build verbs ("build", "create a project", "make me an app", "new project", "spin up a", "scaffold", "start a project") → [ACTION:BUILD] or [ACTION:NEW_PROJECT]
   Examples:
     "show me the three best fishing poles" → [ACTION:RESEARCH] three best fishing poles for backyard ponds
@@ -5885,6 +5890,18 @@ _WALKTHROUGH_RE = re.compile(
 _SETTINGS_VOICE_RE = re.compile(
     r'^(?:open|go\s+to|show\s+me|take\s+me\s+to|jump\s+to|launch)\s+'
     r'(?:the\s+|my\s+)?(?P<target>.+?)\s*[.?!]*$', re.IGNORECASE)
+# Stat nouns for the "how many <stat>…" player/team-stat fast-path (see
+# detect_action_fast). Word-boundary matched so "run" doesn't fire on
+# "brunch", "cap" on "capital", "point" on "appointment", etc. Plurals
+# handled by the optional trailing s/es; multi-word terms allow a space or
+# hyphen ("home run", "hat-trick", "clean sheet", "three-pointer").
+_STAT_NOUN_RE = re.compile(
+    r'\b('
+    r'goals?|points?|assists?|rebounds?|touchdowns?|home[ -]runs?|homers?|'
+    r'wickets?|saves?|tackles?|yards?|caps|appearances?|wins|titles?|'
+    r'championships?|trophies|hat[ -]tricks?|clean[ -]sheets?|strikeouts?|'
+    r'interceptions?|three[ -]pointers?'
+    r')\b', re.IGNORECASE)
 
 
 def detect_action_fast(text: str, ws=None) -> dict | None:
@@ -6389,6 +6406,18 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         "second one", "third one", "last one", "next one",
     )):
         return None
+
+    # ── Player / team STAT questions ("how many goals did X score…") are a
+    # SINGLE NUMBER, not a live score. sports.py only knows scores / schedules /
+    # standings — it has no player-stat support — so these would otherwise hit
+    # the SPORTS fast-path below and get answered with an unrelated match score
+    # (e.g. "how many goals has Mbappé scored this World Cup" → "Final:
+    # Argentina 2, England 1"). Route them to the fast (~2s) LOOKUP path, which
+    # returns one spoken number, instead of SPORTS (wrong) or RESEARCH (slow,
+    # fetches 3-5 pages). Gate: "how many" + a stat noun — a real live-score
+    # query never phrases itself this way ("what's the score", "who won").
+    if ("how many" in t or "how much" in t or "how far" in t) and _STAT_NOUN_RE.search(t):
+        return {"action": "quick_lookup", "target": text.strip()}
 
     if any(c in t for c in _sports_cues):
         try:
@@ -8031,6 +8060,12 @@ async def voice_handler(ws: WebSocket):
                             # no preamble.
                             response_text = ""
                             asyncio.create_task(_execute_sports(action.get("target", ""), ws))
+                        elif action["action"] == "quick_lookup":
+                            # Single-fact stat question (e.g. "how many goals…")
+                            # routed off the SPORTS fast-path — self-speaking,
+                            # ~2s DDG+Haiku answer; no preamble.
+                            response_text = ""
+                            asyncio.create_task(_execute_quick_lookup(action.get("target", ""), ws))
                         elif action["action"] == "markets":
                             response_text = ""
                             asyncio.create_task(_execute_markets(action.get("target", ""), ws))
