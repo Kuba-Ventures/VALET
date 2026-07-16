@@ -3,6 +3,17 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.26] — 2026-07-16
+
+### Fixed
+- **Prices, index names and version numbers spoken correctly.** The 0.2.25
+  number-spelling fix applies to every spoken response, and three cases came out
+  wrong: `$150` stranded the symbol ("dollar one hundred fifty"), `S&P 500`
+  became "S&P five hundred", and `0.2.25` became "0.2.twenty-five". Currency is
+  now reordered into words ("one hundred fifty dollars", "$67,432" → "sixty-seven
+  thousand four hundred thirty-two dollars"), and acronym-numbers and dotted
+  versions are left verbatim. Bare digit runs (IDs, phone numbers) are untouched.
+
 ## [0.2.25] — 2026-07-16
 
 ### Fixed

@@ -3937,28 +3937,39 @@ _TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
 
 
 def _int_to_words(n: int) -> str:
-    """English words for 0..9999. Small and dependency-free — only used to keep
-    the TTS from reading bare digits in the wrong language (see _spell_numbers)."""
+    """English words for 0..999,999,999. Small and dependency-free — only used to
+    keep the TTS from reading bare digits in the wrong language (see
+    _spell_numbers). Covers real spoken figures: scorelines, stat counts, and
+    prices ("$67,432" → "sixty-seven thousand four hundred thirty-two dollars")."""
     if n < 20:
         return _ONES[n]
     if n < 100:
         return _TENS[n // 10] + ("-" + _ONES[n % 10] if n % 10 else "")
-    if n < 1000:
-        rest = n % 100
-        return _ONES[n // 100] + " hundred" + (" " + _int_to_words(rest) if rest else "")
-    rest = n % 1000
-    return _ONES[n // 1000] + " thousand" + (" " + _int_to_words(rest) if rest else "")
+    for div, word in ((1_000_000_000, "billion"), (1_000_000, "million"),
+                      (1_000, "thousand"), (100, "hundred")):
+        if n >= div:
+            rest = n % div
+            return (_int_to_words(n // div) + " " + word
+                    + (" " + _int_to_words(rest) if rest else ""))
+    return _ONES[n]  # unreachable for n >= 0
 
 
-# Patterns whose digits must stay untouched: seasons/years ("2025-26", "1998"),
-# decimals ("20.9"), times ("3:00"), and ordinals ("2nd"). Everything else that
-# is a plain integer gets spelled out.
+# Patterns whose digits must stay untouched. Spelling these out garbles them:
+#   "2025-26" → "two thousand twenty-five-twenty-six"
+#   "0.2.25"  → "0.2.twenty-five"
+#   "S&P 500" → "S&P five hundred"  (a proper noun, not a count)
 _TTS_KEEP_RE = re.compile(
     r"(?:\b(?:19|20)\d{2}(?:\s*[-–/]\s*\d{2,4})?\b)"   # year / season range
-    r"|(?:\d+\.\d+)"                                    # decimal
+    r"|(?:\d+(?:\.\d+)+)"                               # decimal / dotted version
     r"|(?:\d{1,2}:\d{2})"                               # time
     r"|(?:\b\d+(?:st|nd|rd|th)\b)"                      # ordinal
+    r"|(?:\b[A-Z&][A-Z&\.]{1,9}\s+\d+\b)"               # acronym + number (S&P 500, US 30)
 )
+# Currency must be handled before plain integers: naive spelling strands the
+# symbol in front of a word ("$150" → "$one hundred fifty", which the TTS reads
+# as "dollar one hundred fifty"). The symbol becomes a trailing word instead.
+_TTS_MONEY_RE = re.compile(r"([$£€])(\d{1,4}(?:,\d{3})*)\b")
+_MONEY_WORD = {"$": "dollars", "£": "pounds", "€": "euros"}
 _TTS_INT_RE = re.compile(r"\b\d{1,4}(?:,\d{3})*\b")
 
 
@@ -3967,9 +3978,12 @@ def _spell_numbers(text: str) -> str:
 
     Fish's multilingual voice picks a language per token, so bare digits get read
     in whatever language it guesses — "Argentina beat England, 2 to 1" came out
-    "dua to uno" (Indonesian/Spanish). English words are unambiguous. Years,
-    seasons, decimals, times and ordinals are left alone (they already read
-    correctly, and spelling them would garble "2025-26").
+    "dua to uno" (Indonesian/Spanish). English words are unambiguous.
+
+    Applies to EVERY spoken response, so it is deliberately conservative: years,
+    seasons, decimals, dotted versions, times, ordinals and acronym-numbers
+    ("S&P 500") are left verbatim, and currency is reordered to "<n> dollars"
+    rather than leaving the symbol stranded.
     """
     if not text:
         return text
@@ -3978,19 +3992,29 @@ def _spell_numbers(text: str) -> str:
     out: list[str] = []
     last = 0
     for m in _TTS_KEEP_RE.finditer(text):
-        out.append(_TTS_INT_RE.sub(lambda x: _spell_one(x.group(0)), text[last:m.start()]))
+        out.append(_spell_gap(text[last:m.start()]))
         out.append(m.group(0))          # verbatim
         last = m.end()
-    out.append(_TTS_INT_RE.sub(lambda x: _spell_one(x.group(0)), text[last:]))
+    out.append(_spell_gap(text[last:]))
     return "".join(out)
 
 
+def _spell_gap(seg: str) -> str:
+    """Currency first (so the symbol never strands), then plain integers."""
+    seg = _TTS_MONEY_RE.sub(
+        lambda m: f"{_spell_one(m.group(2))} {_MONEY_WORD[m.group(1)]}", seg)
+    return _TTS_INT_RE.sub(lambda x: _spell_one(x.group(0)), seg)
+
+
 def _spell_one(tok: str) -> str:
+    """Spell one matched integer token. _TTS_INT_RE only ever hands us a number
+    that is <=4 digits or comma-grouped, so a bare digit run (an ID, a phone
+    number, an account number) never reaches here and stays verbatim."""
     try:
         n = int(tok.replace(",", ""))
     except ValueError:
         return tok
-    if n > 9999:
+    if n > 999_999_999:
         return tok
     return _int_to_words(n)
 
