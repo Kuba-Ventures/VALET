@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.2.30"
+version = "0.2.31"
 description = "VALET desktop shell"
 edition = "2021"
 rust-version = "1.77"
@@ -30,3 +30,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 [features]
 # this feature is used for production builds where `devUrl` is not used.
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+# `test` gives us the mock runtime + `get_ipc_response`, which drive a real
+# InvokeRequest through the real ACL. See the `acl` tests in main.rs: they are
+# the only thing standing between us and another silently-denied command (#271).
+tauri = { version = "2", features = ["test"] }

@@ -59,13 +59,28 @@ async function micGranted(): Promise<boolean | null> {
  * Tauri (plain browser / dev), which keeps the backend value.
  */
 async function inputMonitoringGranted(): Promise<boolean | null> {
+  const invoke = (window as unknown as {
+    __TAURI__?: { core?: { invoke?: (cmd: string) => Promise<unknown> } };
+  }).__TAURI__?.core?.invoke;
+  // No Tauri at all: a plain browser (dev/tests). The only legitimate null —
+  // keep the backend's value and say nothing.
+  if (!invoke) return null;
   try {
-    const invoke = (window as unknown as {
-      __TAURI__?: { core?: { invoke?: (cmd: string) => Promise<unknown> } };
-    }).__TAURI__?.core?.invoke;
-    if (!invoke) return null;
     return Boolean(await invoke("input_monitoring_granted"));
-  } catch {
+  } catch (err) {
+    // Inside Tauri this command MUST answer. A rejection means the call never
+    // reached Rust — which is exactly how this broke before (#271): the UI is
+    // served from http://localhost:8340, a remote origin to the webview, and
+    // Tauri denied the command because no capability granted it there. The old
+    // code caught that and returned null, silently falling back to the backend's
+    // answer — the wrong answer #265/#266 existed to replace, with no symptom
+    // beyond "Needs setup" forever. Never swallow it again: null still degrades
+    // gracefully, but it degrades LOUDLY.
+    console.error(
+      "[valet] input_monitoring_granted did not reach Rust; falling back to the " +
+      "backend's (wrong) answer. Check the ACL capability for this origin.",
+      err,
+    );
     return null;
   }
 }

@@ -3,6 +3,39 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.31] — 2026-07-16
+
+### Fixed
+- **Input Monitoring setup told the truth for the first time.** The onboarding
+  step read "Needs setup" even when the ⌃⌥ chord worked fine, and Re-check never
+  helped. 0.2.29 (#265/#266) fixed this by asking the Tauri binary — the process
+  that actually holds the grant — instead of the backend. That fix never ran: the
+  call was rejected before it reached Rust, every single launch.
+
+  VALET's UI is served by the backend from `http://localhost:8340`, which is a
+  *remote* origin to the webview (`frontendDist` is `./loading`, served over
+  `tauri://`). Tauri v2 denies an app's own commands from a remote origin unless a
+  capability grants them there, and nothing did — so `input_monitoring_granted`
+  was denied, the rejection was swallowed, and onboarding quietly fell back to the
+  backend's wrong answer. A denied command and a working one looked identical.
+
+  The app's commands are now declared in `build.rs` and granted per-origin, so the
+  real answer gets through.
+
+### Added
+- **ACL reachability tests** (`cargo test --bin valet`). They drive a real IPC
+  request through the real shipped capabilities and fail if a command isn't
+  reachable from the origin that calls it. This class of bug is invisible from
+  JS — every `window.__TAURI__` call goes through `?.` inside a `try/catch`, so a
+  denial no-ops and looks like success. Now it fails CI instead of the user.
+
+### Changed
+- `input_monitoring_granted` failing now logs loudly instead of silently
+  degrading. It still falls back, but it says so.
+- Declaring app commands ACL-gates them from *local* origins too, so `tray_action`
+  needed an explicit grant it never had — without it every tray menu item would
+  have silently stopped working. Covered by a test.
+
 ## [0.2.30] — 2026-07-16
 
 ### Changed
