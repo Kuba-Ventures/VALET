@@ -3,6 +3,18 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.29] — 2026-07-16
+
+### Fixed
+- **"Needs setup" on Input Monitoring you'd already granted.** The setup step
+  asked the backend whether Input Monitoring was granted, but the ⌃⌥ chord runs
+  in the VALET binary and macOS grants this per executable — so the backend was
+  answering for a permission it neither holds nor needs. It reported "Needs
+  setup" while the chord worked fine, and Re-check kept asking the same wrong
+  process, so the step could never be satisfied. VALET now asks the binary that
+  actually listens. The other permissions are genuinely used by the backend, so
+  they still answer for themselves.
+
 ## [0.2.28] — 2026-07-16
 
 ### Fixed
