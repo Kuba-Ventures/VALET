@@ -535,6 +535,7 @@ BANNED PHRASES — NEVER USE THESE:
 - "I apologize"
 - "I should clarify"
 - "I cannot" (for things listed in YOUR CAPABILITIES)
+- "I'd need to check" / "I don't have that information" / "I can't recall" / "rankings change frequently" — for a current fact, emit [ACTION:LOOKUP] instead of ANY of these
 - "I don't have access to" (instead: "I'm afraid that's beyond my current reach, sir")
 - "As an AI" (never break character)
 - "Let me know if" / "Feel free to"
@@ -571,6 +572,14 @@ ANSWER DIRECTLY vs RESEARCH — DEFAULT TO ANSWERING FROM YOUR OWN KNOWLEDGE, an
     "who did the Cavaliers lose to last week" → [ACTION:SPORTS] Virginia Cavaliers last week
     "what's the latest iPhone price" → [ACTION:RESEARCH] latest iPhone price
     "any news on the election today" → [ACTION:RESEARCH] election news today
+
+- [ACTION:LOOKUP] query — a FAST (~2s) single web check for ONE current/volatile fact. Use this the moment you'd otherwise say you're unsure or that a fact "changes frequently": a current ranking or record-holder ("world number one in X"), a current coach/CEO/officeholder, a live price, "who is the current …", "the latest …" of a single fact. The system fetches it and speaks the answer — emit the tag ALONE, NO preamble, NO spoken words before it.
+  NEVER punt. You are FORBIDDEN from saying "I'd need to check", "I don't have that information", "I don't have access", "I'm afraid I can't recall", "rankings change frequently", or any variant. If you're not certain of a current fact → emit [ACTION:LOOKUP], don't apologize.
+  LOOKUP vs RESEARCH: LOOKUP is for ONE quick fact (fast, spoken). RESEARCH is for rich/multi-item results with cards ("show me options", "compare", "find listings near me").
+  "who is the world number one in professional squash" → [ACTION:LOOKUP] current men's world number one professional squash PSA
+  "who's the CEO of Stripe now" → [ACTION:LOOKUP] current CEO of Stripe
+  "what's the price of bitcoin" → [ACTION:LOOKUP] current bitcoin price USD
+  "who is the coach of UVA basketball" → answer directly if you know; if unsure, [ACTION:LOOKUP] current UVA men's basketball head coach
 
 RESEARCH vs BUILD — distinguish by the user's verb at the front of the request, not by any word that appears later:
   Research verbs ("show me", "find me", "what are", "what's the best", "tell me about", "research", "look up", "compare", "how much", "where can I", "who makes") → [ACTION:RESEARCH]
@@ -836,7 +845,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|LOOKUP|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2360,6 +2369,74 @@ async def _execute_sports(query: str, ws):
         except Exception:
             pass
     log.info(f"VALET: {msg}")
+
+
+async def _ddg_snippets(query: str, n: int = 6) -> list[str]:
+    """Keyless, fast (~1s) web search: DuckDuckGo Lite result snippets. Returns
+    a list of short text snippets (possibly empty). Best-effort HTML parse of
+    the lite endpoint's `result-snippet` cells."""
+    import re as _re
+    import html as _html
+    try:
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+            r = await client.post(
+                "https://lite.duckduckgo.com/lite/",
+                data={"q": query},
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+            )
+            r.raise_for_status()
+        raw = _re.findall(r'result-snippet[^>]*>(.*?)</td>', r.text, _re.S | _re.I)
+        out = [_html.unescape(_re.sub(r"\s+", " ", _re.sub(r"<[^>]+>", " ", s))).strip() for s in raw]
+        return [s for s in out if s][:n]
+    except Exception as e:
+        log.warning("ddg lookup failed for %r: %s", query[:80], e)
+        return []
+
+
+async def _execute_quick_lookup(query: str, ws):
+    """Fast (~2s) web fact-check for CURRENT/volatile facts VALET must not answer
+    from its (potentially stale) memory — a current ranking, a current coach or
+    officeholder, "the latest X". DuckDuckGo snippets → Haiku one-sentence
+    synthesis, self-spoken like _execute_world_time. Falls back to the deep
+    research path only if the quick search yields nothing usable."""
+    async with process_bus.task_context(f"Checking: {query[:50]}") as task_id:
+        await emit_step(task_id, "Checking the web…", status="active")
+        snippets = await _ddg_snippets(query)
+        if not snippets:
+            await _execute_native_research(query, ws)
+            return
+        today = datetime.now().strftime("%A, %B %d, %Y")
+        joined = "\n".join(f"- {s}" for s in snippets)
+        try:
+            resp = await anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=160,
+                system=(
+                    f"You are VALET, {USER_NAME}'s British butler. Today is {today}. "
+                    "Answer the question in ONE concise spoken sentence using ONLY the "
+                    "search results provided — they are current, so trust them over any "
+                    "prior knowledge. Be direct; never say you'd need to check or that you "
+                    "lack the information. Dry wit, economy of language, end with 'sir.'"
+                ),
+                messages=[{"role": "user", "content": f"Question: {query}\n\nSearch results:\n{joined}"}],
+            )
+            msg = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        except Exception as e:
+            log.warning("quick lookup synth failed: %s", e)
+            await _execute_native_research(query, ws)
+            return
+        if not msg:
+            await _execute_native_research(query, ws)
+            return
+        await emit_step(task_id, "Answered", detail=msg[:120], status="done")
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
+        log.info(f"VALET (lookup): {msg}")
 
 
 async def _execute_browse(target: str):
@@ -7887,6 +7964,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _handle_summarize shows the panel + speaks
                                     elif action_type == "sports":
                                         response_text = ""  # _execute_sports emits the card + speaks
+                                    elif action_type == "lookup":
+                                        response_text = ""  # _execute_quick_lookup speaks the answer
                                     else:
                                         response_text = "Right away, sir."
 
@@ -8050,6 +8129,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_world_time(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "sports":
                                     asyncio.create_task(_execute_sports(embedded_action.get("target", ""), ws))
+                                elif embedded_action["action"] == "lookup":
+                                    asyncio.create_task(_execute_quick_lookup(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "check_weather":
                                     wx_t = (embedded_action.get("target") or "").strip()
                                     # LLM tag carries no time scope — recover it
