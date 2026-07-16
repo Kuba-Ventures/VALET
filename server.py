@@ -9414,9 +9414,19 @@ def _screen_recording_granted():
 
 
 def _input_monitoring_granted():
-    """Real TCC check for Input Monitoring via CGPreflightListenEventAccess (no
-    prompt) — gates the global ⌃⌥ push-to-talk chord. True/False for the live
-    grant; None if Quartz isn't available."""
+    """Input Monitoring for THIS process — which is the wrong process to ask (#265).
+
+    The ⌃⌥ chord tap runs in the Tauri binary, not here (`global_ptt.py`'s tap is
+    intentionally never started, see below), and TCC grants are per-executable.
+    So this reports a permission the backend neither holds nor needs: it read
+    False while the chord worked fine, pinning onboarding's Permissions step to
+    "Needs setup" with Re-check re-asking the same wrong process.
+
+    The frontend now overrides this with the Tauri-side `input_monitoring_granted`
+    command, which asks the binary that actually taps. This stays only as the
+    fallback for non-Tauri callers (browser/dev), where nothing taps at all — so
+    treat a True here as "some process has it", never as "the chord will work".
+    """
     try:
         import Quartz
         return bool(Quartz.CGPreflightListenEventAccess())
