@@ -7,23 +7,27 @@ import HeroOrb from "./HeroOrb";
 
 const HERO_COPY: Record<
   string,
-  { title2: string; sub: string; cta?: string }
+  { title2: string; sub: string; cta: string }
 > = {
   automation: {
     title2: "the word.",
     sub: "Stop wasting time on repetitive tasks. Our AI does the work for you.",
+    cta: "Download for Mac",
   },
   dev: {
     title2: "the word.",
     sub: "Dispatch coding tasks to Claude Code by voice — stay in flow.",
+    cta: "Download for Mac",
   },
   founder: {
     title2: "the word.",
     sub: "Run your calendar, mail and notes just by talking. Meet VALET, your AI butler.",
+    cta: "Download for Mac",
   },
   productivity: {
     title2: "the word.",
     sub: "Automate any Mac app by voice — no scripts required.",
+    cta: "Download for Mac",
   },
 };
 
