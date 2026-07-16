@@ -3,6 +3,22 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.30] — 2026-07-16
+
+### Changed
+- **The orb is a normal window now.** It no longer floats above every other
+  window on the display — it obeys the usual z-order and drops behind whatever
+  you focus, like any other app. Summon it from the tray icon when you need it.
+
+  On macOS "float, but fall behind when unfocused" isn't a window level you can
+  ask for: always-on-top is unconditional, and falling behind when unfocused
+  *is* the normal level. So this drops `alwaysOnTop` rather than tuning it.
+
+  This also removes the onboarding-only always-on-top dance added in 0.2.27
+  (#263): with nothing ever on top, there's nothing to drop while the setup
+  wizard is up, and the wizard can be parked behind System Settings by default.
+  Leaving that code in would have re-floated the orb the moment setup finished.
+
 ## [0.2.29] — 2026-07-16
 
 ### Fixed
