@@ -858,7 +858,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|MARKETS|NEWS|LOOKUP|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|MARKETS|NEWS|LOOKUP|READ_ARTICLE|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2384,6 +2384,54 @@ async def _execute_sports(query: str, ws):
     log.info(f"VALET: {msg}")
 
 
+async def _execute_read_article(ref: str, ws):
+    """"Tell me more" about a surfaced item: search its headline and speak a
+    short summary (opening the page itself is [ACTION:BROWSE]). Robust against
+    Google News redirect URLs by summarizing from search rather than scraping
+    the exact link."""
+    ref = (ref or "").strip()
+    if ref.startswith("http"):  # a URL slipped in — just open it
+        await _execute_browse(ref)
+        return
+    async with process_bus.task_context(f"Reading up: {ref[:50]}") as task_id:
+        await emit_step(task_id, "Reading up on it…", status="active")
+        snippets = await _ddg_snippets(ref)
+        if not snippets:
+            await _execute_quick_lookup(ref, ws)
+            return
+        today = datetime.now().strftime("%A, %B %d, %Y")
+        joined = "\n".join(f"- {s}" for s in snippets)
+        try:
+            resp = await anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=220,
+                system=(
+                    f"You are VALET, {USER_NAME}'s British butler. Today is {today}. "
+                    "Give a 2-3 sentence spoken summary of this news story using ONLY the "
+                    "search results provided. Lead with the key development. Dry wit, "
+                    "economy of language, end with 'sir.'"
+                ),
+                messages=[{"role": "user", "content": f"Story: {ref}\n\nSearch results:\n{joined}"}],
+            )
+            msg = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        except Exception as e:
+            log.warning("read_article synth failed: %s", e)
+            await _execute_quick_lookup(ref, ws)
+            return
+        if not msg:
+            await _execute_quick_lookup(ref, ws)
+            return
+        await emit_step(task_id, "Done", status="done")
+        audio = await synthesize_speech(msg)
+        if audio and ws:
+            try:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            except Exception:
+                pass
+        log.info(f"VALET (read): {msg}")
+
+
 async def _execute_news(query: str, ws):
     """Top headlines or topic news via Google News RSS (news.py), keyless.
     Self-speaking; emits a result.news card. Falls back to fast lookup if the
@@ -2397,6 +2445,12 @@ async def _execute_news(query: str, ws):
     if not result or not result["payload"].get("items"):
         await _execute_quick_lookup(query, ws)
         return
+    # Remember these so the user can say "open that article" / "tell me more".
+    global _last_shown
+    _last_shown = [
+        {"title": it.get("title", ""), "source": it.get("source", ""), "url": it.get("link", "")}
+        for it in result["payload"]["items"]
+    ]
     try:
         await process_bus.emit(ProcessEvent(
             type="result.news",
@@ -3683,6 +3737,12 @@ async def _execute_native_research(target: str, ws=None):
 # Smart greeting — track last greeting to avoid re-greeting on reconnect
 _last_greeting_time: float = 0
 
+# Citable items VALET most recently surfaced (news headlines, sources). Single
+# entries of {title, source, url}. Injected into the next turn's context so the
+# user can say "open that article" / "tell me more about the X one". Single-user
+# app, so a module global is fine.
+_last_shown: list[dict] = []
+
 
 # ---------------------------------------------------------------------------
 # TTS (Fish Audio)
@@ -3862,6 +3922,23 @@ def _build_chat_request(
     # Self-awareness — remind VALET of last response to avoid repetition
     if last_response:
         dynamic_system += f'\n\nYOUR LAST RESPONSE (do not repeat this):\n"{last_response[:150]}"'
+
+    # Citable items VALET just surfaced (news headlines, sources) — so the user
+    # can say "open that article", "tell me more about the X one", "read the
+    # second one" and VALET resolves the reference to a real URL.
+    if _last_shown:
+        lines = "\n".join(
+            f"{i+1}. {it.get('title','')} — {it.get('source','')} — {it.get('url','')}"
+            for i, it in enumerate(_last_shown[:8])
+        )
+        dynamic_system += (
+            "\n\nRECENTLY SHOWN (you just presented these; the user may refer to "
+            "one — 'open that article', 'tell me more about the X one', 'read the "
+            "second one', 'what does it say'). Resolve the reference to the right "
+            "item: to OPEN it in the browser use [ACTION:BROWSE] <its url>; to "
+            "read/summarize it aloud use [ACTION:READ_ARTICLE] <its headline text>.\n"
+            + lines
+        )
 
     # Runtime self-introspection — live wake phrases, agent registry, etc.
     # Lets VALET answer "what are your wake phrases?" without hallucinating
@@ -8097,6 +8174,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _execute_markets emits the card + speaks
                                     elif action_type == "news":
                                         response_text = ""  # _execute_news emits the card + speaks
+                                    elif action_type == "read_article":
+                                        response_text = ""  # _execute_read_article speaks the summary
                                     else:
                                         response_text = "Right away, sir."
 
@@ -8266,6 +8345,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_markets(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "news":
                                     asyncio.create_task(_execute_news(embedded_action.get("target", ""), ws))
+                                elif embedded_action["action"] == "read_article":
+                                    asyncio.create_task(_execute_read_article(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "check_weather":
                                     wx_t = (embedded_action.get("target") or "").strip()
                                     # LLM tag carries no time scope — recover it
