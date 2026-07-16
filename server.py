@@ -6075,7 +6075,8 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         "what time is the", "when do", "when is the", "when's the", "whens the",
         "next game", "next match", "play next", "playing", "fixture",
         "kickoff", "kick off", " vs ", " versus ", "beat", "match", "game",
-        "did ",
+        "did ", "lose", "lost", "record", "how did", "how are", "how're",
+        "make the playoff", "made the playoff",
     )
     if any(c in t for c in _sports_cues):
         try:
