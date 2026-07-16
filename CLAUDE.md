@@ -53,6 +53,47 @@ When a user clones this repo and starts Claude Code, help them:
 - Read-only for Mail (safety by design)
 - SQLite for all local data storage
 
+## Testing a local build
+
+VALET is a menu-bar app you probably already have installed, and its UI is served
+from the PyInstaller-bundled backend rather than `frontend/`. Both make it easy to
+"verify" a fix against something that isn't your build. Each of these has cost a
+session:
+
+**1. Check which binary you're testing.** `/Applications/VALET.app` is whatever was
+installed last, not what you just built — and a running orb is usually the old one.
+Quit it first, then confirm:
+```bash
+defaults read /Applications/VALET.app/Contents/Info.plist CFBundleShortVersionString
+```
+
+**2. Sign local builds or macOS revokes every permission.** Unsigned builds get an
+ad-hoc identity (`valet-c2853bf…` instead of `ai.valet.desktop`), and TCC keys on
+code identity — so it's a *different app*: Accessibility / Input Monitoring / Screen
+Recording all flip to "Needs setup" and re-granting won't stick.
+```bash
+SIGNING_IDENTITY="Developer ID Application: JAMES FINLEY UNDERWOOD (QZX7VBLDZT)" \
+  ./packaging/build-macos.sh          # omit only when grants don't matter
+codesign -dv --verbose=2 /Applications/VALET.app   # want: ai.valet.desktop / QZX7VBLDZT
+```
+Signing alone is enough locally; notarization is only for distribution.
+
+**3. Verify against the running app, not the source.** Green `tsc` / `cargo check`,
+or grepping `frontend/dist`, proves the code is *correct* — not that it *runs*. A
+frontend change needs PyInstaller re-run or the app serves stale UI. To see what the
+app will actually load, ask its own backend:
+```bash
+/Applications/VALET.app/Contents/MacOS/valet-backend &   # ~30s to answer
+curl -s localhost:8340/ | grep -o '/assets/index-[^"]*\.js'   # then curl+grep that asset
+```
+Fast iteration: rebuild frontend + PyInstaller, then `cp dist/valet-backend` over the
+app's `Contents/MacOS/valet-backend` — no cargo rebuild needed.
+
+**Silent failure watch.** Every window JS API call (`window.__TAURI__…`) goes through
+`?.` inside a swallowing `try/catch`, and these return promises, so a rejection
+disappears too. A missing capability, a wrong method name, or an ACL denial no-ops and
+looks like success. When a window operation "does nothing", suspect this before macOS.
+
 ## Process Event System
 
 A real-time activity feed that drives the frontend "process panel" beside
