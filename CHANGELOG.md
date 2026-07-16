@@ -3,6 +3,18 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.23] — 2026-07-16
+
+### Fixed
+- **Player/team stat questions now answer in ~2 seconds.** "How many goals did
+  Mbappé score for Real Madrid this season" and "how many goals has Mbappé scored
+  this World Cup" were taking the wrong path — the first spun up the full
+  multi-source RESEARCH crawl (fetching 3–5 pages), and the second hit the SPORTS
+  fast-path (which only knows scores/schedules and answered with an unrelated
+  match result). Any single-fact stat question ("how many goals/points/assists/…")
+  now routes to the fast LOOKUP path (one search → one spoken number) instead of
+  SPORTS (wrong) or RESEARCH (slow). Rich multi-item asks still use RESEARCH.
+
 ## [0.2.22] — 2026-07-15
 
 A large release focused on reliability and dramatically expanding what VALET can
