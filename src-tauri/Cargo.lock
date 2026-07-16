@@ -4453,7 +4453,7 @@ dependencies = [
 
 [[package]]
 name = "valet"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "core-foundation",
  "core-graphics",
