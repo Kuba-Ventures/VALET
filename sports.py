@@ -492,6 +492,12 @@ def _summary(display: str, buckets: dict, query: str, hint: str | None) -> str:
     if buckets["live"]:
         e = buckets["live"][0]
         return f"{display}, sir: {_score_line(e)}, {e.get('detail') or 'in progress'}."
+    # "who is playing in the final/next game" is a MATCHUP question → the
+    # upcoming fixture, even though "final" would otherwise read as a result.
+    if any(w in q for w in ("who is playing", "who's playing", "whos playing",
+                            "playing in", "who is in", "who's in", "who plays", "matchup")):
+        return (_upcoming_line(display, buckets) or _recent_line(display, buckets)
+                or f"I found no upcoming {display} fixtures, sir.")
     result_intent = any(w in q for w in (
         "score", "did ", "won", " win", "beat", "result", "final", "how did",
         "was the", "lose", "lost", "outcome", "knocked out", "record"))
