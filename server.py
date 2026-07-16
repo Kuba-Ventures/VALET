@@ -2371,12 +2371,16 @@ async def _execute_sports(query: str, ws):
     log.info(f"VALET: {msg}")
 
 
-async def _ddg_snippets(query: str, n: int = 6) -> list[str]:
-    """Keyless, fast (~1s) web search: DuckDuckGo Lite result snippets. Returns
-    a list of short text snippets (possibly empty). Best-effort HTML parse of
-    the lite endpoint's `result-snippet` cells."""
+async def _ddg_snippets(query: str, n: int = 8) -> list[str]:
+    """Keyless, fast (~1s) web search: DuckDuckGo Lite results as "title — snippet"
+    lines (the title often carries the fact the snippet omits). Best-effort HTML
+    parse; returns a possibly-empty list."""
     import re as _re
     import html as _html
+
+    def _clean(s: str) -> str:
+        return _html.unescape(_re.sub(r"\s+", " ", _re.sub(r"<[^>]+>", " ", s))).strip()
+
     try:
         async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
             r = await client.post(
@@ -2385,9 +2389,16 @@ async def _ddg_snippets(query: str, n: int = 6) -> list[str]:
                 headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
             )
             r.raise_for_status()
-        raw = _re.findall(r'result-snippet[^>]*>(.*?)</td>', r.text, _re.S | _re.I)
-        out = [_html.unescape(_re.sub(r"\s+", " ", _re.sub(r"<[^>]+>", " ", s))).strip() for s in raw]
-        return [s for s in out if s][:n]
+        titles = [_clean(t) for t in _re.findall(r'result-link[^>]*>(.*?)</a>', r.text, _re.S | _re.I)]
+        snips = [_clean(s) for s in _re.findall(r'result-snippet[^>]*>(.*?)</td>', r.text, _re.S | _re.I)]
+        out: list[str] = []
+        for i in range(max(len(titles), len(snips))):
+            t = titles[i] if i < len(titles) else ""
+            s = snips[i] if i < len(snips) else ""
+            line = (f"{t} — {s}" if t and s else (t or s)).strip(" —")
+            if line:
+                out.append(line[:240])
+        return out[:n]
     except Exception as e:
         log.warning("ddg lookup failed for %r: %s", query[:80], e)
         return []
@@ -2414,9 +2425,11 @@ async def _execute_quick_lookup(query: str, ws):
                 system=(
                     f"You are VALET, {USER_NAME}'s British butler. Today is {today}. "
                     "Answer the question in ONE concise spoken sentence using ONLY the "
-                    "search results provided — they are current, so trust them over any "
-                    "prior knowledge. Be direct; never say you'd need to check or that you "
-                    "lack the information. Dry wit, economy of language, end with 'sir.'"
+                    "search results provided — they are current, so trust them over prior "
+                    "knowledge. Answer ONLY about the exact entity asked; never substitute a "
+                    "different company/person/team. If the results genuinely don't contain "
+                    "the answer, say so plainly in one sentence — do not guess from memory. "
+                    "Dry wit, economy of language, end with 'sir.'"
                 ),
                 messages=[{"role": "user", "content": f"Question: {query}\n\nSearch results:\n{joined}"}],
             )
