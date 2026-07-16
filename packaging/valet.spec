@@ -39,6 +39,7 @@ if os.path.exists(os.path.join(ROOT, "google_credentials.json")):
 # shipped build) — _load_self_mod() returns None when the import fails.
 hiddenimports = [
     "sports",
+    "statmuse",
     "markets",
     "news",
     "licensing", "action_executor", "applescript_executor", "safe_executor",
