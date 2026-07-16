@@ -8,8 +8,19 @@ export const dynamic = "force-dynamic";
 /**
  * The signed VALET installer URL. Set the DOWNLOAD_URL env var (in Vercel) to the
  * notarized .dmg's public URL and this route redirects there; until then it
- * serves a versioned placeholder. Swapping in the real build is one env change —
- * no redeploy of code needed.
+ * serves a versioned placeholder.
+ *
+ * Pointing at a new build takes an env change AND a redeploy. Vercel binds env
+ * vars to a deployment when that deployment is created, so a running deployment
+ * never observes a changed value — no code change is required, but the swap is
+ * inert until you redeploy:
+ *
+ *   vercel redeploy <latest-prod-deployment-url> --scope kuba-ventures
+ *
+ * Reading process.env here at module scope vs. inside GET() makes no difference
+ * to that; the value is fixed for the deployment's lifetime either way. If
+ * request-time swaps (instant rollback, no redeploy) are ever wanted, the URL
+ * has to move out of env into a request-time store such as Edge Config.
  */
 const DOWNLOAD_SOURCE: string | null = process.env.DOWNLOAD_URL || null;
 const PLACEHOLDER_VERSION = "0.1.0-placeholder";
