@@ -2384,17 +2384,47 @@ async def _execute_sports(query: str, ws):
     log.info(f"VALET: {msg}")
 
 
+def _match_shown(ref: str) -> dict | None:
+    """Best-matching recently-shown item for a reference (headline text or an
+    ordinal like 'the second one'). Returns {title, source, url} or None."""
+    if not _last_shown:
+        return None
+    low = (ref or "").lower()
+    ordinals = {"first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2,
+                "fourth": 3, "fifth": 4, "last": len(_last_shown) - 1}
+    for word, idx in ordinals.items():
+        if word in low and 0 <= idx < len(_last_shown):
+            return _last_shown[idx]
+    best, best_score = None, 0
+    ref_toks = {w for w in re.split(r"[^a-z0-9]+", low) if len(w) > 2}
+    for it in _last_shown:
+        title_toks = {w for w in re.split(r"[^a-z0-9]+", it.get("title", "").lower()) if len(w) > 2}
+        overlap = len(ref_toks & title_toks)
+        if overlap > best_score:
+            best, best_score = it, overlap
+    return best if best_score >= 1 else None
+
+
 async def _execute_read_article(ref: str, ws):
-    """"Tell me more" about a surfaced item: search its headline and speak a
-    short summary (opening the page itself is [ACTION:BROWSE]). Robust against
-    Google News redirect URLs by summarizing from search rather than scraping
-    the exact link."""
+    """"Tell me more" about a surfaced item: OPEN the article in the browser AND
+    speak a short summary. The Google-News redirect link isn't scrapable, so the
+    summary comes from a search on the headline; the browser follows the redirect
+    to the real page."""
     ref = (ref or "").strip()
-    if ref.startswith("http"):  # a URL slipped in — just open it
+    # Resolve the reference to a shown item so we can open its real URL.
+    item = _match_shown(ref)
+    if ref.startswith("http") and not item:
         await _execute_browse(ref)
         return
-    async with process_bus.task_context(f"Reading up: {ref[:50]}") as task_id:
-        await emit_step(task_id, "Reading up on it…", status="active")
+    # Open the actual article page in Chrome (browser handles the redirect).
+    url = (item or {}).get("url") or (ref if ref.startswith("http") else "")
+    if url:
+        asyncio.create_task(_execute_browse(url))
+    # Summarize from a search on the headline (real page isn't fetchable).
+    topic = (item or {}).get("title") or ref
+    async with process_bus.task_context(f"Reading up: {topic[:50]}") as task_id:
+        await emit_step(task_id, "Opening it and reading up…", status="active")
+        ref = topic
         snippets = await _ddg_snippets(ref)
         if not snippets:
             await _execute_quick_lookup(ref, ws)
@@ -3935,9 +3965,10 @@ def _build_chat_request(
             "\n\nRECENTLY SHOWN (you just presented these; the user may refer to "
             "one — 'open that article', 'tell me more about the X one', 'read the "
             "second one', 'what does it say'). Resolve the reference to the right "
-            "item: to OPEN it in the browser use [ACTION:BROWSE] <its url>; to "
-            "read/summarize it aloud use [ACTION:READ_ARTICLE] <its headline text>.\n"
-            + lines
+            "item: 'tell me more' / 'what does it say' / 'read it' → "
+            "[ACTION:READ_ARTICLE] <its headline text> (this opens the article in "
+            "the browser AND speaks a short summary). Only 'just open it' with no "
+            "summary → [ACTION:BROWSE] <its url>.\n" + lines
         )
 
     # Runtime self-introspection — live wake phrases, agent registry, etc.
@@ -6346,6 +6377,19 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         "did ", "lose", "lost", "record", "how did", "how are", "how're",
         "make the playoff", "made the playoff",
     )
+    # Follow-up referencing a just-shown item ("tell me more about the X one",
+    # "open that article", "read the second one") — defer to the LLM so it can
+    # resolve the reference against RECENTLY SHOWN (→ READ_ARTICLE / BROWSE).
+    # Without this, a keyword fast-path hijacks it (a headline with "world cup"
+    # → sports; "apple" → news) and the cite intent is lost.
+    if _last_shown and any(p in t for p in (
+        "tell me more", "more about", "read the", "read me", "read that",
+        "read it", "open the", "open that", "open it", "what does", "does it say",
+        "summarize", "that article", "that story", "that one", "first one",
+        "second one", "third one", "last one", "next one",
+    )):
+        return None
+
     if any(c in t for c in _sports_cues):
         try:
             import sports as _sp
