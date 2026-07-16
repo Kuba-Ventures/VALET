@@ -51,6 +51,7 @@ export type EventType =
   | "result.markdown"
   | "result.weather"
   | "result.sports"
+  | "result.markets"
   // Per-source preview card emitted during research (live), one per
   // successful web_fetch. Distinct from `result.web` which is the
   // model's final reading list summary.
@@ -609,6 +610,12 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       return;
     }
 
+    // Markets quote card — name, big price, colored daily change.
+    if (kind === "markets") {
+      populateMarketsCard(card, event);
+      return;
+    }
+
     // (markdown branch handled in renderResultCard before reaching here.)
 
     const p = (event.payload || {}) as Record<string, unknown>;
@@ -681,6 +688,49 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       const display = sourceUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
       link.textContent = (display.length > 48 ? display.slice(0, 45) + "…" : display) + " ↗";
       card.appendChild(link);
+    }
+  }
+
+  /** Native markets quote card. Payload built by markets.build_card_payload:
+   * { symbol, name, price (formatted string), change_pct, change, currency,
+   * is_index }. Layout: name + ticker → big price → colored daily change. */
+  function populateMarketsCard(card: HTMLElement, event: ProcessEvent) {
+    interface MarketsPayload {
+      symbol: string; name: string; price: string;
+      change_pct: number | null; change: number | null;
+      currency: string; is_index: boolean;
+    }
+    const p = (event.payload || {}) as unknown as MarketsPayload;
+
+    const head = document.createElement("div");
+    head.className = "pp-mkt-head";
+    const nm = document.createElement("div");
+    nm.className = "pp-mkt-name";
+    nm.textContent = p.name || p.symbol || "";
+    head.appendChild(nm);
+    if (p.symbol) {
+      const tk = document.createElement("div");
+      tk.className = "pp-mkt-ticker";
+      tk.textContent = p.symbol;
+      head.appendChild(tk);
+    }
+    card.appendChild(head);
+
+    const price = document.createElement("div");
+    price.className = "pp-mkt-price";
+    price.textContent = p.price || "—";
+    card.appendChild(price);
+
+    if (p.change_pct !== null && p.change_pct !== undefined) {
+      const up = p.change_pct > 0.05;
+      const down = p.change_pct < -0.05;
+      const chg = document.createElement("div");
+      chg.className = "pp-mkt-change " + (up ? "pp-mkt-up" : down ? "pp-mkt-down" : "pp-mkt-flat");
+      const arrow = up ? "▲" : down ? "▼" : "→";
+      const chgAbs = p.change !== null && p.change !== undefined ? Math.abs(p.change) : null;
+      const chgStr = chgAbs !== null ? `${chgAbs.toLocaleString(undefined, { maximumFractionDigits: 2 })} ` : "";
+      chg.textContent = `${arrow} ${chgStr}(${Math.abs(p.change_pct).toFixed(2)}%) today`;
+      card.appendChild(chg);
     }
   }
 

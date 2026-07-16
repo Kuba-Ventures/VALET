@@ -1156,3 +1156,39 @@
   flex: 0 0 auto;
   white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------------------
+   Markets quote card (result.markets) — name/ticker → big price → daily change.
+   --------------------------------------------------------------------------- */
+.pp-mkt-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.pp-mkt-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--pp-accent);
+}
+.pp-mkt-ticker {
+  font-family: var(--pp-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--pp-text-faint);
+}
+.pp-mkt-price {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--pp-card-body);
+  line-height: 1.1;
+}
+.pp-mkt-change {
+  margin-top: 4px;
+  font-family: var(--pp-mono);
+  font-size: 12px;
+}
+.pp-mkt-up { color: var(--pp-active); }
+.pp-mkt-down { color: var(--pp-error); }
+.pp-mkt-flat { color: var(--pp-text-dim); }
