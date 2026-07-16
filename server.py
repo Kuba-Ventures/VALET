@@ -579,7 +579,7 @@ ANSWER DIRECTLY vs RESEARCH — DEFAULT TO ANSWERING FROM YOUR OWN KNOWLEDGE, an
   LOOKUP vs RESEARCH: LOOKUP is for ONE quick fact (fast, spoken). RESEARCH is for rich/multi-item results with cards ("show me options", "compare", "find listings near me").
   "who is the world number one in professional squash" → [ACTION:LOOKUP] current men's world number one professional squash PSA
   "who's the CEO of Stripe now" → [ACTION:LOOKUP] current CEO of Stripe
-  "what's the price of bitcoin" → [ACTION:LOOKUP] current bitcoin price USD
+  "what's the price of bitcoin" → [ACTION:MARKETS] bitcoin (any stock/crypto/index price → MARKETS, not LOOKUP)
   "who is the coach of UVA basketball" → [ACTION:LOOKUP] current UVA men's basketball head coach
   "who is the CEO of Apple" → [ACTION:LOOKUP] current CEO of Apple
   "who is the prime minister of the UK" → [ACTION:LOOKUP] current UK prime minister
@@ -694,6 +694,12 @@ The set of "projects" is OWNED by the LIST_PROJECTS / OPEN_PROJECT / NEW_PROJECT
   "when do the Chiefs play next" → [ACTION:SPORTS] Chiefs next game
   "who's winning the Premier League" → [ACTION:SPORTS] Premier League standings
   SPORTS vs RESEARCH: a question about a game's score/result/schedule/standings is SPORTS. Only use RESEARCH for sports questions that aren't about live results (e.g. "history of the World Cup", "who's the best striker ever").
+- [ACTION:MARKETS] query — a live stock / crypto / index / commodity quote (keyless, instant). Renders a quote card AND speaks the price + daily move. Use for ANY price/quote question: a stock or ticker, "how's the market / S&P / Dow / Nasdaq", a crypto price, gold/oil. ALWAYS prefer this over LOOKUP/RESEARCH for prices. Emit the tag ALONE, no preamble.
+  "what's the price of Apple" → [ACTION:MARKETS] Apple
+  "how's the S&P today" → [ACTION:MARKETS] S&P 500
+  "bitcoin price" → [ACTION:MARKETS] bitcoin
+  "how's Tesla stock doing" → [ACTION:MARKETS] Tesla
+  "what's gold at" → [ACTION:MARKETS] gold
 - [ACTION:CREATE_EVENT] title ||| start_iso ||| duration_min_or_end ||| description? ||| location? — schedule an event on the user's Mac Calendar (Apple Calendar, via EventKit). Always resolve relative times ("tomorrow at 3pm") to absolute ISO timestamps using the CURRENT TIME context above. Use 30 if no duration mentioned.
   "schedule a meeting tomorrow at 3pm called design review" → [ACTION:CREATE_EVENT] design review ||| 2026-05-16 3:00 PM ||| 30
   "block 2-3pm Friday for deep work" → [ACTION:CREATE_EVENT] Deep work ||| 2026-05-16 2:00 PM ||| 2026-05-16 3:00 PM
@@ -848,7 +854,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|LOOKUP|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|MARKETS|LOOKUP|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -2374,6 +2380,42 @@ async def _execute_sports(query: str, ws):
     log.info(f"VALET: {msg}")
 
 
+async def _execute_markets(query: str, ws):
+    """Live stock/crypto/index/commodity quote via Yahoo Finance (markets.py),
+    keyless and ~0.1s. Self-speaking like _execute_world_time; emits a
+    result.markets card. If the query doesn't resolve to a quote, falls back to
+    the fast web lookup."""
+    import markets as _mk
+    try:
+        result = await _mk.get_markets(query)
+    except Exception as e:
+        log.warning("markets lookup failed for %r: %s", query[:80], e)
+        result = None
+    if not result:
+        await _execute_quick_lookup(query, ws)
+        return
+    try:
+        await process_bus.emit(ProcessEvent(
+            type="result.markets",
+            task_id="markets",
+            id=_uuid.uuid4().hex[:10],
+            status="done",
+            title=result["payload"].get("name", "Markets"),
+            payload=result["payload"],
+        ))
+    except Exception as e:
+        log.debug(f"result.markets emit failed: {e}")
+    msg = result["summary"]
+    audio = await synthesize_speech(msg)
+    if audio and ws:
+        try:
+            await ws.send_json({"type": "status", "state": "speaking"})
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+        except Exception:
+            pass
+    log.info(f"VALET (markets): {msg}")
+
+
 async def _ddg_snippets(query: str, n: int = 8) -> list[str]:
     """Keyless, fast (~1s) web search: DuckDuckGo Lite results as "title — snippet"
     lines (the title often carries the fact the snippet omits). Best-effort HTML
@@ -2427,12 +2469,17 @@ async def _execute_quick_lookup(query: str, ws):
                 max_tokens=160,
                 system=(
                     f"You are VALET, {USER_NAME}'s British butler. Today is {today}. "
-                    "Answer the question in ONE concise spoken sentence using ONLY the "
-                    "search results provided — they are current, so trust them over prior "
-                    "knowledge. Answer ONLY about the exact entity asked; never substitute a "
-                    "different company/person/team. If the results genuinely don't contain "
-                    "the answer, say so plainly in one sentence — do not guess from memory. "
-                    "Dry wit, economy of language, end with 'sir.'"
+                    "Answer in ONE or TWO concise spoken sentences using ONLY the search "
+                    "results — they are current, so trust them over prior knowledge. "
+                    "Answer ONLY about the exact entity asked; never substitute a different "
+                    "company/person/team. "
+                    "TRANSITIONS: if the results show a change taking effect on a FUTURE date "
+                    "(a successor taking over, someone stepping down), state who holds the "
+                    "role AS OF TODAY and when it changes — e.g. 'Tim Cook remains CEO until "
+                    "September 1st, when John Ternus takes over, sir.' NEVER call a future "
+                    "successor the current holder. "
+                    "If the results genuinely don't contain the answer, say so plainly — do "
+                    "not guess from memory. Dry wit, economy of language, end with 'sir.'"
                 ),
                 messages=[{"role": "user", "content": f"Question: {query}\n\nSearch results:\n{joined}"}],
             )
@@ -6191,6 +6238,16 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         except Exception:
             pass
 
+    # ── Live market quotes. Fire only when a market cue is present AND a symbol
+    # resolves (alias/ticker), so "price of apple" → quote but "price of milk"
+    # doesn't. Dynamic name resolution happens in the async handler.
+    try:
+        import markets as _mk
+        if any(c in t for c in _mk.MARKET_CUES) and _mk.resolve_symbol_sync(t):
+            return {"action": "markets", "target": text.strip()}
+    except Exception:
+        pass
+
     # Dispatch / build status check
     if any(p in t for p in ["where are we", "where were we", "project status", "how's the build",
                              "hows the build", "status update", "status report", "where is that",
@@ -7805,6 +7862,9 @@ async def voice_handler(ws: WebSocket):
                             # no preamble.
                             response_text = ""
                             asyncio.create_task(_execute_sports(action.get("target", ""), ws))
+                        elif action["action"] == "markets":
+                            response_text = ""
+                            asyncio.create_task(_execute_markets(action.get("target", ""), ws))
                         elif action["action"] == "check_dispatch":
                             recent = dispatch_registry.get_most_recent()
                             if not recent:
@@ -7982,6 +8042,8 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _execute_sports emits the card + speaks
                                     elif action_type == "lookup":
                                         response_text = ""  # _execute_quick_lookup speaks the answer
+                                    elif action_type == "markets":
+                                        response_text = ""  # _execute_markets emits the card + speaks
                                     else:
                                         response_text = "Right away, sir."
 
@@ -8147,6 +8209,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_sports(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "lookup":
                                     asyncio.create_task(_execute_quick_lookup(embedded_action.get("target", ""), ws))
+                                elif embedded_action["action"] == "markets":
+                                    asyncio.create_task(_execute_markets(embedded_action.get("target", ""), ws))
                                 elif embedded_action["action"] == "check_weather":
                                     wx_t = (embedded_action.get("target") or "").strip()
                                     # LLM tag carries no time scope — recover it
