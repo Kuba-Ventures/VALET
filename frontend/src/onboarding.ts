@@ -651,17 +651,54 @@ function renderBody(state: State, root: HTMLElement): void {
   const next = root.querySelector<HTMLButtonElement>("#ob-next");
   if (!body || !back || !next) return;
   body.innerHTML = bodyFor(state);
+  tagDragText(root); // each step renders a fresh title/blurb — re-tag as drag handles
   back.style.visibility = state.step === 0 ? "hidden" : "visible";
   next.textContent = state.step === STEP_TITLES.length - 1 ? "Start using VALET" : "Continue";
   root.querySelectorAll<HTMLElement>(".ob-dot").forEach((d, i) => d.classList.toggle("on", i <= state.step));
   wireStep(state, root);
 }
 
+// ---- window helpers --------------------------------------------------------
+
+type WinApi = {
+  minimize?: () => void;
+  close?: () => void;
+  setAlwaysOnTop?: (on: boolean) => void;
+};
+
+/** The Tauri window API, or undefined in a plain browser (dev/tests). */
+function tauriWindow(): WinApi | undefined {
+  try {
+    return (window as unknown as {
+      __TAURI__?: { window?: { getCurrentWindow?: () => WinApi } };
+    }).__TAURI__?.window?.getCurrentWindow?.();
+  } catch { return undefined; }
+}
+
+/** The orb is a menu-bar popover and floats above everything (tauri.conf
+ *  alwaysOnTop) — right for a glanceable widget, wrong for a full-screen setup
+ *  wizard the user wants to park while they go grant a permission in System
+ *  Settings. Drop it for the duration of onboarding and restore it on finish.
+ *  Gated by the orb-drag capability (core:window:allow-set-always-on-top). */
+function setAlwaysOnTop(on: boolean): void {
+  try { tauriWindow()?.setAlwaysOnTop?.(on); } catch { /* ignore */ }
+}
+
+/** Every step's title/blurb is inert text sitting at the top of the card — the
+ *  natural place to grab the panel — but it's rendered inside .ob-body, which
+ *  must NOT be a drag region wholesale or a press on its scrollbar would move
+ *  the window instead of scrolling. So tag just those two after each render:
+ *  Tauri drags only when the event target itself carries the attribute. */
+function tagDragText(root: HTMLElement): void {
+  root.querySelectorAll(".ob-body .ob-title, .ob-body .ob-sub")
+    .forEach((el) => el.setAttribute("data-tauri-drag-region", ""));
+}
+
 function render(state: State, root: HTMLElement): void {
   const dots = STEP_TITLES.map((_, i) => `<span class="ob-dot ${i === 0 ? "on" : ""}"></span>`).join("");
   root.innerHTML = `
     <div class="ob-backdrop" data-tauri-drag-region></div>
-    <div class="ob-card ob-wizard" role="dialog" aria-label="VALET setup">
+    <div class="ob-card ob-wizard" role="dialog" aria-label="VALET setup" data-tauri-drag-region>
       <div class="ob-titlebar">
         <div class="ob-drag" data-tauri-drag-region></div>
         <div class="ob-lights">
@@ -674,23 +711,19 @@ function render(state: State, root: HTMLElement): void {
         <div class="ob-dots">${dots}</div>
       </div>
       <div class="ob-body">${bodyFor(state)}</div>
-      <div class="ob-actions">
+      <div class="ob-actions" data-tauri-drag-region>
         <button class="ob-btn ghost" id="ob-back">Back</button>
         <button class="ob-btn primary" id="ob-next">Continue</button>
       </div>
     </div>`;
+  tagDragText(root);
 
   // Window controls — drag is handled natively by [data-tauri-drag-region]; the
   // light buttons call the window API (gated by the orb-drag capability). Close
   // hides the popover (the Rust close handler keeps the app in the tray); the
   // wizard re-opens via the tray "Replay setup".
   const winCtl = (method: "minimize" | "close") => {
-    try {
-      const w = (window as unknown as {
-        __TAURI__?: { window?: { getCurrentWindow?: () => Record<string, () => void> } };
-      }).__TAURI__?.window?.getCurrentWindow?.();
-      w?.[method]?.();
-    } catch { /* ignore */ }
+    try { tauriWindow()?.[method]?.(); } catch { /* ignore */ }
   };
   root.querySelector("#ob-win-min")?.addEventListener("click", () => winCtl("minimize"));
   root.querySelector("#ob-win-close")?.addEventListener("click", () => winCtl("close"));
@@ -708,6 +741,7 @@ function render(state: State, root: HTMLElement): void {
       localStorage.setItem(SEEN_KEY, state.buildId);
       localStorage.removeItem("valet_force_onboarding"); // clear the replay/test flag
       root.remove();
+      setAlwaysOnTop(true); // wizard's gone — the orb goes back to floating
       return;
     }
     state.step++;
@@ -792,6 +826,11 @@ export async function maybeShowOnboarding(
   const root = document.createElement("div");
   root.id = "valet-onboarding";
   document.body.appendChild(root);
+  // Setup is a sit-down task, not a glance: let the user push the wizard behind
+  // System Settings while granting a permission. Restored when they finish. If
+  // they quit mid-setup instead, the next launch re-runs onboarding and lands
+  // here again — and tauri.conf re-applies alwaysOnTop on every fresh start.
+  setAlwaysOnTop(false);
   render(state, root);
   return true;
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "orb-drag",
-  "description": "Window self-control for the frameless orb widget: drag it by its handle, resize it via the edge/corner grips, and minimize/hide it (the onboarding titlebar's traffic-light buttons). The UI is served from the local backend (a remote origin to the webview), so these window verbs are granted to that origin explicitly; nothing else is exposed.",
+  "description": "Window self-control for the frameless orb widget: drag it by its handle, resize it via the edge/corner grips, minimize/hide it (the onboarding titlebar's traffic-light buttons), and drop always-on-top while the setup wizard is up so it can be parked behind System Settings. The UI is served from the local backend (a remote origin to the webview), so these window verbs are granted to that origin explicitly; nothing else is exposed.",
   "windows": ["main"],
   "local": true,
   "remote": {
@@ -10,6 +10,7 @@
   "permissions": [
     "core:window:allow-start-dragging",
     "core:window:allow-start-resize-dragging",
+    "core:window:allow-set-always-on-top",
     "core:window:allow-minimize",
     "core:window:allow-close"
   ]

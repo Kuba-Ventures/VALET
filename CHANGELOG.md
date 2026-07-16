@@ -3,6 +3,21 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.27] — 2026-07-16
+
+### Fixed
+- **The setup wizard can be moved, and pushed behind other windows.** During
+  first-run setup the panel couldn't be dragged and floated above everything,
+  so granting a permission meant fighting the window that was asking for it.
+  Only a 22px strip and the small "VALET" row were drag handles, while the card
+  covers most of the 380x560 popover — grabbing the panel anywhere a person
+  actually grabs it (the title, the blurb, the padding) did nothing. Those are
+  all drag handles now. The scrolling step body is deliberately left alone so
+  its scrollbar still scrolls instead of dragging the window. Setup also drops
+  always-on-top for its duration and restores it when you finish, so the wizard
+  can sit behind System Settings while you grant a permission. The orb itself is
+  unchanged — it still floats.
+
 ## [0.2.26] — 2026-07-16
 
 ### Fixed
