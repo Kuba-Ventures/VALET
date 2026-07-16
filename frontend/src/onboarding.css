@@ -47,21 +47,14 @@
 #valet-onboarding .ob-drag {
   position: absolute; inset: 0;   /* the whole strip drags the window */
 }
-/* The card fills most of the 380x560 popover, so drag has to cover more than the
-   22px titlebar or the panel reads as immovable (#252/#255): the card padding,
-   the brand row, the actions row, and each step's title/blurb are all drag
-   regions. Tauri only starts a drag when the event target ITSELF carries
-   [data-tauri-drag-region], so rows whose children are purely visual mark those
-   children pointer-events:none to let the press land on the draggable parent.
-   Buttons/inputs sit above and keep their own events. Deliberately NOT tagged:
-   .ob-body — it scrolls, and a drag region there would hijack its scrollbar. */
+/* The card fills most of the 380x560 popover, so the whole panel has to drag or
+   it reads as immovable (#252/#255). tagDragRegions() in onboarding.ts marks
+   every inert element in the card as a [data-tauri-drag-region] after each
+   render — Tauri only drags when the event target ITSELF carries the attribute,
+   and hand-picking a few elements kept missing whatever the user actually
+   grabbed. Only .ob-body (it scrolls — see below) and interactive controls are
+   left out, so no pointer-events tricks are needed here any more. */
 #valet-onboarding .ob-head { cursor: default; }
-#valet-onboarding .ob-head > *,
-/* e.g. the bolded account name in the licence blurb — visual only, so the press
-   reaches the draggable <h2>/<p> instead of dead-zoning. Keep these text-only;
-   anything interactive belongs in .ob-body or .ob-actions. */
-#valet-onboarding .ob-title > *,
-#valet-onboarding .ob-sub > * { pointer-events: none; }
 #valet-onboarding .ob-lights {
   position: absolute; top: 4px; left: 4px;
   display: flex; gap: 8px; z-index: 1;   /* above the drag layer so clicks land */

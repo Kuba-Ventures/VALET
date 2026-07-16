@@ -651,7 +651,7 @@ function renderBody(state: State, root: HTMLElement): void {
   const next = root.querySelector<HTMLButtonElement>("#ob-next");
   if (!body || !back || !next) return;
   body.innerHTML = bodyFor(state);
-  tagDragText(root); // each step renders a fresh title/blurb — re-tag as drag handles
+  tagDragRegions(root); // steps rebuild their body — re-tag the new content
   back.style.visibility = state.step === 0 ? "hidden" : "visible";
   next.textContent = state.step === STEP_TITLES.length - 1 ? "Start using VALET" : "Continue";
   root.querySelectorAll<HTMLElement>(".ob-dot").forEach((d, i) => d.classList.toggle("on", i <= state.step));
@@ -684,14 +684,36 @@ function setAlwaysOnTop(on: boolean): void {
   try { tauriWindow()?.setAlwaysOnTop?.(on); } catch { /* ignore */ }
 }
 
-/** Every step's title/blurb is inert text sitting at the top of the card — the
- *  natural place to grab the panel — but it's rendered inside .ob-body, which
- *  must NOT be a drag region wholesale or a press on its scrollbar would move
- *  the window instead of scrolling. So tag just those two after each render:
- *  Tauri drags only when the event target itself carries the attribute. */
-function tagDragText(root: HTMLElement): void {
-  root.querySelectorAll(".ob-body .ob-title, .ob-body .ob-sub")
-    .forEach((el) => el.setAttribute("data-tauri-drag-region", ""));
+/** Controls that must keep their own mouse behavior — never drag handles. */
+const INTERACTIVE = "button, input, select, textarea, a, label, [contenteditable], [role='button']";
+
+/** Make the WHOLE panel a drag handle.
+ *
+ *  Tauri starts a drag only when the event target ITSELF carries
+ *  [data-tauri-drag-region] — it does not walk up the tree. Hand-picking which
+ *  elements to tag is why this kept reopening (#252/#255): #167 tagged the
+ *  titlebar strip, then the brand row, and each pass still missed whatever the
+ *  user actually grabbed — a step's blurb, a permission row's label. So invert
+ *  it: tag every inert element in the card and name only the exceptions.
+ *
+ *  Exceptions, both deliberate:
+ *   - .ob-body itself scrolls (overflow-y:auto). Tagging it would make a press
+ *     on its scrollbar move the window instead of scrolling. Its CHILDREN are
+ *     tagged, so text inside still drags; only the scrollbar gutter doesn't.
+ *   - interactive controls (and anything inside one, e.g. an icon in a button)
+ *     keep their clicks.
+ *
+ *  Tagging also kills the text-selection drag for free: Tauri's own handler
+ *  calls preventDefault on a drag region, so grabbing a label no longer
+ *  highlights it. Re-run after every render — steps rebuild their body. */
+function tagDragRegions(root: HTMLElement): void {
+  const card = root.querySelector<HTMLElement>(".ob-card");
+  if (!card) return;
+  card.querySelectorAll<HTMLElement>("*").forEach((el) => {
+    if (el.classList.contains("ob-body")) return;
+    if (el.matches(INTERACTIVE) || el.closest(INTERACTIVE)) return;
+    el.setAttribute("data-tauri-drag-region", "");
+  });
 }
 
 function render(state: State, root: HTMLElement): void {
@@ -716,7 +738,7 @@ function render(state: State, root: HTMLElement): void {
         <button class="ob-btn primary" id="ob-next">Continue</button>
       </div>
     </div>`;
-  tagDragText(root);
+  tagDragRegions(root);
 
   // Window controls — drag is handled natively by [data-tauri-drag-region]; the
   // light buttons call the window API (gated by the orb-drag capability). Close

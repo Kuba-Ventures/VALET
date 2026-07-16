@@ -3,6 +3,20 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.28] — 2026-07-16
+
+### Fixed
+- **The whole setup panel drags now, not just parts of it.** 0.2.27 made the
+  card padding, the brand row, the actions row and each step's title draggable,
+  but grabbing anything else — a permission row's label, its grey blurb — still
+  selected text instead of moving the window. Tauri only starts a drag when the
+  pressed element itself is a drag region, so hand-picking which elements to tag
+  kept missing whatever people actually grabbed (this is the third pass at it).
+  Inverted: every inert element in the card is tagged after each render, and only
+  the exceptions are named — the scrolling step body (so its scrollbar still
+  scrolls) and interactive controls (so buttons and inputs still work). Grabbing
+  text no longer highlights it either.
+
 ## [0.2.27] — 2026-07-16
 
 ### Fixed
