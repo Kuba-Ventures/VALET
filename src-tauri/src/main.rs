@@ -474,6 +474,27 @@ fn tray_action(app: AppHandle, id: String) {
     handle_tray_action(&app, &id);
 }
 
+/// Is Input Monitoring granted to THIS binary? (#265)
+///
+/// Checked here, not in the backend, because this is the process the grant has
+/// to be on: the ⌃⌥ chord tap runs in `spawn_global_chord` above, and the
+/// backend's own tap is intentionally never started (see server.py). Asking the
+/// backend for its `CGPreflightListenEventAccess` therefore reports a permission
+/// it neither holds nor needs — it read False while the chord worked fine, so
+/// onboarding said "Needs setup" forever and Re-check kept asking the same wrong
+/// process. Grants are per-executable (see spawn_global_chord's note), so only
+/// the binary that taps can answer this.
+///
+/// Preflight is a pure query: no prompt, no side effects.
+#[tauri::command]
+fn input_monitoring_granted() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn CGPreflightListenEventAccess() -> bool;
+    }
+    unsafe { CGPreflightListenEventAccess() }
+}
+
 /// Prefix the backend prints to stdout to drive the cursor-follower caption — the
 /// Clicky-style bubble that rides next to the cursor during a walkthrough glide.
 /// The line is `@@VALET_CAPTION@@<text>` (empty text clears it). We use stdout
@@ -604,7 +625,7 @@ fn main() {
             shutting_down: AtomicBool::new(false),
             popover_hidden_at: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![tray_action])
+        .invoke_handler(tauri::generate_handler![tray_action, input_monitoring_granted])
         .setup(|app| {
             // Menu-bar product: no Dock icon. The orb lives as an always-on-top
             // popover summoned via ⌃⌥ and toggled from the tray.

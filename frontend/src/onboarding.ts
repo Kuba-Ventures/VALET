@@ -46,12 +46,46 @@ async function micGranted(): Promise<boolean | null> {
   }
 }
 
-/** Load permission status from the backend, then refine microphone client-side. */
+/**
+ * Real Input Monitoring state, read where the grant actually has to be — the
+ * main VALET binary (#265).
+ *
+ * The backend answers `/api/permissions/status` with its OWN
+ * CGPreflightListenEventAccess, but the ⌃⌥ chord tap runs in the Tauri process
+ * and the backend's tap is intentionally never started, so the backend was
+ * reporting a permission it neither holds nor needs — False even when the chord
+ * worked, which pinned the step to "Needs setup" with no way forward. Grants are
+ * per-executable, so only the tapping binary can answer. Returns null outside
+ * Tauri (plain browser / dev), which keeps the backend value.
+ */
+async function inputMonitoringGranted(): Promise<boolean | null> {
+  try {
+    const invoke = (window as unknown as {
+      __TAURI__?: { core?: { invoke?: (cmd: string) => Promise<unknown> } };
+    }).__TAURI__?.core?.invoke;
+    if (!invoke) return null;
+    return Boolean(await invoke("input_monitoring_granted"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load permission status from the backend, then correct the two the backend
+ * can't answer for itself: microphone lives in the webview, Input Monitoring
+ * lives in the Tauri binary. Everything else (Accessibility, Screen Recording,
+ * Full Disk Access) is genuinely used BY the backend, so its own grant is the
+ * honest answer and is left alone.
+ */
 async function loadPerms(): Promise<PermStatus | null> {
   const perms = await getJSON<PermStatus>("/api/permissions/status");
   if (perms?.microphone) {
     const mic = await micGranted();
     if (mic !== null) perms.microphone.granted = mic;
+  }
+  if (perms?.input_monitoring) {
+    const im = await inputMonitoringGranted();
+    if (im !== null) perms.input_monitoring.granted = im;
   }
   return perms;
 }
