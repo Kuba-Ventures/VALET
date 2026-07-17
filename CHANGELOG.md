@@ -3,6 +3,19 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.40] — 2026-07-17
+
+### Added
+- **The original request survives the login — and the inbox actually gets
+  summarized.** Asking "go to gmail.com and summarize today's emails" while
+  signed out used to sign you in and then stop at "you're in, sir," forgetting
+  the summary. Now the original request is remembered through the entire login
+  (account pick, password, even a passkey/Touch-ID pause and "I'm logged in"),
+  and once the inbox is up VALET reads it and speaks a concise rundown of today's
+  mail. Summary-style Gmail asks ("summarize my inbox", "what emails did I get
+  today", "catch me up") route to the read-and-summarize path; click-style asks
+  ("archive the top email") still use the normal UI loop. (#284, #285)
+
 ## [0.2.39] — 2026-07-17
 
 ### Fixed

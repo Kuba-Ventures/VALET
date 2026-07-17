@@ -10121,7 +10121,8 @@ async def api_latency_last():
 
 async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
                        task_id: Optional[str] = None, ws=None,
-                       login_choice: Optional[dict] = None) -> dict:
+                       login_choice: Optional[dict] = None,
+                       stop_at_gmail_inbox: bool = False) -> dict:
     """UC4 — run the supervised observe→decide→act loop for `goal`, streaming each
     beat to the process panel. Each mutating step is gated (confirm card) and the
     kill switch is live throughout. When `ws` is given, mid-task prompts (the login
@@ -10141,7 +10142,8 @@ async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int =
     return await agent_loop.run_loop(
         executor, goal, anthropic_client, app=app, max_steps=max_steps,
         kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit,
-        hands_off=True, speak=_speak_cb if ws else None, login_choice=login_choice)
+        hands_off=True, speak=_speak_cb if ws else None, login_choice=login_choice,
+        stop_at_gmail_inbox=stop_at_gmail_inbox)
 
 
 @app.post("/api/ui/task")
@@ -10267,6 +10269,20 @@ def _is_gmail_nav_goal(goal: str) -> bool:
     return bool(goal and _GMAIL_NAV_RE.search(goal))
 
 
+_GMAIL_SUMMARIZE_RE = re.compile(
+    r'\b(summari[sz]e|summary|recap|catch me up|read (?:me |out )?|what.*\bemails?\b|'
+    r'go through|run through|any (?:new )?emails?|check.*\bemails?\b)\b', re.IGNORECASE)
+
+
+def _is_gmail_summarize_goal(goal: str) -> bool:
+    """A Gmail task whose point is to READ/summarize the inbox (vs. a click task).
+    Routes to the LLM inbox summary once signed in, not the generic click loop."""
+    g = (goal or "").lower()
+    if not any(k in g for k in ("gmail", "mail.google", "email", "inbox")):
+        return False
+    return bool(_GMAIL_SUMMARIZE_RE.search(g))
+
+
 def _match_account(reply: str, emails: list) -> Optional[str]:
     """Map a spoken reply to one of the chooser's account emails. Understands the
     full/partial email ("finley@qsbs", "mrfinleyunderwood") and the work/personal
@@ -10317,6 +10333,61 @@ def _looks_like_account_reply(reply: str) -> bool:
         "qsbs", "rollover", "the first", "the second", "first one", "second one")))
 
 
+async def _gmail_inbox_summary(observation: dict) -> str:
+    """LLM summary of the loaded Gmail inbox (screenshot + AX text) — a concise
+    spoken rundown of today's mail."""
+    import perception
+    system = (
+        "You are VALET reading the user's Gmail inbox aloud. Give a tight spoken "
+        "rundown of the emails received TODAY — skip older mail and obvious "
+        "promo/social clutter unless notable. Lead with the count, then the few "
+        "that matter by sender and a one-line gist. British butler tone, dry and "
+        "economical. No markdown, no bullets — this is spoken. Under about 70 "
+        "words. If nothing arrived today, say so plainly, sir."
+    )
+    elements = observation.get("elements", [])
+    ax_text = perception.elements_as_text(elements, limit=80)
+    user_text = (f"Gmail inbox ({observation.get('app', 'Chrome')}).\n"
+                 f"Visible rows / text:\n{ax_text}\n\nSummarize today's emails.")
+    try:
+        content = [{"type": "text", "text": user_text}]
+        img = observation.get("image")
+        if img:
+            content.insert(0, {"type": "image", "source": {
+                "type": "base64", "media_type": img["media_type"], "data": img["b64"]}})
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=400, system=system,
+            messages=[{"role": "user", "content": content}])
+        return resp.content[0].text
+    except Exception as e:
+        log.warning(f"gmail summary failed: {e}")
+        return "I couldn't read your inbox clearly, sir."
+
+
+async def _summarize_gmail_inbox(ws, observation=None) -> None:
+    """Read the loaded Gmail inbox and speak a summary of today's mail — the payoff
+    of the guided-login flow (the original 'summarize today's emails' request, run
+    once we're actually in). Waits briefly for the inbox to finish loading."""
+    import perception
+    import agent_loop
+    async with process_bus.task_context("Summarize Gmail") as task_id:
+        await emit_step(task_id, "Reading your inbox…", status="active")
+        obs = observation
+        for _ in range(6):
+            if obs and agent_loop._is_gmail_inbox(obs):
+                break
+            await asyncio.sleep(1.0)
+            obs = await perception.build_observation(executor, app=None)
+        if not (obs and agent_loop._is_gmail_inbox(obs)):
+            await emit_step(task_id, "Inbox not visible", status="error")
+            await _speak(ws, "I'm signed in but not seeing the inbox yet, sir — say "
+                             "'summarize my inbox' when it's up.")
+            return
+        summary = await _gmail_inbox_summary(obs)
+        await emit_step(task_id, "Summary ready", status="done")
+    await _speak(ws, summary)
+
+
 async def _handle_ui_task(goal: str, ws, prenav: bool = True,
                           login_choice: Optional[dict] = None) -> None:
     """Voice path for UC4 — runs the loop on a background task (keeps the WS loop
@@ -10327,7 +10398,11 @@ async def _handle_ui_task(goal: str, ws, prenav: bool = True,
     the account picked (choose_account), approval to sign in (approve_signin), or
     a plain "I'm logged in" (login). `login_choice` carries that answer back into
     the loop. `prenav` opens real Chrome at Gmail for a fresh request; every
-    resume passes prenav=False (the browser is already on Gmail)."""
+    resume passes prenav=False (the browser is already on Gmail).
+
+    For a summarize goal ("…and summarize today's emails") the ORIGINAL request is
+    remembered across the whole login: the loop stops at the inbox and we then run
+    the LLM inbox summary, whether we signed in just now or were already in."""
     # Land on the real Chrome Gmail tab first so a manual login persists (AC #4).
     if prenav and _is_gmail_nav_goal(goal):
         try:
@@ -10335,10 +10410,12 @@ async def _handle_ui_task(goal: str, ws, prenav: bool = True,
             await asyncio.sleep(2.0)  # let the page (and any sign-in redirect) settle
         except Exception as e:
             log.warning(f"gmail pre-nav failed: {e}")
+    is_summary = _is_gmail_summarize_goal(goal)
     try:
         async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
             result = await _run_ui_task(goal, task_id=task_id, ws=ws,
-                                        login_choice=login_choice)
+                                        login_choice=login_choice,
+                                        stop_at_gmail_inbox=is_summary)
     except Exception as e:
         log.error(f"ui_task error: {e}")
         await _speak(ws, "I ran into trouble with that, sir.")
@@ -10354,6 +10431,13 @@ async def _handle_ui_task(goal: str, ws, prenav: bool = True,
             "accounts": result.get("accounts") or [],
             "account": result.get("account") or "",
         }
+        await _speak(ws, result.get("message") or "Done, sir.")
+        return
+    # Reached the inbox (signed in just now, or already were) → honor the original
+    # summarize request instead of stopping at "you're in".
+    if is_summary and result.get("reason") in ("at_inbox", "signed_in"):
+        await _summarize_gmail_inbox(ws)
+        return
     await _speak(ws, result.get("message") or "Done, sir.")
 
 

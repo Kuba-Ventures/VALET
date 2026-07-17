@@ -571,6 +571,7 @@ async def run_loop(
     hands_off: bool = False,
     speak: Optional[Callable[[str], Awaitable[None]]] = None,
     login_choice: Optional[dict] = None,
+    stop_at_gmail_inbox: bool = False,
 ) -> dict:
     """Run the supervised observe→decide→act loop for `goal`.
 
@@ -680,6 +681,14 @@ async def run_loop(
 
         await _emit("observe", f"Step {step}: looking at the screen")
         observation = await perception.build_observation(executor, app=app)
+
+        # Summary goal that has reached the inbox: the login is done, so hand back
+        # to the caller to produce the summary rather than running the generic
+        # click loop on the inbox (which has no way to "summarize"). The original
+        # request is carried here from the very first prompt, through any login.
+        if stop_at_gmail_inbox and _is_gmail_inbox(observation):
+            return {"status": "done", "reason": "at_inbox", "steps": step - 1,
+                    "history": history, "message": ""}
 
         # ── Gmail GUIDED login (issue #284) ──────────────────────────────────
         # The user is signed out. VALET never types the password, but it DOES
@@ -814,6 +823,14 @@ async def run_loop(
             _r = await _login_handoff(step)
             if _r is not None:
                 return _r
+            continue
+
+        # Summary goal: we ONLY drive the login. If the page is neither a login
+        # screen nor the inbox yet (still loading / redirecting after sign-in),
+        # wait and re-observe rather than letting the generic loop click around a
+        # page it can't "summarize". The inbox early-return above ends the loop.
+        if stop_at_gmail_inbox:
+            await asyncio.sleep(1.0)
             continue
 
         decision = await _decide(client, goal, observation, history)

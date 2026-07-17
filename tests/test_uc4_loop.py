@@ -370,6 +370,26 @@ def test_find_account_element_is_exact():
     assert agent_loop._find_account_element(obs, "mrfinleyunderwood@gmail.com")["ref"] == "e2"
 
 
+def test_summary_goal_stops_at_inbox(monkeypatch):
+    # With stop_at_gmail_inbox, reaching the inbox ends the loop (reason at_inbox)
+    # so the caller can summarize — the generic click loop never runs.
+    _no_capture(monkeypatch)
+
+    class FakeExecInbox(FakeExec):
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "Google Chrome", "elements": _GMAIL_INBOX_ELS})
+
+    # If the loop ever "decided", it would click — it must not for a summary goal.
+    client = FakeClient(['{"action":"click","ref":"e1","reason":"x"}'])
+    ex = FakeExecInbox()
+    res = run(agent_loop.run_loop(ex, "go to gmail and summarize today's emails",
+                                  client, ax_executor=ex, hands_off=True,
+                                  stop_at_gmail_inbox=True))
+    assert res["status"] == "done" and res.get("reason") == "at_inbox"
+    assert ex.actions == []                     # never ran the generic click loop
+
+
 def test_gmail_passkey_page_hands_off_without_looping(monkeypatch):
     # A passkey / "Verifying it's you" page can't be driven (biometric) — the loop
     # must pause ONCE and hand off, not loop through the old credential path.
