@@ -1157,23 +1157,49 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
     if offer["kind"] == "self_mod_confirm":
         return await _handle_self_mod_confirm(transcript, ws)
 
-    # A UI task paused on a Gmail sign-in wall (issue #284). An affirmative resume
-    # utterance ("ok I'm logged in", "done", "continue") re-runs the SAME goal:
-    # re-observe, and if the inbox is now present carry on, else pause again.
+    # A UI task paused mid-Gmail-login (issue #284). Resume the SAME goal with the
+    # user's spoken answer threaded in as `login_choice`. Three stages:
+    #   choose_account  → match the reply to an account, click it
+    #   approve_signin  → "yes" signs in with the saved password; "no" bows out
+    #   login           → plain "I'm logged in" re-observes and carries on
     # Anything unrelated falls through so the offer is dropped (no stuck task).
-    if offer["kind"] == "ui_resume":
+    if offer["kind"] == "gmail_login":
+        stage = offer.get("stage", "login")
+        goal = offer["goal"]
+
+        if stage == "choose_account":
+            matched = _match_account(t, offer.get("accounts") or [])
+            if matched:
+                await _speak(ws, f"Signing into {matched}, sir.")
+                _track_uc(ws, _handle_ui_task(goal, ws, prenav=False,
+                                              login_choice={"email": matched}))
+                return True
+            if _looks_like_account_reply(t):
+                # An account answer we couldn't map — resume with no choice so the
+                # loop re-asks (re-parks the offer) rather than guessing.
+                _track_uc(ws, _handle_ui_task(goal, ws, prenav=False))
+                return True
+            return False  # unrelated → drop the offer, normal routing
+
+        if stage == "approve_signin":
+            if t in confirm_words or any(t.startswith(w + " ") for w in confirm_words) \
+                    or any(c in t for c in ("sign in", "log in", "go ahead", "do it",
+                                            "yes please", "please do", "sign me in")):
+                _track_uc(ws, _handle_ui_task(goal, ws, prenav=False,
+                                              login_choice={"approve": True}))
+                return True
+            return False  # not a yes → drop (top-level cancel already handled "no")
+
+        # stage == "login" (plain hand-off): any affirmative / resume utterance.
         resume_cues = ("logged in", "signed in", "log in", "i'm in", "im in",
                        "all set", "ready", "good to go", "i'm good", "im good",
                        "done", "finished", "continue", "carry on", "go ahead",
                        "go on", "keep going")
-        is_resume = (t in confirm_words
-                     or any(t.startswith(w + " ") for w in confirm_words)
-                     or any(cue in t for cue in resume_cues))
-        if is_resume:
+        if (t in confirm_words or any(t.startswith(w + " ") for w in confirm_words)
+                or any(cue in t for cue in resume_cues)):
             await _speak(ws, "Right you are, sir — let me take a look.")
-            _track_uc(ws, _handle_ui_task(offer["goal"], ws, prenav=False))
+            _track_uc(ws, _handle_ui_task(goal, ws, prenav=False))
             return True
-        # Doesn't look like a resume — let normal flow handle it, drop the offer.
         return False
 
     if offer["kind"] == "alias_remove":
@@ -10094,11 +10120,14 @@ async def api_latency_last():
 
 
 async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
-                       task_id: Optional[str] = None, ws=None) -> dict:
+                       task_id: Optional[str] = None, ws=None,
+                       login_choice: Optional[dict] = None) -> dict:
     """UC4 — run the supervised observe→decide→act loop for `goal`, streaming each
     beat to the process panel. Each mutating step is gated (confirm card) and the
     kill switch is live throughout. When `ws` is given, mid-task prompts (the login
-    hand-off) are also SPOKEN, not just shown in the panel."""
+    hand-off) are also SPOKEN, not just shown in the panel. `login_choice` carries
+    the user's spoken answer into the Gmail guided-login step (the account they
+    picked, or approval to sign in)."""
     import agent_loop
 
     async def _emit(kind, title, detail="", status="active"):
@@ -10112,7 +10141,7 @@ async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int =
     return await agent_loop.run_loop(
         executor, goal, anthropic_client, app=app, max_steps=max_steps,
         kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit,
-        hands_off=True, speak=_speak_cb if ws else None)
+        hands_off=True, speak=_speak_cb if ws else None, login_choice=login_choice)
 
 
 @app.post("/api/ui/task")
@@ -10238,15 +10267,67 @@ def _is_gmail_nav_goal(goal: str) -> bool:
     return bool(goal and _GMAIL_NAV_RE.search(goal))
 
 
-async def _handle_ui_task(goal: str, ws, prenav: bool = True) -> None:
+def _match_account(reply: str, emails: list) -> Optional[str]:
+    """Map a spoken reply to one of the chooser's account emails. Understands the
+    full/partial email ("finley@qsbs", "mrfinleyunderwood") and the work/personal
+    shorthand (work = the non-gmail.com domain, personal = the gmail.com one).
+
+    Scored by specificity so a short local part that happens to be a substring of
+    another account's local (e.g. "finley" inside "mrfinleyunderwood") doesn't win
+    over the exact match."""
+    t = (reply or "").lower().strip()
+    if not t or not emails:
+        return None
+    best, best_score = None, 0
+    for e in emails:
+        el = e.lower()
+        local = el.split("@", 1)[0]
+        dom_stem = (el.split("@", 1)[1].split(".", 1)[0]) if "@" in el else ""  # "qsbsrollover"
+        score = 0
+        if el in t:                                   # full email spoken
+            score = 100 + len(el)
+        elif t == local:                              # exact local part
+            score = 90
+        elif local and (local in t or t in local):    # partial local overlap
+            score = 10 + len(local)
+        if dom_stem and dom_stem != "gmail" and (dom_stem in t or t in dom_stem):
+            score = max(score, 10 + len(dom_stem))    # domain fragment ("qsbs")
+        if score > best_score:
+            best, best_score = e, score
+    if best:
+        return best
+    # work / personal shorthand.
+    if any(w in t for w in ("work", "business")):
+        for e in emails:
+            if not e.lower().endswith("@gmail.com"):
+                return e
+    if any(w in t for w in ("personal", "home", "private", "gmail")):
+        for e in emails:
+            if e.lower().endswith("@gmail.com"):
+                return e
+    return None
+
+
+def _looks_like_account_reply(reply: str) -> bool:
+    """Whether an utterance plausibly answers 'which account?' (so an unrelated
+    command instead drops the pending pick rather than re-asking forever)."""
+    t = (reply or "").lower()
+    return bool("@" in t or any(w in t for w in (
+        "work", "personal", "business", "home", "gmail", "account",
+        "qsbs", "rollover", "the first", "the second", "first one", "second one")))
+
+
+async def _handle_ui_task(goal: str, ws, prenav: bool = True,
+                          login_choice: Optional[dict] = None) -> None:
     """Voice path for UC4 — runs the loop on a background task (keeps the WS loop
     free for per-step confirm replies + STOP), then speaks the outcome.
 
-    When the loop pauses on a Gmail sign-in wall (issue #284) it parks the goal on
-    `ws.pending_offer` so an affirmative "I'm logged in" on a later turn resumes
-    the SAME task. `prenav` opens real Chrome at Gmail first for a fresh "go to
-    gmail.com and …" request; the resume path passes prenav=False (the browser is
-    already on Gmail — reopening would reload the just-signed-in tab)."""
+    Gmail guided login (issue #284): when the loop pauses it parks the goal +
+    stage on `ws.pending_offer` so the next spoken answer resumes the SAME task —
+    the account picked (choose_account), approval to sign in (approve_signin), or
+    a plain "I'm logged in" (login). `login_choice` carries that answer back into
+    the loop. `prenav` opens real Chrome at Gmail for a fresh request; every
+    resume passes prenav=False (the browser is already on Gmail)."""
     # Land on the real Chrome Gmail tab first so a manual login persists (AC #4).
     if prenav and _is_gmail_nav_goal(goal):
         try:
@@ -10256,18 +10337,22 @@ async def _handle_ui_task(goal: str, ws, prenav: bool = True) -> None:
             log.warning(f"gmail pre-nav failed: {e}")
     try:
         async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
-            result = await _run_ui_task(goal, task_id=task_id, ws=ws)
+            result = await _run_ui_task(goal, task_id=task_id, ws=ws,
+                                        login_choice=login_choice)
     except Exception as e:
         log.error(f"ui_task error: {e}")
         await _speak(ws, "I ran into trouble with that, sir.")
         return
-    # Paused on a login wall → park the task so the next affirmative utterance
-    # resumes the SAME goal. Any other utterance clears it (no zombie loop).
+    # Paused mid-login → park the task + stage so the next spoken answer resumes
+    # the SAME goal. Any unrelated utterance clears it (no zombie loop).
     if result.get("status") == "paused":
         ws.pending_offer = {
-            "kind": "ui_resume",
+            "kind": "gmail_login",
+            "stage": result.get("reason") or "login",
             "goal": result.get("resume_goal") or goal,
             "app": result.get("app"),
+            "accounts": result.get("accounts") or [],
+            "account": result.get("account") or "",
         }
     await _speak(ws, result.get("message") or "Done, sir.")
 

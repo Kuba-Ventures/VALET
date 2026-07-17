@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Awaitable, Callable, Optional
 
 import perception
@@ -228,6 +229,63 @@ def _is_gmail_signin(observation: dict) -> bool:
     signed_out = any(h in blob for h in _GMAIL_SIGNIN_HINTS)
     has_inbox = any(h in blob for h in _GMAIL_INBOX_HINTS)
     return signed_out and not has_inbox
+
+
+def _labels_blob(observation: dict) -> str:
+    return " ".join(
+        " ".join(filter(None, [e.get("title"), e.get("value")]))
+        for e in (observation.get("elements") or [])
+    ).lower()
+
+
+_EMAIL_RE = re.compile(r'[\w.+-]+@[\w.-]+\.\w+')
+
+
+def _is_account_chooser(observation: dict) -> bool:
+    """True on Google's 'Choose an account' screen."""
+    return "choose an account" in _labels_blob(observation)
+
+
+def _account_emails(observation: dict) -> list:
+    """Distinct real account emails shown on the chooser, in screen order. Skips
+    the 'use another account' / 'remove an account' control rows."""
+    seen: list = []
+    for e in observation.get("elements", []) or []:
+        label = " ".join(filter(None, [e.get("title"), e.get("value")]))
+        low = label.lower()
+        if "use another account" in low or "remove an account" in low:
+            continue
+        for m in _EMAIL_RE.findall(label):
+            if m not in seen:
+                seen.append(m)
+    return seen
+
+
+def _is_password_page(observation: dict) -> bool:
+    """True on the Google password-entry step (a secure field, or the 'Enter your
+    password' heading)."""
+    if _has_login_field(observation):
+        return True
+    return "enter your password" in _labels_blob(observation)
+
+
+def _password_account_email(observation: dict) -> str:
+    """The account email shown on the password page (the chip under 'Hi <name>')."""
+    emails = _account_emails(observation)
+    return emails[0] if emails else ""
+
+
+def _account_prompt(emails: list) -> str:
+    if len(emails) >= 2:
+        return f"Which account, sir — {emails[0]} or {emails[1]}?"
+    if len(emails) == 1:
+        return f"Shall I sign you into {emails[0]}, sir?"
+    return "Which account should I use, sir?"
+
+
+def _approve_prompt(account: str) -> str:
+    who = f" into {account}" if account else ""
+    return f"Shall I sign you in{who} with your saved password, sir?"
 
 
 def _parse_json(text: str) -> Optional[dict]:
@@ -471,6 +529,7 @@ async def run_loop(
     emit: Optional[Callable[..., Awaitable[None]]] = None,
     hands_off: bool = False,
     speak: Optional[Callable[[str], Awaitable[None]]] = None,
+    login_choice: Optional[dict] = None,
 ) -> dict:
     """Run the supervised observe→decide→act loop for `goal`.
 
@@ -496,6 +555,48 @@ async def run_loop(
     history: list = []
     consecutive_fails = 0
     forced_recheck = False
+
+    async def _gmail_vision_click(obs: dict, desc: str) -> bool:
+        """Locate `desc` on the current screen (vision resolver) and click it with
+        a real mouse — the path that works on web content the AX tree misses (an
+        account row, the saved-password chip). Best-effort; returns True on click."""
+        obs_app = obs.get("app") or app
+        try:
+            import target_resolver
+            res = await target_resolver.resolve(obs, desc, client, intent="click")
+        except Exception as e:
+            log.warning("gmail resolve '%s' failed: %s", desc, e)
+            return False
+        actor2 = ax_executor or executor
+        st = getattr(res, "status", None) if res is not None else None
+        if st == "ref" and getattr(res, "ref", None):
+            r = await actor2.click_element(ref=res.ref, app=obs_app)
+            return bool(getattr(r, "ok", False))
+        if st == "point" and getattr(res, "point", None):
+            p = res.point
+            r = await actor2.click_element(point=(float(p[0]), float(p[1])), app=obs_app)
+            return bool(getattr(r, "ok", False))
+        return False
+
+    async def _gmail_click_next(obs: dict) -> bool:
+        """Click the Next / Sign in button from the AX tree (browser: by point).
+        Returns True if a matching button was clicked."""
+        obs_app = obs.get("app") or app
+        actor2 = ax_executor or executor
+        for e in obs.get("elements", []) or []:
+            role = (e.get("role") or "").lower()
+            label = " ".join(filter(None, [e.get("title"), e.get("value")])).lower().strip()
+            if ("button" in role or "link" in role) and label in (
+                    "next", "sign in", "continue", "log in", "login"):
+                fr = e.get("frame")
+                if _is_browser(obs_app) and fr and len(fr) == 4:
+                    r = await actor2.click_element(
+                        point=(fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0), app=obs_app)
+                else:
+                    r = await actor2.click_element(ref=e.get("ref"), app=obs_app)
+                if getattr(r, "ok", False):
+                    return True
+        return False
 
     async def _login_handoff(step):
         """Speak + show the credential hand-off, wait for the user to sign in,
@@ -538,24 +639,81 @@ async def run_loop(
         await _emit("observe", f"Step {step}: looking at the screen")
         observation = await perception.build_observation(executor, app=app)
 
-        # Gmail sign-in wall (issue #284): the user is signed out. Don't try to
-        # drive the login — pause the loop and hand it to the human with a spoken
-        # prompt, returning a `paused` result the caller parks so the SAME task
-        # resumes when the user says they're in. VALET never types Gmail creds.
+        # ── Gmail GUIDED login (issue #284) ──────────────────────────────────
+        # The user is signed out. VALET never types the password, but it DOES
+        # guide the login: it asks which account and clicks it, then at the
+        # password step asks approval and clicks the saved-password chip + Next.
+        # Each ask is a cross-turn pause (the caller parks it on pending_offer and
+        # resumes with the user's spoken answer as `login_choice`).
         if hands_off and _is_gmail_signin(observation):
-            prompt = ("You're signed out of Gmail, sir. Log in, then tell me "
-                      "when you're ready and I'll carry on.")
-            await _emit("act", "You're signed out of Gmail, sir.",
-                        detail="Log in in the browser, then say 'I'm logged in' "
-                               "and I'll carry on.", status="active")
-            if speak:
-                try:
-                    await speak(prompt)
-                except Exception:
-                    pass
+            _paused_app = observation.get("app") or app
+
+            # (a) Account chooser — ask which account, then click it.
+            if _is_account_chooser(observation):
+                emails = _account_emails(observation)
+                if login_choice and login_choice.get("email"):
+                    tgt = login_choice["email"]
+                    login_choice = None
+                    await _emit("act", f"Selecting {tgt}", status="active")
+                    if await _gmail_vision_click(observation, f"the account row for {tgt}"):
+                        history.append({"step": step, "action": "click", "target": tgt,
+                                        "ok": True, "msg": "chose account"})
+                        # Wait for the chooser to give way to the password page.
+                        for _ in range(8):
+                            await asyncio.sleep(0.7)
+                            if kill_switch is not None and kill_switch.is_engaged():
+                                return {"status": "halted", "steps": step, "history": history,
+                                        "message": "Halted, sir."}
+                            if not _is_account_chooser(await perception.build_observation(executor, app=app)):
+                                break
+                        continue
+                    await _emit("act", f"I couldn't select {tgt}", status="error")
+                    # fall through to re-ask
+                await _emit("act", "Which account, sir?", detail=", ".join(emails), status="active")
+                return {"status": "paused", "reason": "choose_account", "accounts": emails,
+                        "resume_goal": goal, "app": _paused_app, "steps": step - 1,
+                        "history": history, "message": _account_prompt(emails)}
+
+            # (b) Password step — ask approval, then click the chip + Next.
+            if _is_password_page(observation):
+                account = _password_account_email(observation)
+                if login_choice and login_choice.get("approve"):
+                    login_choice = None
+                    await _emit("act", "Signing you in, sir.", detail=account, status="active")
+                    # Click the saved-password suggestion (fills the field); best-
+                    # effort — if the field is already autofilled there's no chip.
+                    await _gmail_vision_click(observation, "the saved password suggestion popup")
+                    await asyncio.sleep(_ACT_SETTLE)
+                    obs2 = await perception.build_observation(executor, app=app)
+                    if not await _gmail_click_next(obs2):
+                        await _gmail_vision_click(obs2, "the Next button to sign in")
+                    history.append({"step": step, "action": "signin", "ok": True,
+                                    "msg": "submitted saved login"})
+                    outcome = await _await_login(executor, app, kill_switch, emit, timeout_s=30.0)
+                    if outcome == "halted":
+                        return {"status": "halted", "steps": step, "history": history,
+                                "message": "Halted, sir."}
+                    if outcome == "resume":
+                        return {"status": "done", "reason": "signed_in", "steps": step,
+                                "history": history, "message": "You're in, sir — signed into Gmail."}
+                    return {"status": "paused", "reason": "login", "resume_goal": goal,
+                            "app": _paused_app, "steps": step, "history": history,
+                            "message": "That didn't go through, sir — finish the sign-in "
+                                       "and tell me when you're ready."}
+                await _emit("act", "Approve sign-in?", detail=account, status="active")
+                return {"status": "paused", "reason": "approve_signin", "account": account,
+                        "resume_goal": goal, "app": _paused_app, "steps": step - 1,
+                        "history": history, "message": _approve_prompt(account)}
+
+            # (c) Some other sign-in screen. If the user already answered, re-
+            # observe; otherwise fall back to the plain "log in yourself" hand-off.
+            if login_choice:
+                login_choice = None
+                continue
             return {"status": "paused", "reason": "login", "resume_goal": goal,
-                    "app": observation.get("app") or app, "steps": step - 1,
-                    "history": history, "message": prompt}
+                    "app": _paused_app, "steps": step - 1, "history": history,
+                    "message": "You're signed out of Gmail, sir. Log in, then tell me "
+                               "when you're ready and I'll carry on."}
 
         # FAST hand-off at the CREDENTIAL step (password) only — VALET still clicks
         # through the account chooser itself (the user wants to see it pick their

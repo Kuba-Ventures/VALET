@@ -3,6 +3,19 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.38] — 2026-07-17
+
+### Added
+- **Guided Gmail sign-in by voice.** The login handshake from 0.2.37 is now
+  interactive instead of "log in entirely yourself." On Google's **Choose an
+  account** screen VALET reads the accounts and asks which one — you answer by
+  "work" / "personal", or by an email fragment ("finley@qsbs",
+  "mrfinleyunderwood") — and it clicks that account. At the **password** step it
+  asks *"Shall I sign you in with your saved password, sir?"*; on your "yes" it
+  clicks the Google Password Manager / Bitwarden suggestion to fill the field and
+  clicks **Next**. It still never types your password. Once you're in it confirms
+  and stops cleanly rather than flailing at the (not-yet-built) summary. (#284)
+
 ## [0.2.37] — 2026-07-17
 
 ### Added

@@ -265,7 +265,9 @@ def test_gmail_signin_detected():
 
 
 def test_gmail_signin_pauses_without_acting(monkeypatch):
-    # A logged-out Gmail wall pauses the loop and hands off — never types creds.
+    # A logged-out Gmail wall (email step, no chooser/password yet) pauses the loop
+    # and hands off — never types creds. The message is returned for the caller to
+    # speak (the loop itself no longer calls speak).
     _no_capture(monkeypatch)
 
     class FakeExecGmail(FakeExec):
@@ -276,14 +278,93 @@ def test_gmail_signin_pauses_without_acting(monkeypatch):
     # The client would type into the email field if the loop ever decided — it must not.
     client = FakeClient(['{"action":"type","ref":"e2","text":"me@example.com","reason":"email"}'])
     ex = FakeExecGmail()
-    spoken = []
-    async def speak(t): spoken.append(t)
     res = run(agent_loop.run_loop(ex, "go to gmail.com and summarize today's emails",
-                                  client, ax_executor=ex, hands_off=True, speak=speak))
+                                  client, ax_executor=ex, hands_off=True))
     assert res["status"] == "paused" and res.get("reason") == "login"
     assert res["resume_goal"] == "go to gmail.com and summarize today's emails"
     assert ex.actions == []                     # never touched the credential field
-    assert any("signed out of gmail" in s.lower() for s in spoken)
+    assert "signed out of gmail" in res["message"].lower()
+
+
+_GMAIL_CHOOSER_ELS = [
+    {"ref": "e0", "role": "AXWebArea", "title": "Choose an account", "value": "", "enabled": True, "frame": [0, 100, 800, 500]},
+    {"ref": "e1", "role": "AXLink", "title": "Finley Underwood finley@qsbsrollover.com", "value": "", "enabled": True, "frame": [640, 160, 500, 50]},
+    {"ref": "e2", "role": "AXLink", "title": "Finley Underwood mrfinleyunderwood@gmail.com", "value": "", "enabled": True, "frame": [640, 220, 500, 50]},
+    {"ref": "e3", "role": "AXLink", "title": "Use another account", "value": "", "enabled": True, "frame": [640, 290, 500, 40]},
+]
+_GMAIL_PASSWORD_ELS = [
+    {"ref": "e0", "role": "AXWebArea", "title": "Hi Finley", "value": "", "enabled": True, "frame": [0, 100, 800, 500]},
+    {"ref": "e1", "role": "AXStaticText", "title": "finley@qsbsrollover.com", "value": "", "enabled": True, "frame": [60, 210, 220, 24]},
+    {"ref": "e2", "role": "AXSecureTextField", "title": "Enter your password", "value": "", "enabled": True, "frame": [640, 210, 500, 30]},
+    {"ref": "e3", "role": "AXButton", "title": "Next", "value": "", "enabled": True, "frame": [1080, 355, 75, 36]},
+]
+
+
+def test_gmail_account_chooser_asks_which(monkeypatch):
+    # The chooser pauses to ASK which account (no click yet, no creds).
+    _no_capture(monkeypatch)
+
+    class FakeExecChooser(FakeExec):
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "Google Chrome", "elements": _GMAIL_CHOOSER_ELS})
+
+    client = FakeClient(['{"action":"done","reason":"n/a"}'])
+    ex = FakeExecChooser()
+    res = run(agent_loop.run_loop(ex, "go to gmail and summarize today's emails",
+                                  client, ax_executor=ex, hands_off=True))
+    assert res["status"] == "paused" and res.get("reason") == "choose_account"
+    assert res["accounts"] == ["finley@qsbsrollover.com", "mrfinleyunderwood@gmail.com"]
+    assert ex.actions == []
+    assert "which account" in res["message"].lower()
+
+
+def test_gmail_password_page_asks_approval(monkeypatch):
+    # The password step pauses to ASK approval, naming the account; no creds typed.
+    _no_capture(monkeypatch)
+
+    class FakeExecPw(FakeExec):
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "Google Chrome", "elements": _GMAIL_PASSWORD_ELS})
+
+    client = FakeClient(['{"action":"type","ref":"e2","text":"hunter2","reason":"password"}'])
+    ex = FakeExecPw()
+    res = run(agent_loop.run_loop(ex, "go to gmail and summarize today's emails",
+                                  client, ax_executor=ex, hands_off=True))
+    assert res["status"] == "paused" and res.get("reason") == "approve_signin"
+    assert res.get("account") == "finley@qsbsrollover.com"
+    assert ex.actions == []                     # never typed into the secure field
+    assert "saved password" in res["message"].lower()
+
+
+def test_gmail_account_click_on_choice(monkeypatch):
+    # Given the user's account choice, the loop clicks that row (vision) and moves
+    # on — here the screen flips to the password page, so it then asks approval.
+    _no_capture(monkeypatch)
+    import target_resolver
+
+    async def fake_resolve(obs, desc, client, intent="click"):
+        return type("R", (), {"status": "ref", "ref": "e1", "point": None})()
+    monkeypatch.setattr(target_resolver, "resolve", fake_resolve)
+
+    class FakeExecFlow(FakeExec):
+        def __init__(self):
+            super().__init__()
+            self.obs_n = 0
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            self.obs_n += 1
+            els = _GMAIL_CHOOSER_ELS if self.obs_n <= 1 else _GMAIL_PASSWORD_ELS
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "Google Chrome", "elements": els})
+
+    client = FakeClient(['{"action":"done","reason":"n/a"}'])
+    ex = FakeExecFlow()
+    res = run(agent_loop.run_loop(
+        ex, "go to gmail and summarize today's emails", client, ax_executor=ex,
+        hands_off=True, login_choice={"email": "finley@qsbsrollover.com"}))
+    assert ("click", "e1") in ex.actions        # clicked the chosen account row
+    assert res["status"] == "paused" and res.get("reason") == "approve_signin"
 
 
 def test_gmail_resume_when_signed_in(monkeypatch):
