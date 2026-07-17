@@ -25,6 +25,7 @@ interface StatusResponse {
   task_count: number;
   server_port: number;
   uptime_seconds: number;
+  version: string;
   env_keys_set: {
     license: boolean;
     proxy_base_url: string;
@@ -167,6 +168,7 @@ function buildPanelHTML(): string {
             <div class="mono-conn"><span class="status-dot" id="status-notes"></span><span>Apple Notes</span></div>
           </div>
           <button class="settings-btn mono-restart" id="btn-restart-server" type="button">Restart server</button>
+          <div class="mono-version" id="status-version">VALET —</div>
         </section>
 
         <!-- Advanced: offline license, Google connector, raw system info (kept for
@@ -341,6 +343,9 @@ async function loadStatus() {
 
     const serverDetail = document.getElementById("status-server-detail");
     if (serverDetail) serverDetail.textContent = `port ${status.server_port} | up ${formatUptime(status.uptime_seconds)}`;
+
+    const versionEl = document.getElementById("status-version");
+    if (versionEl) versionEl.textContent = status.version ? `VALET v${status.version}` : "VALET —";
 
     // License status dot
     setDotStatus("status-license", status.env_keys_set.license ? "green" : "red");

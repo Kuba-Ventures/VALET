@@ -45,6 +45,9 @@ fn spawn_backend(app: AppHandle, attempt: u32) {
         .sidecar("valet-backend")
         .expect("valet-backend sidecar missing")
         .env("VALET_SHIPPED", "1")
+        // Hand the backend our own package version so the Settings panel can show
+        // which VALET the user is actually running (issue #276).
+        .env("VALET_VERSION", app.package_info().version.to_string())
         // The backend watchdog exits when this shell dies, so an orphaned backend
         // never holds :8340 across a force-quit (e.g. macOS restarting the app
         // after a permission change). std::process::id() is the shell's PID.
