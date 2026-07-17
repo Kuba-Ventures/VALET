@@ -5998,6 +5998,18 @@ _WEB_FLOW_RE = re.compile(
     r'(?P<goal>(?:log|sign)\s+(?:me\s+)?'
     r'(?:out\s+of|back\s+into|back\s+in\s+to|back\s+in|into|in\s+to|out|in)\b.*)$',
     re.IGNORECASE)
+# Gmail multi-step task — "go to gmail(.com) and summarize today's emails",
+# "open gmail and read me today's mail", etc. Routes to the supervised UI loop
+# (issue #284): land on Gmail → detect the sign-in wall → login pause/resume.
+# Requires BOTH a Gmail reference AND a follow-on action (and/then/to <verb>) so a
+# bare "open gmail" stays a plain BROWSE.
+_GMAIL_TASK_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+|now\s+|hey\s+valet[,\s]+)?'
+    r'(?:go\s+to|open(?:\s+up)?|navigate\s+to|pull\s+up|visit|head\s+to|'
+    r'check(?:\s+on)?|look\s+at)\s+'
+    r'(?:my\s+|the\s+)?(?:gmail|mail\.google\S*)\b'
+    r'.*\b(?:and|then|to)\b\s+\S+',
+    re.IGNORECASE)
 # "go back" / "go back to my inbox" / "take me back" → click the on-screen back
 # button (one-shot, honest miss). NOT "go back to sleep" (system) — the back
 # button is the target. "go to X" (forward nav) is _UI_NAV_RE, separate.
@@ -6437,6 +6449,13 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         if re.search(r'\bout\b', _gl) and re.search(r'\b(gmail|google)\b', _gl):
             return {"action": "google_signout", "gmail": "gmail" in _gl}
         return {"action": "ui_task", "goal": _goal}
+
+    # Gmail multi-step task ("go to gmail.com and summarize today's emails") →
+    # the supervised UI loop, which lands on Gmail, detects the sign-in wall, and
+    # runs the login pause/resume (issue #284). A bare "open gmail" (no follow-on
+    # action) is NOT matched — it stays a plain BROWSE.
+    if _GMAIL_TASK_RE.match(t):
+        return {"action": "ui_task", "goal": text.strip(" .?!")}
 
     # "go back" → click the on-screen back button (e.g. Gmail's back-to-inbox
     # arrow). One-shot click via the proven resolver path.
