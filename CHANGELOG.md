@@ -3,6 +3,25 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.33] — 2026-07-16
+
+### Changed
+- **New app icon: the orb on white.** Replaces the near-black square with the
+  Twin Peaks orb mark on a white plate, following on from the Dock icon in
+  0.2.32 (#256) — the icon is a lot more visible now that it has a Dock to sit in.
+
+  Authored to Apple's Big Sur geometry — an 824px rounded plate centred in a
+  1024 canvas, corners transparent — rather than the full-bleed hard square it
+  replaces. macOS does not round app icons for you: the old icon rendered as a
+  literal black rectangle among the Dock's rounded neighbours, and a white
+  rectangle would have stood out more, not less.
+
+  `assets/valet-icon.png` (the source `build-macos.sh` seeds from) is updated in
+  step, so a clean build regenerates this icon rather than resurrecting the old
+  one. The menu-bar `tray.png` is deliberately untouched: it's a black *template*
+  mark that macOS recolours to match the menu bar, so a white background would
+  break it.
+
 ## [0.2.32] — 2026-07-16
 
 ### Fixed
