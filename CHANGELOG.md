@@ -3,6 +3,16 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.36] — 2026-07-17
+
+### Added
+- **The running version now shows in the menu-bar dropdown.** 0.2.35 surfaced the
+  VALET version in Console Settings, but recalling it meant opening Settings and
+  scrolling to "This Mac". The tray popover — the menu you get from the menu-bar
+  orb — now carries a small `VALET v…` footer under Quit, reading the app's own
+  package version (the same number Settings shows). Console Settings keeps its
+  version line too. (#280)
+
 ## [0.2.35] — 2026-07-17
 
 ### Added

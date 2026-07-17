@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "tray-menu",
-  "description": "The custom tray popover (loading/tray-menu.html) replaces the native menu-bar dropdown, which macOS forces to follow the system appearance and which Tauri seals from styling. This local webview hides itself on item click / blur / Esc, so it needs window-hide; menu actions run through the app's own `tray_action` command, granted here. That grant is NOT optional: app commands are ACL-gated, and since #271 added an app manifest they are gated from local origins too, so without `allow-tray-action` every menu item would silently no-op.",
+  "description": "The custom tray popover (loading/tray-menu.html) replaces the native menu-bar dropdown, which macOS forces to follow the system appearance and which Tauri seals from styling. This local webview hides itself on item click / blur / Esc, so it needs window-hide; menu actions run through the app's own `tray_action` command, granted here. That grant is NOT optional: app commands are ACL-gated, and since #271 added an app manifest they are gated from local origins too, so without `allow-tray-action` every menu item would silently no-op. `core:app:allow-version` lets the popover read the app's own package version for its footer line.",
   "windows": ["tray_menu"],
   "local": true,
   "permissions": [
     "core:window:allow-hide",
+    "core:app:allow-version",
     "allow-tray-action"
   ]
 }
