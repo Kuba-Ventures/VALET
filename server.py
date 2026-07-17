@@ -1157,6 +1157,25 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
     if offer["kind"] == "self_mod_confirm":
         return await _handle_self_mod_confirm(transcript, ws)
 
+    # A UI task paused on a Gmail sign-in wall (issue #284). An affirmative resume
+    # utterance ("ok I'm logged in", "done", "continue") re-runs the SAME goal:
+    # re-observe, and if the inbox is now present carry on, else pause again.
+    # Anything unrelated falls through so the offer is dropped (no stuck task).
+    if offer["kind"] == "ui_resume":
+        resume_cues = ("logged in", "signed in", "log in", "i'm in", "im in",
+                       "all set", "ready", "good to go", "i'm good", "im good",
+                       "done", "finished", "continue", "carry on", "go ahead",
+                       "go on", "keep going")
+        is_resume = (t in confirm_words
+                     or any(t.startswith(w + " ") for w in confirm_words)
+                     or any(cue in t for cue in resume_cues))
+        if is_resume:
+            await _speak(ws, "Right you are, sir — let me take a look.")
+            _track_uc(ws, _handle_ui_task(offer["goal"], ws, prenav=False))
+            return True
+        # Doesn't look like a resume — let normal flow handle it, drop the offer.
+        return False
+
     if offer["kind"] == "alias_remove":
         if (t in confirm_words or any(t.startswith(w + " ") for w in confirm_words)
                 or "remove" in t or "delete" in t or "drop" in t):
@@ -10186,9 +10205,36 @@ async def api_cursor_symbol(request: Request):
     return await _cursor_symbol(body.get("symbol") or "")
 
 
-async def _handle_ui_task(goal: str, ws) -> None:
+# "go to gmail(.com) and …" — a Gmail task that should land on the real Chrome
+# Gmail tab first (so a manual login persists across the rest of the flow). Nav-
+# gated so we only (re)open Gmail on an explicit navigation, not on every task
+# that merely mentions Gmail.
+_GMAIL_NAV_RE = re.compile(
+    r'\b(?:go(?:\s+to)?|open|navigate\s+to|pull\s+up|visit|head\s+to|check)\b'
+    r'[^.]*\b(?:gmail|mail\.google)\b',
+    re.IGNORECASE)
+
+
+def _is_gmail_nav_goal(goal: str) -> bool:
+    return bool(goal and _GMAIL_NAV_RE.search(goal))
+
+
+async def _handle_ui_task(goal: str, ws, prenav: bool = True) -> None:
     """Voice path for UC4 — runs the loop on a background task (keeps the WS loop
-    free for per-step confirm replies + STOP), then speaks the outcome."""
+    free for per-step confirm replies + STOP), then speaks the outcome.
+
+    When the loop pauses on a Gmail sign-in wall (issue #284) it parks the goal on
+    `ws.pending_offer` so an affirmative "I'm logged in" on a later turn resumes
+    the SAME task. `prenav` opens real Chrome at Gmail first for a fresh "go to
+    gmail.com and …" request; the resume path passes prenav=False (the browser is
+    already on Gmail — reopening would reload the just-signed-in tab)."""
+    # Land on the real Chrome Gmail tab first so a manual login persists (AC #4).
+    if prenav and _is_gmail_nav_goal(goal):
+        try:
+            await open_browser("https://mail.google.com/", browser="chrome")
+            await asyncio.sleep(2.0)  # let the page (and any sign-in redirect) settle
+        except Exception as e:
+            log.warning(f"gmail pre-nav failed: {e}")
     try:
         async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
             result = await _run_ui_task(goal, task_id=task_id, ws=ws)
@@ -10196,6 +10242,14 @@ async def _handle_ui_task(goal: str, ws) -> None:
         log.error(f"ui_task error: {e}")
         await _speak(ws, "I ran into trouble with that, sir.")
         return
+    # Paused on a login wall → park the task so the next affirmative utterance
+    # resumes the SAME goal. Any other utterance clears it (no zombie loop).
+    if result.get("status") == "paused":
+        ws.pending_offer = {
+            "kind": "ui_resume",
+            "goal": result.get("resume_goal") or goal,
+            "app": result.get("app"),
+        }
     await _speak(ws, result.get("message") or "Done, sir.")
 
 
