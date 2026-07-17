@@ -63,6 +63,17 @@
     background: rgba(0, 0, 0, 0.08);
     margin: 5px 8px;
   }
+  /* Non-interactive footer echoing the Settings panel's "VALET v…" line, so the
+     running version is legible straight from the menu-bar dropdown. */
+  .version {
+    text-align: center;
+    color: #9a9a9a;
+    font-size: 11px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    padding: 4px 9px 3px;
+    white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -98,10 +109,20 @@
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></span>
       <span class="label">Quit VALET</span>
     </div>
+    <div class="sep"></div>
+    <div class="version" id="version"></div>
   </div>
 
   <script>
     const T = () => (window.__TAURI__ || {});
+    // Fill the footer with the app's own package version (same number the
+    // Settings panel shows). Silently leaves it blank if the API is unavailable.
+    (async () => {
+      try {
+        const v = await T().app.getVersion();
+        if (v) document.getElementById('version').textContent = 'VALET v' + v;
+      } catch (e) {}
+    })();
     async function act(id) {
       try { await T().core.invoke('tray_action', { id }); } catch (e) {}
       try { await T().window.getCurrentWindow().hide(); } catch (e) {}
