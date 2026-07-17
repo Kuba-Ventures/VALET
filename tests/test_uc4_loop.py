@@ -242,5 +242,65 @@ def test_hands_off_login_timeout_pauses(monkeypatch):
     assert ex.actions == []  # never acted on the credential field
 
 
+# ── Gmail sign-in wall pause/resume (issue #284) ─────────────────────────────
+_GMAIL_SIGNIN_ELS = [
+    {"ref": "e0", "role": "AXWebArea", "title": "Sign in - Google Accounts", "value": "", "enabled": True, "frame": [0, 100, 800, 500]},
+    {"ref": "e1", "role": "AXStaticText", "title": "to continue to Gmail", "value": "", "enabled": True, "frame": [10, 120, 300, 20]},
+    {"ref": "e2", "role": "AXTextField", "title": "Email or phone", "value": "", "enabled": True, "frame": [10, 160, 300, 24]},
+    {"ref": "e3", "role": "AXLink", "title": "Forgot email?", "value": "", "enabled": True, "frame": [10, 200, 120, 20]},
+]
+_GMAIL_INBOX_ELS = [
+    {"ref": "e0", "role": "AXWebArea", "title": "Inbox - Gmail", "value": "", "enabled": True, "frame": [0, 100, 800, 500]},
+    {"ref": "e1", "role": "AXButton", "title": "Compose", "value": "", "enabled": True, "frame": [10, 120, 100, 40]},
+    {"ref": "e2", "role": "AXSearchField", "title": "Search mail", "value": "", "enabled": True, "frame": [200, 120, 400, 24]},
+]
+
+
+def test_gmail_signin_detected():
+    assert agent_loop._is_gmail_signin({"app": "Google Chrome", "elements": _GMAIL_SIGNIN_ELS})
+    # Signed IN (inbox present) is not a sign-in wall.
+    assert not agent_loop._is_gmail_signin({"app": "Google Chrome", "elements": _GMAIL_INBOX_ELS})
+    # Same sign-in text in a NON-browser app doesn't count (page-driven, browser-gated).
+    assert not agent_loop._is_gmail_signin({"app": "App", "elements": _GMAIL_SIGNIN_ELS})
+
+
+def test_gmail_signin_pauses_without_acting(monkeypatch):
+    # A logged-out Gmail wall pauses the loop and hands off — never types creds.
+    _no_capture(monkeypatch)
+
+    class FakeExecGmail(FakeExec):
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "Google Chrome", "elements": _GMAIL_SIGNIN_ELS})
+
+    # The client would type into the email field if the loop ever decided — it must not.
+    client = FakeClient(['{"action":"type","ref":"e2","text":"me@example.com","reason":"email"}'])
+    ex = FakeExecGmail()
+    spoken = []
+    async def speak(t): spoken.append(t)
+    res = run(agent_loop.run_loop(ex, "go to gmail.com and summarize today's emails",
+                                  client, ax_executor=ex, hands_off=True, speak=speak))
+    assert res["status"] == "paused" and res.get("reason") == "login"
+    assert res["resume_goal"] == "go to gmail.com and summarize today's emails"
+    assert ex.actions == []                     # never touched the credential field
+    assert any("signed out of gmail" in s.lower() for s in spoken)
+
+
+def test_gmail_resume_when_signed_in(monkeypatch):
+    # Once the inbox is present, the same loop proceeds (no re-pause).
+    _no_capture(monkeypatch)
+
+    class FakeExecInbox(FakeExec):
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "Google Chrome", "elements": _GMAIL_INBOX_ELS})
+
+    client = FakeClient(['{"action":"done","reason":"inbox is loaded"}'])
+    ex = FakeExecInbox()
+    res = run(agent_loop.run_loop(ex, "go to gmail.com and summarize today's emails",
+                                  client, ax_executor=ex, hands_off=True))
+    assert res["status"] == "done"
+
+
 if __name__ == "__main__":
     print("Run via pytest (uses monkeypatch).")
