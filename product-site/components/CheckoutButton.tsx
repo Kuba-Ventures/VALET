@@ -1,12 +1,20 @@
 "use client";
 
 import { useState } from "react";
+import { createSupabaseBrowserClient } from "@/lib/auth/client";
 
 /**
  * Starts subscription checkout: creates a session server-side via /api/checkout
  * (passing the plan, or the comp flag for VIP), then sends the browser to the
  * returned Stripe URL. With `comp`, the plan is forced to Ultra server-side and
  * the session is the no-card complimentary flow.
+ *
+ * Checkout now requires an account (the license binds to it up front, and the
+ * buyer can later just log in from the app to auto-activate). So a visitor who
+ * isn't signed in is routed to signup first, with `next` pointing back at the
+ * step that resumes their purchase after they confirm their email:
+ *   - paid → /checkout/start?plan=<plan> (auto-restarts checkout → Stripe)
+ *   - comp → /vip (they re-click the VIP button, now signed in)
  */
 export default function CheckoutButton({
   plan = "pro",
@@ -35,6 +43,27 @@ export default function CheckoutButton({
       value: comp ? 0 : plan === "ultra" ? 50 : 20,
       currency: "USD",
     });
+
+    // Require an account before checkout. If the visitor isn't signed in, send
+    // them to signup and come back to resume the purchase. Any failure reading
+    // the session is treated as "not signed in" — the checkout route re-checks
+    // server-side, so the worst case is a harmless extra signup hop.
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        const next = comp ? "/vip" : `/checkout/start?plan=${plan}`;
+        window.location.href = `/account/signup?next=${encodeURIComponent(next)}`;
+        return;
+      }
+    } catch {
+      const next = comp ? "/vip" : `/checkout/start?plan=${plan}`;
+      window.location.href = `/account/signup?next=${encodeURIComponent(next)}`;
+      return;
+    }
+
     try {
       const res = await fetch("/api/checkout", {
         method: "POST",

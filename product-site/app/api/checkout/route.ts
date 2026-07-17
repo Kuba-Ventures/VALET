@@ -48,20 +48,23 @@ export async function POST(req: NextRequest) {
   // Comp grants are always Ultra.
   if (comp) plan = "ultra";
 
-  // Identify the signed-in user. Comp (VIP) grants now REQUIRE an account so the
-  // license binds to it up front (via the UUID stamped into subscription
-  // metadata below) instead of relying on a later email-match. Paid checkout
-  // stays open to anonymous buyers — they create an account afterward.
+  // Identify the signed-in user. Both paid trials and comp (VIP) grants now
+  // REQUIRE an account so the license binds to it up front (via the UUID stamped
+  // into subscription metadata below) instead of relying on a later email-match.
+  // The buyer creates + verifies their account before this route runs; the
+  // CheckoutButton routes anonymous visitors to signup first, so a bare 401 here
+  // is only ever hit by a direct/stale request.
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (comp && !user) {
+  if (!user) {
     return NextResponse.json(
       {
-        error:
-          "Please create your account or sign in before activating VIP access.",
+        error: comp
+          ? "Please create your account or sign in before activating VIP access."
+          : "Please create your account or sign in before starting your trial.",
       },
       { status: 401 },
     );
@@ -103,10 +106,10 @@ export async function POST(req: NextRequest) {
     params.allow_promotion_codes = true;
   }
 
-  // Bind the checkout to the signed-in account when we have one. Prefilling and
-  // locking the email keeps the Stripe customer email aligned with the account,
-  // and the metadata UUID is what the webhook reads to set licenses.user_id
-  // directly — no email-match guesswork. (For comp, `user` is guaranteed above.)
+  // Bind the checkout to the account (guaranteed present by the 401 gate above).
+  // Prefilling and locking the email keeps the Stripe customer email aligned with
+  // the verified account email, and the metadata UUID is what the webhook reads to
+  // set licenses.user_id directly — no email-match guesswork.
   if (user) {
     params.customer_email = user.email ?? undefined;
     params.client_reference_id = user.id;

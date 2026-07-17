@@ -76,8 +76,8 @@ export default async function SuccessPage({
         <h1 className="text-3xl font-bold tracking-tight">You are all set.</h1>
         <p className="mt-3 leading-relaxed text-ink-dim">
           {comp
-            ? "Your lifetime free Ultra access is live, no card and no charge. Below is your license key. You will paste it into the app's Settings to unlock it."
-            : "Your 7 day free trial is live. Below is your license key. You will paste it into the app's Settings to unlock it."}
+            ? "Your lifetime free Ultra access is live, no card and no charge. Download VALET below, then open it and sign in with the account you just created to activate — or paste the license key shown here."
+            : "Your 7 day free trial is live. Download VALET below, then open it and sign in with the account you just created to activate — or paste the license key shown here."}
         </p>
 
         <div className="mt-8">
@@ -116,14 +116,15 @@ export default async function SuccessPage({
         </div>
 
         {/* We also email the key (see lib/email.ts), so a closed tab never
-            loses it. Point the buyer at their account to manage everything. */}
+            loses it. The buyer already has an account (created before checkout),
+            so point them there to manage everything — no second signup. */}
         <p className="mt-8 border-t border-panel-border pt-5 text-sm text-ink-dim">
-          We also emailed this key to you.{" "}
-          <Link href="/account/signup" className="text-accent hover:underline">
-            Create an account
-          </Link>{" "}
-          with the same email to manage your license, usage and billing in one
-          place.
+          We also emailed this key to you. Manage your license, usage and billing
+          anytime in{" "}
+          <Link href="/account" className="text-accent hover:underline">
+            your account
+          </Link>
+          .
         </p>
       </div>
     </main>
