@@ -194,6 +194,42 @@ def _is_credential_page(observation: dict) -> bool:
     return False
 
 
+# ── Gmail sign-in wall (issue #284) ──────────────────────────────────────────
+# The MVP Gmail flow deliberately STARTS signed out: VALET opens gmail.com and,
+# rather than typing credentials, detects Google's sign-in wall and hands the
+# login to the user with a spoken pause/resume ("tell me when you're in"). Kept
+# Gmail/Google-specific on purpose — these phrases appear only on Google's own
+# sign-in pages, never on a loaded inbox, so pairing "sign-in phrase present"
+# with "no inbox visible" makes the detection robust.
+_GMAIL_SIGNIN_HINTS = (
+    "to continue to gmail", "sign in with your google account",
+    "use your google account", "choose an account", "use another account",
+    "forgot email", "enter your password", "couldn't sign you in",
+    "email or phone",
+)
+_GMAIL_INBOX_HINTS = (
+    "compose", "search mail", "search in mail", "primary", "snoozed",
+    "conversation list", "more emails", "inbox",
+)
+
+
+def _is_gmail_signin(observation: dict) -> bool:
+    """True when the focused browser page is Google's sign-in wall for Gmail and
+    NO inbox is present — i.e. the user is signed out. The loop uses this to pause
+    and ask the human to log in; VALET never types the credentials itself."""
+    if not _is_browser(observation.get("app")):
+        return False
+    blob = " ".join(
+        " ".join(filter(None, [e.get("title"), e.get("value")]))
+        for e in (observation.get("elements") or [])
+    ).lower()
+    if not blob:
+        return False
+    signed_out = any(h in blob for h in _GMAIL_SIGNIN_HINTS)
+    has_inbox = any(h in blob for h in _GMAIL_INBOX_HINTS)
+    return signed_out and not has_inbox
+
+
 def _parse_json(text: str) -> Optional[dict]:
     if not text:
         return None
@@ -501,6 +537,25 @@ async def run_loop(
 
         await _emit("observe", f"Step {step}: looking at the screen")
         observation = await perception.build_observation(executor, app=app)
+
+        # Gmail sign-in wall (issue #284): the user is signed out. Don't try to
+        # drive the login — pause the loop and hand it to the human with a spoken
+        # prompt, returning a `paused` result the caller parks so the SAME task
+        # resumes when the user says they're in. VALET never types Gmail creds.
+        if hands_off and _is_gmail_signin(observation):
+            prompt = ("You're signed out of Gmail, sir. Log in, then tell me "
+                      "when you're ready and I'll carry on.")
+            await _emit("act", "You're signed out of Gmail, sir.",
+                        detail="Log in in the browser, then say 'I'm logged in' "
+                               "and I'll carry on.", status="active")
+            if speak:
+                try:
+                    await speak(prompt)
+                except Exception:
+                    pass
+            return {"status": "paused", "reason": "login", "resume_goal": goal,
+                    "app": observation.get("app") or app, "steps": step - 1,
+                    "history": history, "message": prompt}
 
         # FAST hand-off at the CREDENTIAL step (password) only — VALET still clicks
         # through the account chooser itself (the user wants to see it pick their
