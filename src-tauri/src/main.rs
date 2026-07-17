@@ -597,6 +597,16 @@ fn position_popover_under_tray(app: &AppHandle, win: &tauri::WebviewWindow) {
     let _ = win.set_position(tauri::LogicalPosition::new(tx, ty));
 }
 
+/// The generated context (config + capabilities + assets).
+///
+/// `generate_context!` embeds `_EMBED_INFO_PLIST`, so it may appear exactly once
+/// per binary — hence this one generic call site, shared by `main` (Wry) and the
+/// `acl` tests (MockRuntime). Sharing it is the point: the tests assert against
+/// the same capabilities we ship, not a mock of them.
+fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 fn main() {
     // Note: no single-instance plugin. It was added to stop "duplicate dock
     // icons" that turned out to be stale Launch Services entries, not real second
@@ -721,7 +731,7 @@ fn main() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while running VALET")
         .run(|app, event| {
             // Menu-bar app: do NOT quit when the last window closes — live in the
@@ -736,4 +746,116 @@ fn main() {
                 }
             }
         });
+}
+
+
+// ---------------------------------------------------------------------------
+// ACL reachability tests (#271)
+//
+// The UI is served by the backend from http://localhost:8340. To the webview that
+// is a REMOTE origin: `frontendDist` is `./loading`, served over `tauri://`, so
+// Tauri's `is_local_url` says no (different scheme). Tauri v2 then rejects custom
+// (non-plugin) commands unless a capability grants them to that origin:
+//
+//     if (plugin_command.is_some() || has_app_acl_manifest || !is_local)
+//         && invoke.acl.is_none() { reject(...) }
+//         -- tauri-2.11.2/src/webview/mod.rs
+//
+// A denial arrives as a promise rejection, and every `window.__TAURI__` call site
+// swallows those, so from JS a denied command is indistinguishable from a working
+// one. That is how #266 shipped broken and looked fine. These tests drive a real
+// InvokeRequest through the real generated ACL (`app_context()` — the same
+// capabilities we ship), so a missing grant fails CI instead of the user.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod acl {
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+    use tauri::webview::InvokeRequest;
+    use tauri::Manager;
+
+    /// The origin the backend serves the real UI from.
+    const BACKEND_ORIGIN: &str = "http://localhost:8340";
+
+    /// An ACL denial reads "<cmd> not allowed. Plugin not found"; a command that
+    /// passed the ACL but has no handler reads "Command <cmd> not found". The
+    /// distinction is what lets us test a command's GRANT without registering it.
+    fn is_acl_denial(err: &str) -> bool {
+        err.contains("not allowed")
+    }
+
+    /// Drive `cmd` through the real IPC entry point from `origin`, against the real
+    /// capabilities. Only `input_monitoring_granted` is registered: `tray_action`
+    /// takes an `AppHandle`, which is Wry-specific and cannot be built under the
+    /// mock runtime. It doesn't need to be — the ACL runs before handler dispatch,
+    /// so the error shape still tells us whether the grant resolved.
+    fn invoke_from(origin: &str, window: &str, cmd: &str) -> Result<String, String> {
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![super::input_monitoring_granted])
+            .build(super::app_context())
+            .expect("app should build");
+
+        let webview = match app.get_webview_window(window) {
+            Some(w) => w,
+            None => tauri::WebviewWindowBuilder::new(&app, window, Default::default())
+                .build()
+                .expect("window should build"),
+        };
+
+        get_ipc_response(
+            &webview,
+            InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: origin.parse().expect("origin should parse"),
+                body: InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        )
+        .map(|v| format!("{v:?}"))
+        .map_err(|e| format!("{e:?}"))
+    }
+
+    /// The regression #271 is about. #266's fix is only real if this command
+    /// reaches Rust from the origin the UI is actually served from; if the ACL
+    /// denies it, onboarding.ts catches the rejection, returns null, and silently
+    /// keeps the backend's answer — the wrong answer #265/#266 existed to replace.
+    #[test]
+    fn input_monitoring_granted_is_reachable_from_the_backend_origin() {
+        let res = invoke_from(BACKEND_ORIGIN, "main", "input_monitoring_granted");
+        assert!(
+            res.is_ok(),
+            "input_monitoring_granted must be reachable from {BACKEND_ORIGIN}, the \
+             origin the UI is served from, else #266 reports a permission it never \
+             read. Got: {res:?}"
+        );
+    }
+
+    /// The tray popover is local, but #271's app manifest ACL-gates app commands
+    /// from local origins too — so this guards the tray menu against being broken
+    /// by the fix for #266. Not registered in the mock handler (see `invoke_from`),
+    /// so success here means "passed the ACL and reached dispatch".
+    #[test]
+    fn tray_action_is_reachable_from_the_tray_popover() {
+        let err = invoke_from("tauri://localhost", "tray_menu", "tray_action")
+            .expect_err("tray_action is not registered in the mock handler");
+        assert!(
+            !is_acl_denial(&err),
+            "tray_action must pass the ACL from the local tray popover, else every \
+             menu item silently no-ops. Got an ACL denial: {err}"
+        );
+    }
+
+    /// The grant must not become a blanket one: a foreign origin is still denied.
+    #[test]
+    fn a_foreign_origin_cannot_reach_app_commands() {
+        let err = invoke_from("https://evil.example.com", "main", "input_monitoring_granted")
+            .expect_err("a foreign origin must not reach app commands");
+        assert!(
+            is_acl_denial(&err),
+            "a foreign origin must be denied by the ACL, not merely fail. Got: {err}"
+        );
+    }
 }
