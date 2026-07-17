@@ -3,6 +3,27 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.34] — 2026-07-16
+
+### Changed
+- **The orb reads at Dock size now.** 0.2.33 put the orb on a white plate, which
+  fixed the black rectangle but left a new problem: the orb itself was a faint
+  wireframe mesh, and at the ~64px macOS actually draws in the Dock its thin
+  lines washed out into a near-white blob on a near-white plate. Legible at
+  1024, invisible at the only size anyone sees.
+
+  The mark is now a purple halftone sphere. The dot grid is the point: it stays
+  a textured sphere at full size, and at Dock size the dots blend into a solid
+  glossy orb rather than dissolving. Contrast against the plate carries the
+  shape at every size.
+
+  The plate is unchanged from 0.2.33 — same Big Sur geometry (an 824px rounded
+  plate centred in a 1024 canvas, transparent corners), same orb-to-plate
+  proportion. Only the artwork inside it changed. `assets/valet-icon.png` is
+  updated in step with the generated `src-tauri/icons/` sizes, so a clean build
+  reproduces this icon rather than the old one. `tray.png` stays untouched for
+  the same reason as last time: it's a black template mark macOS recolours.
+
 ## [0.2.33] — 2026-07-16
 
 ### Changed
