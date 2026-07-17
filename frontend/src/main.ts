@@ -56,6 +56,7 @@ let isSleeping = localStorage.getItem(WAKE_STATE_KEY) !== "active";
 
 const voiceStateEl = document.getElementById("voice-state")!;
 const vsLabelEl = voiceStateEl.querySelector(".vs-label") as HTMLElement;
+const diagPanel = document.getElementById("diag-panel")!;
 const errorEl = document.getElementById("error-text")!;
 const replyEl = document.getElementById("valet-reply")!;
 
@@ -120,6 +121,16 @@ function renderVoiceState() {
   }
   voiceStateEl.dataset.mode = mode;
   vsLabelEl.textContent = label;
+
+  // Show the mic sound bar + transcript only while VALET is actively in the
+  // loop (listening / thinking / speaking). In idle — whether "Hold ⌃⌥ to talk"
+  // or always-listening "Ready" — hide it so a live waveform doesn't imply it's
+  // capturing when it isn't.
+  const active =
+    currentState === "listening" ||
+    currentState === "thinking" ||
+    currentState === "speaking";
+  diagPanel.classList.toggle("hidden", !active);
 }
 
 // ---------------------------------------------------------------------------
@@ -608,8 +619,8 @@ ensureAudioContext();
 // -------- Diagnostic panel ----------------------------------------------
 // Live readout of mic level + recognizer state + last transcript. Pinned to
 // bottom-left; toggle visibility with Cmd+D. Useful for triaging "why isn't
-// it waking" without flipping to DevTools.
-const diagPanel = document.getElementById("diag-panel")!;
+// it waking" without flipping to DevTools. (Ref declared with the other element
+// lookups above so renderVoiceState can gate it on the active voice state.)
 
 document.addEventListener("keydown", (e) => {
   if (e.metaKey && e.key.toLowerCase() === "d") {
