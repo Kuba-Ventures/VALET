@@ -56,8 +56,14 @@
     </div>
 
     <div id="valet-reply"></div>
-    <div id="status-text"></div>
-    <div id="ptt-hint" class="hidden">press space to talk</div>
+    <!-- Voice-state indicator (#257): the single, always-visible source of truth
+         for what VALET is doing with the mic — a colored dot + plain-language
+         label. Replaces the old blank-half-the-time #status-text and the separate
+         #ptt-hint. aria-live so it's announced to screen readers on change. -->
+    <div id="voice-state" data-mode="ptt" aria-live="polite">
+      <span class="vs-dot" aria-hidden="true"></span>
+      <span class="vs-label"></span>
+    </div>
     <div id="valet-label">VALET</div>
     <div id="error-text"></div>
     <div id="diag-panel" class="diag-panel">
