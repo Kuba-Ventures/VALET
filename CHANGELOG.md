@@ -3,6 +3,20 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.35] — 2026-07-17
+
+### Added
+- **A clear listening-state indicator.** Voice active/inactive state was hard to
+  read: the orb is deliberately monochrome across all states, and the only cue
+  was a small status line that went blank when idle in push-to-talk mode (the
+  default) — so there was often no signal telling you whether VALET was hearing
+  you. There's now a single, always-visible pill by the orb — a colored dot plus
+  a plain-language label — that is the one source of truth for mic state:
+  cyan **Listening** (mic hot), green **Ready · say "Vee"** (always-listening,
+  idle), slate **Hold ⌃⌥ to talk** (push-to-talk, idle), violet
+  **Thinking/Working**, and purple **Speaking**. It carries `aria-live` so state
+  changes are announced to screen readers. The orb visuals are unchanged. (#257)
+
 ## [0.2.34] — 2026-07-16
 
 ### Changed
