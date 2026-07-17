@@ -3,6 +3,19 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.37] — 2026-07-17
+
+### Added
+- **Gmail login pause/resume for voice-driven browsing.** When you ask VALET to
+  do something on Gmail while signed out (e.g. "go to gmail.com and summarize
+  today's emails"), it now opens the real Chrome Gmail tab, notices the sign-in
+  wall, and hands the login to you — *"You're signed out of Gmail, sir. Log in,
+  then tell me when you're ready."* — instead of trying to type credentials. Say
+  "OK, I'm logged in" and it resumes the same task; say something unrelated and
+  the paused task drops cleanly. A narrow fast-path routes such multi-step Gmail
+  requests straight into the supervised UI loop so the handshake fires reliably.
+  (#287, #288)
+
 ## [0.2.36] — 2026-07-17
 
 ### Added
