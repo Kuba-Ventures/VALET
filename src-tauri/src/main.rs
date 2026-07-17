@@ -1,5 +1,8 @@
 // VALET desktop shell (Tauri v2).
 //
+// - Regular (Dock) app: the orb has a Dock icon and an app menu, and the menu-bar
+//   tray icon is a second way in. Closing the orb hides it; the Dock icon reopens
+//   it; quitting goes through the app menu / ⌘Q / the tray's Quit.
 // - Single instance: a second launch focuses the existing window instead of
 //   stacking another app (no duplicate dock icons).
 // - Spawns the PyInstaller backend (`valet-backend`) as a sidecar serving the
@@ -16,9 +19,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    ActivationPolicy, AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -418,6 +422,14 @@ fn reposition_to_active_monitor(app: &AppHandle, win: &tauri::WebviewWindow) {
 fn handle_tray_action(app: &AppHandle, id: &str) {
     match id {
         "open" => show_main(app),
+        // ⌘W / Window▸Close. Hides rather than closes, matching the orb's own X
+        // button and the CloseRequested handler: the app lives on in the Dock and
+        // menu bar, and the Dock icon brings the orb back.
+        "close_orb" => {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.hide();
+            }
+        }
         "toggle_listen" => {
             // Flip Active/Asleep via the SAME path as the in-orb toggle (one
             // source of truth); the orb shows the live status.
@@ -472,6 +484,68 @@ fn handle_tray_action(app: &AppHandle, id: &str) {
 #[tauri::command]
 fn tray_action(app: AppHandle, id: String) {
     handle_tray_action(&app, &id);
+}
+
+/// The macOS app menu — the one that appears in the menu bar now that we're a
+/// Regular (Dock) app (#256). Hand-built rather than `Menu::default()` for one
+/// load-bearing reason: the PREDEFINED Quit item maps to NSApplication's
+/// `terminate:`, which tears the process down without ever reaching our
+/// `RunEvent::ExitRequested` handler — so `shutdown_backend()` never runs and
+/// ⌘Q would leak the backend sidecar until its parent-PID watchdog reaped it.
+/// A custom item with id "quit" routes ⌘Q through the SAME handler as the tray's
+/// Quit, so both exits are clean.
+///
+/// Everything else here is a predefined item on purpose. On macOS the Edit menu
+/// is what BINDS ⌘C/⌘V/⌘A — a WKWebView gets no clipboard shortcuts without it,
+/// so dropping this submenu would silently break copy/paste in the settings
+/// fields. It costs nothing to keep and is invisible until someone needs it.
+fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let app_menu = Submenu::with_items(
+        app,
+        "VALET",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("About VALET"), None)?,
+            &PredefinedMenuItem::separator(app)?,
+            // ⌘, is the macOS-standard Settings shortcut; same target as the tray.
+            &MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, Some("Hide VALET"))?,
+            &PredefinedMenuItem::hide_others(app, Some("Hide Others"))?,
+            &PredefinedMenuItem::show_all(app, Some("Show All"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "quit", "Quit VALET", true, Some("CmdOrCtrl+Q"))?,
+        ],
+    )?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    // ⌘W hides the orb, mirroring its in-UI X button.
+    //
+    // This is a CUSTOM item because the predefined Close/Minimize are inert here,
+    // and verified so: both were tried against a real build and did nothing. They
+    // map to `performClose:` / `performMiniaturize:`, which AppKit no-ops (beeps)
+    // on a window with no close/minimize button — and the orb is `decorations:
+    // false`, so it has neither. The menu items still render ENABLED, so this fails
+    // silently: the only way to catch it is to click them on a running app.
+    let window_menu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[&MenuItem::with_id(app, "close_orb", "Close", true, Some("CmdOrCtrl+W"))?],
+    )?;
+    Menu::with_items(app, &[&app_menu, &edit_menu, &window_menu])
 }
 
 /// Is Input Monitoring granted to THIS binary? (#265)
@@ -636,10 +710,21 @@ fn main() {
             popover_hidden_at: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![tray_action, input_monitoring_granted])
+        .menu(build_app_menu)
+        // The app menu reuses the tray's action ids, so ⌘Q / Settings… land in the
+        // same handler the tray popover calls — one source of truth per action.
+        .on_menu_event(|app, event| handle_tray_action(app, event.id().as_ref()))
         .setup(|app| {
-            // Menu-bar product: no Dock icon. The orb lives as an always-on-top
-            // popover summoned via ⌃⌥ and toggled from the tray.
-            app.set_activation_policy(ActivationPolicy::Accessory);
+            // Desktop app, not a menu-bar utility (#256): Regular gives VALET a Dock
+            // icon and an app menu. Accessory hid both, so users who closed the orb
+            // had no obvious way back and no sign the app was even running — the tray
+            // icon alone read as "background thing", not "app I opened".
+            //
+            // The menu bar icon stays as a SECOND way in; the Dock is now the first.
+            // Regular means macOS also owns the lifecycle: closing the orb hides it
+            // (see on_window_event) and clicking the Dock icon brings it back (see
+            // RunEvent::Reopen), which is what "close ≠ quit" looks like on macOS.
+            app.set_activation_policy(ActivationPolicy::Regular);
 
             free_stale_backend();
             spawn_backend(app.handle().clone(), 1);
@@ -720,9 +805,11 @@ fn main() {
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Menu-bar app: closing the orb HIDES it (quit is via the tray), so
-                // the app keeps living in the menu bar instead of exiting. Other
-                // windows (e.g. the cursor overlay) tear down the backend as before.
+                // Closing the orb HIDES it (quit is via ⌘Q, the app menu, or the
+                // tray), so the app keeps living in the Dock and menu bar instead of
+                // exiting — standard macOS "close ≠ quit". The Dock icon brings it
+                // back (RunEvent::Reopen). Other windows (e.g. the cursor overlay)
+                // tear down the backend as before.
                 if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
@@ -733,18 +820,38 @@ fn main() {
         })
         .build(app_context())
         .expect("error while running VALET")
-        .run(|app, event| {
-            // Menu-bar app: do NOT quit when the last window closes — live in the
-            // tray. Without this, Tauri's default exits the app on zero windows.
-            // BUT a deliberate tray "Quit" calls shutdown_backend() (which sets
-            // shutting_down) and then app.exit(0); we must let THAT exit through,
-            // or the app hangs on screen with its backend already killed
-            // ("backend not connected").
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        .run(|app, event| match event {
+            // Do NOT quit when the last window closes — the orb only hides, and the
+            // app lives on in the Dock and menu bar. Without this, Tauri's default
+            // exits the app on zero windows. BUT a deliberate Quit (tray item or ⌘Q)
+            // calls shutdown_backend() (which sets shutting_down) and then
+            // app.exit(0); we must let THAT exit through, or the app hangs on screen
+            // with its backend already killed ("backend not connected").
+            tauri::RunEvent::ExitRequested { api, .. } => {
                 if !app.state::<Backend>().shutting_down.load(Ordering::SeqCst) {
                     api.prevent_exit();
                 }
             }
+            // Dock icon clicked (#256). Now that closing the orb only hides it, the
+            // app can be running with nothing on screen — without this, its Dock icon
+            // would bounce and do nothing, which is exactly the "is it even open?"
+            // confusion the Dock icon is meant to fix.
+            //
+            // Deliberately IGNORE the event's `has_visible_windows`: it reports what
+            // NSApplication sees, and the per-display cursor overlays are real,
+            // permanently-visible windows (transparent + click-through, but visible).
+            // So it is effectively always true here and gating on it would restore the
+            // orb never. Ask the orb itself instead.
+            tauri::RunEvent::Reopen { .. } => {
+                let orb_hidden = app
+                    .get_webview_window("main")
+                    .map(|w| !w.is_visible().unwrap_or(true))
+                    .unwrap_or(false);
+                if orb_hidden {
+                    show_main(app);
+                }
+            }
+            _ => {}
         });
 }
 

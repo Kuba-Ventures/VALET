@@ -3,6 +3,31 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.32] — 2026-07-16
+
+### Fixed
+- **VALET is a Dock app now.** It ran as a macOS *Accessory* app: menu-bar icon
+  only, no Dock icon, no app menu. Users who closed the orb had no obvious way
+  back and nothing to tell them VALET was still running — a tray icon reads as
+  "some background thing", not "the app I just opened". (#256)
+
+  The orb now has a Dock icon and an app menu, and behaves the way a Mac app is
+  supposed to: closing the orb hides it, clicking the Dock icon brings it back,
+  and ⌘Q quits. The menu-bar icon stays as a second way in — nothing about it
+  changed.
+
+  Three things the switch to *Regular* dragged in, all handled:
+  - **⌘Q had to be hand-built.** macOS's stock Quit item calls `terminate:`,
+    which never reaches our exit handler — so the backend sidecar would have been
+    left running until its watchdog noticed. ⌘Q now routes through the same clean
+    shutdown as the tray's Quit.
+  - **The Edit menu is load-bearing.** It's what binds ⌘C/⌘V/⌘A on macOS; without
+    it, copy/paste in the settings fields would silently stop working.
+  - **⌘W/Minimize would have been dead items.** The stock ones map to
+    `performClose:`/`performMiniaturize:`, which AppKit ignores on a borderless
+    window like the orb — while still *rendering the items as enabled*. ⌘W is now
+    a custom item that hides the orb, mirroring its X button.
+
 ## [0.2.31] — 2026-07-16
 
 ### Fixed
