@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "backend-origin-commands",
+  "description": "App commands the real UI is allowed to call (#271). The UI is served by the backend from http://localhost:8340, which is a REMOTE origin to the webview (frontendDist is ./loading, served over tauri://), and Tauri v2 denies custom commands from a remote origin unless granted here. Without this grant `input_monitoring_granted` was rejected on every launch; the rejection surfaced as a promise rejection that onboarding.ts caught, so #266 silently reported the backend's wrong answer instead. Scoped to the one command the onboarding screen needs, on the main window, from the backend origin only — a foreign origin still gets nothing.",
+  "windows": ["main"],
+  "local": true,
+  "remote": {
+    "urls": ["http://localhost:8340", "http://localhost:8340/*"]
+  },
+  "permissions": ["allow-input-monitoring-granted"]
+}
