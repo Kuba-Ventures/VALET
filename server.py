@@ -4569,6 +4569,29 @@ def _app_version() -> str:
     return "0.1.0"
 
 
+def _valet_version() -> str:
+    """The human-facing semantic version (e.g. "0.2.34"), for the Settings panel.
+
+    The shipped app's real version comes from the Tauri launcher, which passes
+    its own package version through as VALET_VERSION. In the dev repo (running
+    `python server.py`) fall back to reading it out of tauri.conf.json so the
+    number still matches. Distinct from _app_version()/build_id, which is a build
+    timestamp used for telemetry and onboarding re-triggers."""
+    env_v = (os.getenv("VALET_VERSION", "") or "").strip()
+    if env_v:
+        return env_v[:40]
+    try:
+        conf = Path(__file__).resolve().parent / "src-tauri" / "tauri.conf.json"
+        if conf.exists():
+            import json as _json
+            v = (_json.loads(conf.read_text()).get("version") or "").strip()
+            if v:
+                return v[:40]
+    except Exception:
+        pass
+    return "dev"
+
+
 def _gather_sync_snapshot() -> dict:
     """Build the snapshot for /api/proxy/sync: the onboarding profile + local
     aggregate stats + connection flags. No message content."""
@@ -9003,6 +9026,7 @@ async def api_settings_status():
         "task_count": task_count,
         "server_port": 8340,
         "uptime_seconds": int(time.time() - _session_start),
+        "version": _valet_version(),
         "env_keys_set": {
             "license": bool(env_dict.get("LICENSE_KEY", "").strip()),
             "license_entitled": _license_entitled(),
@@ -9414,9 +9438,19 @@ def _screen_recording_granted():
 
 
 def _input_monitoring_granted():
-    """Real TCC check for Input Monitoring via CGPreflightListenEventAccess (no
-    prompt) — gates the global ⌃⌥ push-to-talk chord. True/False for the live
-    grant; None if Quartz isn't available."""
+    """Input Monitoring for THIS process — which is the wrong process to ask (#265).
+
+    The ⌃⌥ chord tap runs in the Tauri binary, not here (`global_ptt.py`'s tap is
+    intentionally never started, see below), and TCC grants are per-executable.
+    So this reports a permission the backend neither holds nor needs: it read
+    False while the chord worked fine, pinning onboarding's Permissions step to
+    "Needs setup" with Re-check re-asking the same wrong process.
+
+    The frontend now overrides this with the Tauri-side `input_monitoring_granted`
+    command, which asks the binary that actually taps. This stays only as the
+    fallback for non-Tauri callers (browser/dev), where nothing taps at all — so
+    treat a True here as "some process has it", never as "the chord will work".
+    """
     try:
         import Quartz
         return bool(Quartz.CGPreflightListenEventAccess())

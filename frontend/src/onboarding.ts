@@ -46,12 +46,61 @@ async function micGranted(): Promise<boolean | null> {
   }
 }
 
-/** Load permission status from the backend, then refine microphone client-side. */
+/**
+ * Real Input Monitoring state, read where the grant actually has to be — the
+ * main VALET binary (#265).
+ *
+ * The backend answers `/api/permissions/status` with its OWN
+ * CGPreflightListenEventAccess, but the ⌃⌥ chord tap runs in the Tauri process
+ * and the backend's tap is intentionally never started, so the backend was
+ * reporting a permission it neither holds nor needs — False even when the chord
+ * worked, which pinned the step to "Needs setup" with no way forward. Grants are
+ * per-executable, so only the tapping binary can answer. Returns null outside
+ * Tauri (plain browser / dev), which keeps the backend value.
+ */
+async function inputMonitoringGranted(): Promise<boolean | null> {
+  const invoke = (window as unknown as {
+    __TAURI__?: { core?: { invoke?: (cmd: string) => Promise<unknown> } };
+  }).__TAURI__?.core?.invoke;
+  // No Tauri at all: a plain browser (dev/tests). The only legitimate null —
+  // keep the backend's value and say nothing.
+  if (!invoke) return null;
+  try {
+    return Boolean(await invoke("input_monitoring_granted"));
+  } catch (err) {
+    // Inside Tauri this command MUST answer. A rejection means the call never
+    // reached Rust — which is exactly how this broke before (#271): the UI is
+    // served from http://localhost:8340, a remote origin to the webview, and
+    // Tauri denied the command because no capability granted it there. The old
+    // code caught that and returned null, silently falling back to the backend's
+    // answer — the wrong answer #265/#266 existed to replace, with no symptom
+    // beyond "Needs setup" forever. Never swallow it again: null still degrades
+    // gracefully, but it degrades LOUDLY.
+    console.error(
+      "[valet] input_monitoring_granted did not reach Rust; falling back to the " +
+      "backend's (wrong) answer. Check the ACL capability for this origin.",
+      err,
+    );
+    return null;
+  }
+}
+
+/**
+ * Load permission status from the backend, then correct the two the backend
+ * can't answer for itself: microphone lives in the webview, Input Monitoring
+ * lives in the Tauri binary. Everything else (Accessibility, Screen Recording,
+ * Full Disk Access) is genuinely used BY the backend, so its own grant is the
+ * honest answer and is left alone.
+ */
 async function loadPerms(): Promise<PermStatus | null> {
   const perms = await getJSON<PermStatus>("/api/permissions/status");
   if (perms?.microphone) {
     const mic = await micGranted();
     if (mic !== null) perms.microphone.granted = mic;
+  }
+  if (perms?.input_monitoring) {
+    const im = await inputMonitoringGranted();
+    if (im !== null) perms.input_monitoring.granted = im;
   }
   return perms;
 }
@@ -651,17 +700,66 @@ function renderBody(state: State, root: HTMLElement): void {
   const next = root.querySelector<HTMLButtonElement>("#ob-next");
   if (!body || !back || !next) return;
   body.innerHTML = bodyFor(state);
+  tagDragRegions(root); // steps rebuild their body — re-tag the new content
   back.style.visibility = state.step === 0 ? "hidden" : "visible";
   next.textContent = state.step === STEP_TITLES.length - 1 ? "Start using VALET" : "Continue";
   root.querySelectorAll<HTMLElement>(".ob-dot").forEach((d, i) => d.classList.toggle("on", i <= state.step));
   wireStep(state, root);
 }
 
+// ---- window helpers --------------------------------------------------------
+
+type WinApi = {
+  minimize?: () => void;
+  close?: () => void;
+};
+
+/** The Tauri window API, or undefined in a plain browser (dev/tests). */
+function tauriWindow(): WinApi | undefined {
+  try {
+    return (window as unknown as {
+      __TAURI__?: { window?: { getCurrentWindow?: () => WinApi } };
+    }).__TAURI__?.window?.getCurrentWindow?.();
+  } catch { return undefined; }
+}
+
+/** Controls that must keep their own mouse behavior — never drag handles. */
+const INTERACTIVE = "button, input, select, textarea, a, label, [contenteditable], [role='button']";
+
+/** Make the WHOLE panel a drag handle.
+ *
+ *  Tauri starts a drag only when the event target ITSELF carries
+ *  [data-tauri-drag-region] — it does not walk up the tree. Hand-picking which
+ *  elements to tag is why this kept reopening (#252/#255): #167 tagged the
+ *  titlebar strip, then the brand row, and each pass still missed whatever the
+ *  user actually grabbed — a step's blurb, a permission row's label. So invert
+ *  it: tag every inert element in the card and name only the exceptions.
+ *
+ *  Exceptions, both deliberate:
+ *   - .ob-body itself scrolls (overflow-y:auto). Tagging it would make a press
+ *     on its scrollbar move the window instead of scrolling. Its CHILDREN are
+ *     tagged, so text inside still drags; only the scrollbar gutter doesn't.
+ *   - interactive controls (and anything inside one, e.g. an icon in a button)
+ *     keep their clicks.
+ *
+ *  Tagging also kills the text-selection drag for free: Tauri's own handler
+ *  calls preventDefault on a drag region, so grabbing a label no longer
+ *  highlights it. Re-run after every render — steps rebuild their body. */
+function tagDragRegions(root: HTMLElement): void {
+  const card = root.querySelector<HTMLElement>(".ob-card");
+  if (!card) return;
+  card.querySelectorAll<HTMLElement>("*").forEach((el) => {
+    if (el.classList.contains("ob-body")) return;
+    if (el.matches(INTERACTIVE) || el.closest(INTERACTIVE)) return;
+    el.setAttribute("data-tauri-drag-region", "");
+  });
+}
+
 function render(state: State, root: HTMLElement): void {
   const dots = STEP_TITLES.map((_, i) => `<span class="ob-dot ${i === 0 ? "on" : ""}"></span>`).join("");
   root.innerHTML = `
     <div class="ob-backdrop" data-tauri-drag-region></div>
-    <div class="ob-card ob-wizard" role="dialog" aria-label="VALET setup">
+    <div class="ob-card ob-wizard" role="dialog" aria-label="VALET setup" data-tauri-drag-region>
       <div class="ob-titlebar">
         <div class="ob-drag" data-tauri-drag-region></div>
         <div class="ob-lights">
@@ -674,23 +772,19 @@ function render(state: State, root: HTMLElement): void {
         <div class="ob-dots">${dots}</div>
       </div>
       <div class="ob-body">${bodyFor(state)}</div>
-      <div class="ob-actions">
+      <div class="ob-actions" data-tauri-drag-region>
         <button class="ob-btn ghost" id="ob-back">Back</button>
         <button class="ob-btn primary" id="ob-next">Continue</button>
       </div>
     </div>`;
+  tagDragRegions(root);
 
   // Window controls — drag is handled natively by [data-tauri-drag-region]; the
   // light buttons call the window API (gated by the orb-drag capability). Close
   // hides the popover (the Rust close handler keeps the app in the tray); the
   // wizard re-opens via the tray "Replay setup".
   const winCtl = (method: "minimize" | "close") => {
-    try {
-      const w = (window as unknown as {
-        __TAURI__?: { window?: { getCurrentWindow?: () => Record<string, () => void> } };
-      }).__TAURI__?.window?.getCurrentWindow?.();
-      w?.[method]?.();
-    } catch { /* ignore */ }
+    try { tauriWindow()?.[method]?.(); } catch { /* ignore */ }
   };
   root.querySelector("#ob-win-min")?.addEventListener("click", () => winCtl("minimize"));
   root.querySelector("#ob-win-close")?.addEventListener("click", () => winCtl("close"));

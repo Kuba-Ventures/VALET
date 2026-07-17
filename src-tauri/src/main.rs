@@ -1,5 +1,8 @@
 // VALET desktop shell (Tauri v2).
 //
+// - Regular (Dock) app: the orb has a Dock icon and an app menu, and the menu-bar
+//   tray icon is a second way in. Closing the orb hides it; the Dock icon reopens
+//   it; quitting goes through the app menu / ⌘Q / the tray's Quit.
 // - Single instance: a second launch focuses the existing window instead of
 //   stacking another app (no duplicate dock icons).
 // - Spawns the PyInstaller backend (`valet-backend`) as a sidecar serving the
@@ -16,9 +19,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    ActivationPolicy, AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -41,6 +45,9 @@ fn spawn_backend(app: AppHandle, attempt: u32) {
         .sidecar("valet-backend")
         .expect("valet-backend sidecar missing")
         .env("VALET_SHIPPED", "1")
+        // Hand the backend our own package version so the Settings panel can show
+        // which VALET the user is actually running (issue #276).
+        .env("VALET_VERSION", app.package_info().version.to_string())
         // The backend watchdog exits when this shell dies, so an orphaned backend
         // never holds :8340 across a force-quit (e.g. macOS restarting the app
         // after a permission change). std::process::id() is the shell's PID.
@@ -418,6 +425,14 @@ fn reposition_to_active_monitor(app: &AppHandle, win: &tauri::WebviewWindow) {
 fn handle_tray_action(app: &AppHandle, id: &str) {
     match id {
         "open" => show_main(app),
+        // ⌘W / Window▸Close. Hides rather than closes, matching the orb's own X
+        // button and the CloseRequested handler: the app lives on in the Dock and
+        // menu bar, and the Dock icon brings the orb back.
+        "close_orb" => {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.hide();
+            }
+        }
         "toggle_listen" => {
             // Flip Active/Asleep via the SAME path as the in-orb toggle (one
             // source of truth); the orb shows the live status.
@@ -472,6 +487,89 @@ fn handle_tray_action(app: &AppHandle, id: &str) {
 #[tauri::command]
 fn tray_action(app: AppHandle, id: String) {
     handle_tray_action(&app, &id);
+}
+
+/// The macOS app menu — the one that appears in the menu bar now that we're a
+/// Regular (Dock) app (#256). Hand-built rather than `Menu::default()` for one
+/// load-bearing reason: the PREDEFINED Quit item maps to NSApplication's
+/// `terminate:`, which tears the process down without ever reaching our
+/// `RunEvent::ExitRequested` handler — so `shutdown_backend()` never runs and
+/// ⌘Q would leak the backend sidecar until its parent-PID watchdog reaped it.
+/// A custom item with id "quit" routes ⌘Q through the SAME handler as the tray's
+/// Quit, so both exits are clean.
+///
+/// Everything else here is a predefined item on purpose. On macOS the Edit menu
+/// is what BINDS ⌘C/⌘V/⌘A — a WKWebView gets no clipboard shortcuts without it,
+/// so dropping this submenu would silently break copy/paste in the settings
+/// fields. It costs nothing to keep and is invisible until someone needs it.
+fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let app_menu = Submenu::with_items(
+        app,
+        "VALET",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("About VALET"), None)?,
+            &PredefinedMenuItem::separator(app)?,
+            // ⌘, is the macOS-standard Settings shortcut; same target as the tray.
+            &MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, Some("Hide VALET"))?,
+            &PredefinedMenuItem::hide_others(app, Some("Hide Others"))?,
+            &PredefinedMenuItem::show_all(app, Some("Show All"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "quit", "Quit VALET", true, Some("CmdOrCtrl+Q"))?,
+        ],
+    )?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    // ⌘W hides the orb, mirroring its in-UI X button.
+    //
+    // This is a CUSTOM item because the predefined Close/Minimize are inert here,
+    // and verified so: both were tried against a real build and did nothing. They
+    // map to `performClose:` / `performMiniaturize:`, which AppKit no-ops (beeps)
+    // on a window with no close/minimize button — and the orb is `decorations:
+    // false`, so it has neither. The menu items still render ENABLED, so this fails
+    // silently: the only way to catch it is to click them on a running app.
+    let window_menu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[&MenuItem::with_id(app, "close_orb", "Close", true, Some("CmdOrCtrl+W"))?],
+    )?;
+    Menu::with_items(app, &[&app_menu, &edit_menu, &window_menu])
+}
+
+/// Is Input Monitoring granted to THIS binary? (#265)
+///
+/// Checked here, not in the backend, because this is the process the grant has
+/// to be on: the ⌃⌥ chord tap runs in `spawn_global_chord` above, and the
+/// backend's own tap is intentionally never started (see server.py). Asking the
+/// backend for its `CGPreflightListenEventAccess` therefore reports a permission
+/// it neither holds nor needs — it read False while the chord worked fine, so
+/// onboarding said "Needs setup" forever and Re-check kept asking the same wrong
+/// process. Grants are per-executable (see spawn_global_chord's note), so only
+/// the binary that taps can answer this.
+///
+/// Preflight is a pure query: no prompt, no side effects.
+#[tauri::command]
+fn input_monitoring_granted() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn CGPreflightListenEventAccess() -> bool;
+    }
+    unsafe { CGPreflightListenEventAccess() }
 }
 
 /// Prefix the backend prints to stdout to drive the cursor-follower caption — the
@@ -576,6 +674,16 @@ fn position_popover_under_tray(app: &AppHandle, win: &tauri::WebviewWindow) {
     let _ = win.set_position(tauri::LogicalPosition::new(tx, ty));
 }
 
+/// The generated context (config + capabilities + assets).
+///
+/// `generate_context!` embeds `_EMBED_INFO_PLIST`, so it may appear exactly once
+/// per binary — hence this one generic call site, shared by `main` (Wry) and the
+/// `acl` tests (MockRuntime). Sharing it is the point: the tests assert against
+/// the same capabilities we ship, not a mock of them.
+fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 fn main() {
     // Note: no single-instance plugin. It was added to stop "duplicate dock
     // icons" that turned out to be stale Launch Services entries, not real second
@@ -604,11 +712,22 @@ fn main() {
             shutting_down: AtomicBool::new(false),
             popover_hidden_at: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![tray_action])
+        .invoke_handler(tauri::generate_handler![tray_action, input_monitoring_granted])
+        .menu(build_app_menu)
+        // The app menu reuses the tray's action ids, so ⌘Q / Settings… land in the
+        // same handler the tray popover calls — one source of truth per action.
+        .on_menu_event(|app, event| handle_tray_action(app, event.id().as_ref()))
         .setup(|app| {
-            // Menu-bar product: no Dock icon. The orb lives as an always-on-top
-            // popover summoned via ⌃⌥ and toggled from the tray.
-            app.set_activation_policy(ActivationPolicy::Accessory);
+            // Desktop app, not a menu-bar utility (#256): Regular gives VALET a Dock
+            // icon and an app menu. Accessory hid both, so users who closed the orb
+            // had no obvious way back and no sign the app was even running — the tray
+            // icon alone read as "background thing", not "app I opened".
+            //
+            // The menu bar icon stays as a SECOND way in; the Dock is now the first.
+            // Regular means macOS also owns the lifecycle: closing the orb hides it
+            // (see on_window_event) and clicking the Dock icon brings it back (see
+            // RunEvent::Reopen), which is what "close ≠ quit" looks like on macOS.
+            app.set_activation_policy(ActivationPolicy::Regular);
 
             free_stale_backend();
             spawn_backend(app.handle().clone(), 1);
@@ -689,9 +808,11 @@ fn main() {
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Menu-bar app: closing the orb HIDES it (quit is via the tray), so
-                // the app keeps living in the menu bar instead of exiting. Other
-                // windows (e.g. the cursor overlay) tear down the backend as before.
+                // Closing the orb HIDES it (quit is via ⌘Q, the app menu, or the
+                // tray), so the app keeps living in the Dock and menu bar instead of
+                // exiting — standard macOS "close ≠ quit". The Dock icon brings it
+                // back (RunEvent::Reopen). Other windows (e.g. the cursor overlay)
+                // tear down the backend as before.
                 if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
@@ -700,19 +821,151 @@ fn main() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while running VALET")
-        .run(|app, event| {
-            // Menu-bar app: do NOT quit when the last window closes — live in the
-            // tray. Without this, Tauri's default exits the app on zero windows.
-            // BUT a deliberate tray "Quit" calls shutdown_backend() (which sets
-            // shutting_down) and then app.exit(0); we must let THAT exit through,
-            // or the app hangs on screen with its backend already killed
-            // ("backend not connected").
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        .run(|app, event| match event {
+            // Do NOT quit when the last window closes — the orb only hides, and the
+            // app lives on in the Dock and menu bar. Without this, Tauri's default
+            // exits the app on zero windows. BUT a deliberate Quit (tray item or ⌘Q)
+            // calls shutdown_backend() (which sets shutting_down) and then
+            // app.exit(0); we must let THAT exit through, or the app hangs on screen
+            // with its backend already killed ("backend not connected").
+            tauri::RunEvent::ExitRequested { api, .. } => {
                 if !app.state::<Backend>().shutting_down.load(Ordering::SeqCst) {
                     api.prevent_exit();
                 }
             }
+            // Dock icon clicked (#256). Now that closing the orb only hides it, the
+            // app can be running with nothing on screen — without this, its Dock icon
+            // would bounce and do nothing, which is exactly the "is it even open?"
+            // confusion the Dock icon is meant to fix.
+            //
+            // Deliberately IGNORE the event's `has_visible_windows`: it reports what
+            // NSApplication sees, and the per-display cursor overlays are real,
+            // permanently-visible windows (transparent + click-through, but visible).
+            // So it is effectively always true here and gating on it would restore the
+            // orb never. Ask the orb itself instead.
+            tauri::RunEvent::Reopen { .. } => {
+                let orb_hidden = app
+                    .get_webview_window("main")
+                    .map(|w| !w.is_visible().unwrap_or(true))
+                    .unwrap_or(false);
+                if orb_hidden {
+                    show_main(app);
+                }
+            }
+            _ => {}
         });
+}
+
+
+// ---------------------------------------------------------------------------
+// ACL reachability tests (#271)
+//
+// The UI is served by the backend from http://localhost:8340. To the webview that
+// is a REMOTE origin: `frontendDist` is `./loading`, served over `tauri://`, so
+// Tauri's `is_local_url` says no (different scheme). Tauri v2 then rejects custom
+// (non-plugin) commands unless a capability grants them to that origin:
+//
+//     if (plugin_command.is_some() || has_app_acl_manifest || !is_local)
+//         && invoke.acl.is_none() { reject(...) }
+//         -- tauri-2.11.2/src/webview/mod.rs
+//
+// A denial arrives as a promise rejection, and every `window.__TAURI__` call site
+// swallows those, so from JS a denied command is indistinguishable from a working
+// one. That is how #266 shipped broken and looked fine. These tests drive a real
+// InvokeRequest through the real generated ACL (`app_context()` — the same
+// capabilities we ship), so a missing grant fails CI instead of the user.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod acl {
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+    use tauri::webview::InvokeRequest;
+    use tauri::Manager;
+
+    /// The origin the backend serves the real UI from.
+    const BACKEND_ORIGIN: &str = "http://localhost:8340";
+
+    /// An ACL denial reads "<cmd> not allowed. Plugin not found"; a command that
+    /// passed the ACL but has no handler reads "Command <cmd> not found". The
+    /// distinction is what lets us test a command's GRANT without registering it.
+    fn is_acl_denial(err: &str) -> bool {
+        err.contains("not allowed")
+    }
+
+    /// Drive `cmd` through the real IPC entry point from `origin`, against the real
+    /// capabilities. Only `input_monitoring_granted` is registered: `tray_action`
+    /// takes an `AppHandle`, which is Wry-specific and cannot be built under the
+    /// mock runtime. It doesn't need to be — the ACL runs before handler dispatch,
+    /// so the error shape still tells us whether the grant resolved.
+    fn invoke_from(origin: &str, window: &str, cmd: &str) -> Result<String, String> {
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![super::input_monitoring_granted])
+            .build(super::app_context())
+            .expect("app should build");
+
+        let webview = match app.get_webview_window(window) {
+            Some(w) => w,
+            None => tauri::WebviewWindowBuilder::new(&app, window, Default::default())
+                .build()
+                .expect("window should build"),
+        };
+
+        get_ipc_response(
+            &webview,
+            InvokeRequest {
+                cmd: cmd.into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: origin.parse().expect("origin should parse"),
+                body: InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        )
+        .map(|v| format!("{v:?}"))
+        .map_err(|e| format!("{e:?}"))
+    }
+
+    /// The regression #271 is about. #266's fix is only real if this command
+    /// reaches Rust from the origin the UI is actually served from; if the ACL
+    /// denies it, onboarding.ts catches the rejection, returns null, and silently
+    /// keeps the backend's answer — the wrong answer #265/#266 existed to replace.
+    #[test]
+    fn input_monitoring_granted_is_reachable_from_the_backend_origin() {
+        let res = invoke_from(BACKEND_ORIGIN, "main", "input_monitoring_granted");
+        assert!(
+            res.is_ok(),
+            "input_monitoring_granted must be reachable from {BACKEND_ORIGIN}, the \
+             origin the UI is served from, else #266 reports a permission it never \
+             read. Got: {res:?}"
+        );
+    }
+
+    /// The tray popover is local, but #271's app manifest ACL-gates app commands
+    /// from local origins too — so this guards the tray menu against being broken
+    /// by the fix for #266. Not registered in the mock handler (see `invoke_from`),
+    /// so success here means "passed the ACL and reached dispatch".
+    #[test]
+    fn tray_action_is_reachable_from_the_tray_popover() {
+        let err = invoke_from("tauri://localhost", "tray_menu", "tray_action")
+            .expect_err("tray_action is not registered in the mock handler");
+        assert!(
+            !is_acl_denial(&err),
+            "tray_action must pass the ACL from the local tray popover, else every \
+             menu item silently no-ops. Got an ACL denial: {err}"
+        );
+    }
+
+    /// The grant must not become a blanket one: a foreign origin is still denied.
+    #[test]
+    fn a_foreign_origin_cannot_reach_app_commands() {
+        let err = invoke_from("https://evil.example.com", "main", "input_monitoring_granted")
+            .expect_err("a foreign origin must not reach app commands");
+        assert!(
+            is_acl_denial(&err),
+            "a foreign origin must be denied by the ACL, not merely fail. Got: {err}"
+        );
+    }
 }

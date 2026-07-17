@@ -20,38 +20,78 @@ html, body {
   height: 100%;
 }
 
-#status-text {
+/* Voice-state indicator (#257) — one always-visible pill that unambiguously
+   answers "is VALET hearing me right now?". A colored dot carries the state;
+   a plain-language label spells it out; the pill border picks up a matching
+   tint. Never blank (unlike the old #status-text), so idle push-to-talk still
+   shows a cue instead of nothing. */
+#voice-state {
   position: fixed;
-  bottom: 40px;
+  bottom: 32px;
   left: 50%;
   transform: translateX(-50%);
-  color: rgba(110, 92, 255, 0.5);
-  font-size: 13px;
-  letter-spacing: 2px;
-  text-transform: lowercase;
-  font-weight: 300;
-  transition: opacity 0.5s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 10px;
+  border-radius: 999px;
+  background: rgba(20, 14, 48, 0.5);
+  border: 1px solid rgba(110, 92, 255, 0.22);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-size: 12px;
+  letter-spacing: 1px;
+  font-weight: 400;
   pointer-events: none;
+  user-select: none;
   z-index: 10;
+  transition: border-color 0.4s ease, background 0.4s ease;
+}
+#voice-state .vs-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: currentColor; /* takes the per-state color set below */
+}
+#voice-state .vs-label {
+  line-height: 1;
+  color: rgba(220, 214, 245, 0.92); /* label stays readable; the dot carries hue */
 }
 
-/* Push-to-talk affordance — shown under the status line only while the
-   push-to-talk toggle is on (PR 2 follow-up). Dimmer/smaller than the status
-   text so it reads as a hint, not a state. */
-#ptt-hint {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  color: rgba(190, 175, 255, 0.9);  /* match VALET reply text — readable purple */
-  font-size: 10px;
-  letter-spacing: 2px;
-  text-transform: lowercase;
-  font-weight: 300;
-  pointer-events: none;
-  z-index: 10;
+/* Listening — mic hot, capturing your command. Cyan, gently pulsing — reads as
+   "live", and stays in the orb's cool palette rather than jumping to a red. */
+#voice-state[data-mode="listening"] { color: #38e1ff; border-color: rgba(56, 225, 255, 0.5); }
+#voice-state[data-mode="listening"] .vs-dot {
+  animation: vs-pulse 1.2s ease-in-out infinite;
+  box-shadow: 0 0 8px rgba(56, 225, 255, 0.85);
 }
-#ptt-hint.hidden { display: none; }
+
+/* Ready — always-listening, waiting for the wake word. Green, steady. */
+#voice-state[data-mode="ready"] { color: #57d9a3; border-color: rgba(87, 217, 163, 0.4); }
+#voice-state[data-mode="ready"] .vs-dot { box-shadow: 0 0 6px rgba(87, 217, 163, 0.6); }
+
+/* Push-to-talk idle — mic closed until you hold ⌃⌥. Muted slate grey, dim. */
+#voice-state[data-mode="ptt"] { color: #8b93a7; border-color: rgba(139, 147, 167, 0.28); }
+
+/* Thinking / Working — violet, slow pulse. */
+#voice-state[data-mode="thinking"] { color: #b48cff; border-color: rgba(180, 140, 255, 0.45); }
+#voice-state[data-mode="thinking"] .vs-dot {
+  animation: vs-pulse 1.6s ease-in-out infinite;
+  box-shadow: 0 0 7px rgba(180, 140, 255, 0.7);
+}
+
+/* Speaking — purple, pulsing with the reply. */
+#voice-state[data-mode="speaking"] { color: #a64dff; border-color: rgba(166, 77, 255, 0.5); }
+#voice-state[data-mode="speaking"] .vs-dot {
+  animation: vs-pulse 0.9s ease-in-out infinite;
+  box-shadow: 0 0 8px rgba(166, 77, 255, 0.85);
+}
+
+@keyframes vs-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.82); }
+}
 
 /* Password field with an inline show/hide eye toggle. */
 .pw-field { position: relative; }
@@ -175,7 +215,7 @@ html, body {
 
 #valet-label {
   position: fixed;
-  bottom: 8px;  /* nudged down to make room for #ptt-hint above it */
+  bottom: 8px;  /* sits below the #voice-state pill */
   left: 50%;
   transform: translateX(-50%);
   color: rgba(110, 92, 255, 0.2);
@@ -1039,6 +1079,7 @@ body.wake-sleeping #orb-canvas {
 }
 .console-mono .mono-conn .status-dot { width: 8px; height: 8px; }
 .console-mono .mono-restart { display: block; width: 100%; text-align: center; padding: 10px 0; font-size: 13px; font-weight: 500; border-radius: 8px; }
+.console-mono .mono-version { margin-top: 10px; text-align: center; font-size: 11px; letter-spacing: 0.04em; color: #6a6a6a; user-select: text; }
 
 /* Advanced disclosure */
 .console-mono .mono-advanced { margin-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px; }

@@ -3,6 +3,175 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.35] — 2026-07-17
+
+### Added
+- **A clear listening-state indicator.** Voice active/inactive state was hard to
+  read: the orb is deliberately monochrome across all states, and the only cue
+  was a small status line that went blank when idle in push-to-talk mode (the
+  default) — so there was often no signal telling you whether VALET was hearing
+  you. There's now a single, always-visible pill by the orb — a colored dot plus
+  a plain-language label — that is the one source of truth for mic state:
+  cyan **Listening** (mic hot), green **Ready · say "Vee"** (always-listening,
+  idle), slate **Hold ⌃⌥ to talk** (push-to-talk, idle), violet
+  **Thinking/Working**, and purple **Speaking**. It carries `aria-live` so state
+  changes are announced to screen readers. The orb visuals are unchanged. (#257)
+
+## [0.2.34] — 2026-07-16
+
+### Changed
+- **The orb reads at Dock size now.** 0.2.33 put the orb on a white plate, which
+  fixed the black rectangle but left a new problem: the orb itself was a faint
+  wireframe mesh, and at the ~64px macOS actually draws in the Dock its thin
+  lines washed out into a near-white blob on a near-white plate. Legible at
+  1024, invisible at the only size anyone sees.
+
+  The mark is now a purple halftone sphere. The dot grid is the point: it stays
+  a textured sphere at full size, and at Dock size the dots blend into a solid
+  glossy orb rather than dissolving. Contrast against the plate carries the
+  shape at every size.
+
+  The plate is unchanged from 0.2.33 — same Big Sur geometry (an 824px rounded
+  plate centred in a 1024 canvas, transparent corners), same orb-to-plate
+  proportion. Only the artwork inside it changed. `assets/valet-icon.png` is
+  updated in step with the generated `src-tauri/icons/` sizes, so a clean build
+  reproduces this icon rather than the old one. `tray.png` stays untouched for
+  the same reason as last time: it's a black template mark macOS recolours.
+
+## [0.2.33] — 2026-07-16
+
+### Changed
+- **New app icon: the orb on white.** Replaces the near-black square with the
+  Twin Peaks orb mark on a white plate, following on from the Dock icon in
+  0.2.32 (#256) — the icon is a lot more visible now that it has a Dock to sit in.
+
+  Authored to Apple's Big Sur geometry — an 824px rounded plate centred in a
+  1024 canvas, corners transparent — rather than the full-bleed hard square it
+  replaces. macOS does not round app icons for you: the old icon rendered as a
+  literal black rectangle among the Dock's rounded neighbours, and a white
+  rectangle would have stood out more, not less.
+
+  `assets/valet-icon.png` (the source `build-macos.sh` seeds from) is updated in
+  step, so a clean build regenerates this icon rather than resurrecting the old
+  one. The menu-bar `tray.png` is deliberately untouched: it's a black *template*
+  mark that macOS recolours to match the menu bar, so a white background would
+  break it.
+
+## [0.2.32] — 2026-07-16
+
+### Fixed
+- **VALET is a Dock app now.** It ran as a macOS *Accessory* app: menu-bar icon
+  only, no Dock icon, no app menu. Users who closed the orb had no obvious way
+  back and nothing to tell them VALET was still running — a tray icon reads as
+  "some background thing", not "the app I just opened". (#256)
+
+  The orb now has a Dock icon and an app menu, and behaves the way a Mac app is
+  supposed to: closing the orb hides it, clicking the Dock icon brings it back,
+  and ⌘Q quits. The menu-bar icon stays as a second way in — nothing about it
+  changed.
+
+  Three things the switch to *Regular* dragged in, all handled:
+  - **⌘Q had to be hand-built.** macOS's stock Quit item calls `terminate:`,
+    which never reaches our exit handler — so the backend sidecar would have been
+    left running until its watchdog noticed. ⌘Q now routes through the same clean
+    shutdown as the tray's Quit.
+  - **The Edit menu is load-bearing.** It's what binds ⌘C/⌘V/⌘A on macOS; without
+    it, copy/paste in the settings fields would silently stop working.
+  - **⌘W/Minimize would have been dead items.** The stock ones map to
+    `performClose:`/`performMiniaturize:`, which AppKit ignores on a borderless
+    window like the orb — while still *rendering the items as enabled*. ⌘W is now
+    a custom item that hides the orb, mirroring its X button.
+
+## [0.2.31] — 2026-07-16
+
+### Fixed
+- **Input Monitoring setup told the truth for the first time.** The onboarding
+  step read "Needs setup" even when the ⌃⌥ chord worked fine, and Re-check never
+  helped. 0.2.29 (#265/#266) fixed this by asking the Tauri binary — the process
+  that actually holds the grant — instead of the backend. That fix never ran: the
+  call was rejected before it reached Rust, every single launch.
+
+  VALET's UI is served by the backend from `http://localhost:8340`, which is a
+  *remote* origin to the webview (`frontendDist` is `./loading`, served over
+  `tauri://`). Tauri v2 denies an app's own commands from a remote origin unless a
+  capability grants them there, and nothing did — so `input_monitoring_granted`
+  was denied, the rejection was swallowed, and onboarding quietly fell back to the
+  backend's wrong answer. A denied command and a working one looked identical.
+
+  The app's commands are now declared in `build.rs` and granted per-origin, so the
+  real answer gets through.
+
+### Added
+- **ACL reachability tests** (`cargo test --bin valet`). They drive a real IPC
+  request through the real shipped capabilities and fail if a command isn't
+  reachable from the origin that calls it. This class of bug is invisible from
+  JS — every `window.__TAURI__` call goes through `?.` inside a `try/catch`, so a
+  denial no-ops and looks like success. Now it fails CI instead of the user.
+
+### Changed
+- `input_monitoring_granted` failing now logs loudly instead of silently
+  degrading. It still falls back, but it says so.
+- Declaring app commands ACL-gates them from *local* origins too, so `tray_action`
+  needed an explicit grant it never had — without it every tray menu item would
+  have silently stopped working. Covered by a test.
+
+## [0.2.30] — 2026-07-16
+
+### Changed
+- **The orb is a normal window now.** It no longer floats above every other
+  window on the display — it obeys the usual z-order and drops behind whatever
+  you focus, like any other app. Summon it from the tray icon when you need it.
+
+  On macOS "float, but fall behind when unfocused" isn't a window level you can
+  ask for: always-on-top is unconditional, and falling behind when unfocused
+  *is* the normal level. So this drops `alwaysOnTop` rather than tuning it.
+
+  This also removes the onboarding-only always-on-top dance added in 0.2.27
+  (#263): with nothing ever on top, there's nothing to drop while the setup
+  wizard is up, and the wizard can be parked behind System Settings by default.
+  Leaving that code in would have re-floated the orb the moment setup finished.
+
+## [0.2.29] — 2026-07-16
+
+### Fixed
+- **"Needs setup" on Input Monitoring you'd already granted.** The setup step
+  asked the backend whether Input Monitoring was granted, but the ⌃⌥ chord runs
+  in the VALET binary and macOS grants this per executable — so the backend was
+  answering for a permission it neither holds nor needs. It reported "Needs
+  setup" while the chord worked fine, and Re-check kept asking the same wrong
+  process, so the step could never be satisfied. VALET now asks the binary that
+  actually listens. The other permissions are genuinely used by the backend, so
+  they still answer for themselves.
+
+## [0.2.28] — 2026-07-16
+
+### Fixed
+- **The whole setup panel drags now, not just parts of it.** 0.2.27 made the
+  card padding, the brand row, the actions row and each step's title draggable,
+  but grabbing anything else — a permission row's label, its grey blurb — still
+  selected text instead of moving the window. Tauri only starts a drag when the
+  pressed element itself is a drag region, so hand-picking which elements to tag
+  kept missing whatever people actually grabbed (this is the third pass at it).
+  Inverted: every inert element in the card is tagged after each render, and only
+  the exceptions are named — the scrolling step body (so its scrollbar still
+  scrolls) and interactive controls (so buttons and inputs still work). Grabbing
+  text no longer highlights it either.
+
+## [0.2.27] — 2026-07-16
+
+### Fixed
+- **The setup wizard can be moved, and pushed behind other windows.** During
+  first-run setup the panel couldn't be dragged and floated above everything,
+  so granting a permission meant fighting the window that was asking for it.
+  Only a 22px strip and the small "VALET" row were drag handles, while the card
+  covers most of the 380x560 popover — grabbing the panel anywhere a person
+  actually grabs it (the title, the blurb, the padding) did nothing. Those are
+  all drag handles now. The scrolling step body is deliberately left alone so
+  its scrollbar still scrolls instead of dragging the window. Setup also drops
+  always-on-top for its duration and restores it when you finish, so the wizard
+  can sit behind System Settings while you grant a permission. The orb itself is
+  unchanged — it still floats.
+
 ## [0.2.26] — 2026-07-16
 
 ### Fixed
