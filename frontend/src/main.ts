@@ -54,7 +54,8 @@ const WAKE_STATE_KEY = "valet.wakeListening";
 // explicitly chosen "active".
 let isSleeping = localStorage.getItem(WAKE_STATE_KEY) !== "active";
 
-const statusEl = document.getElementById("status-text")!;
+const voiceStateEl = document.getElementById("voice-state")!;
+const vsLabelEl = voiceStateEl.querySelector(".vs-label") as HTMLElement;
 const errorEl = document.getElementById("error-text")!;
 const replyEl = document.getElementById("valet-reply")!;
 
@@ -82,21 +83,43 @@ function hideError() {
   errorEl.classList.remove("visible");
 }
 
-function updateStatus(state: State) {
-  // PTT mode keeps isSleeping=true (wake mic off), but holding ⌥ still listens —
-  // so show the active-state label ("listening…"/"thinking…"); only blank when
-  // genuinely idle/asleep (then the "press ⌥ to talk" hint carries the cue).
-  if (isSleeping && state === "idle") {
-    statusEl.textContent = "";
-    return;
+// The configured wake name (casual "Vee"); resolved from /api/config below and
+// shown in the idle "Ready · say Vee" indicator. Title-cased for display.
+let assistantName = "vee";
+
+// Set when the backend reports a spawned task (status=working) so the indicator
+// reads "Working" rather than the generic "Thinking". Cleared on the next state
+// transition.
+let workingLabel = false;
+
+// Voice-state indicator (#257) — the single source of truth for what VALET is
+// doing with the mic. Always visible (never blank): idle push-to-talk shows the
+// "hold ⌃⌥" cue, idle always-listening shows "Ready · say Vee". `data-mode`
+// drives the dot color + pulse in CSS; the label spells it out in plain words.
+function renderVoiceState() {
+  let mode: string;
+  let label: string;
+  switch (currentState) {
+    case "listening":
+      mode = "listening"; label = "Listening"; break;
+    case "thinking":
+      mode = "thinking"; label = workingLabel ? "Working" : "Thinking"; break;
+    case "speaking":
+      mode = "speaking"; label = "Speaking"; break;
+    case "idle":
+    default:
+      if (isSleeping) {
+        // Push-to-talk primary: wake mic off, so name the gesture that works.
+        mode = "ptt"; label = "Hold ⌃⌥ to talk";
+      } else {
+        // Always-listening: wake mic hot, waiting for the wake word.
+        const name = assistantName.charAt(0).toUpperCase() + assistantName.slice(1);
+        mode = "ready"; label = `Ready · say "${name}"`;
+      }
+      break;
   }
-  const labels: Record<State, string> = {
-    idle: "",
-    listening: "listening...",
-    thinking: "thinking...",
-    speaking: "",
-  };
-  statusEl.textContent = labels[state];
+  voiceStateEl.dataset.mode = mode;
+  vsLabelEl.textContent = label;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,8 +270,9 @@ socket.onConnectionChange((isConnected) => {
 function transition(newState: State) {
   if (newState === currentState) return;
   currentState = newState;
+  workingLabel = false; // any real transition clears the "Working" override
   orb.setState(newState as OrbState);
-  updateStatus(newState);
+  renderVoiceState();
   updateKillVisibility();
 
   switch (newState) {
@@ -324,6 +348,8 @@ valetLabelEl.textContent = "VALET";
 
 function applyAssistantName(name: string) {
   wake.setName(name);
+  assistantName = name;
+  renderVoiceState(); // idle "Ready · say <name>" label follows the configured name
 }
 
 // Default wake name; updated once /api/config resolves.
@@ -427,9 +453,13 @@ socket.onMessage((msg) => {
     if (state === "thinking" && currentState !== "thinking") {
       transition("thinking");
     } else if (state === "working") {
-      // Task spawned — show thinking with a different label
+      // Task spawned — show the thinking state with a "Working" label. Set the
+      // flag AFTER transition() (which clears it) so the re-render picks it up,
+      // and re-render explicitly to cover the already-thinking case where
+      // transition() no-ops.
       transition("thinking");
-      statusEl.textContent = "working...";
+      workingLabel = true;
+      renderVoiceState();
     } else if (state === "idle") {
       transition("idle");
     }
@@ -535,7 +565,7 @@ function refreshPanelAutoClose() {
 setTimeout(() => {
   wake.start();
   reconcileWakeControl();
-  if (!isSleeping) updateStatus("idle");
+  renderVoiceState(); // paint the idle indicator (ready / hold-to-talk) on load
 }, 1000);
 
 // Resume AudioContext on ANY user interaction (browser autoplay policy).
@@ -647,18 +677,9 @@ window.addEventListener("blur", () => {
   else if (state === "cancel") wake.cancelPushToTalk();
 };
 
-// Show a "hold ⌃⌥ to talk" affordance under the status line whenever the
-// push-to-talk toggle is on. Updates live when the Settings toggle flips
-// (settings.ts dispatches "ptt-changed").
-const pttHintEl = document.getElementById("ptt-hint")!;
-function updatePttHint() {
-  // Show the "hold ⌃⌥ to talk" cue only in push-to-talk mode (i.e. NOT when
-  // always-listening). The chord itself always works.
-  pttHintEl.textContent = "hold ⌃⌥ to talk";
-  pttHintEl.classList.toggle("hidden", !isSleeping);
-}
-window.addEventListener("ptt-changed", updatePttHint);
-updatePttHint();
+// The "hold ⌃⌥ to talk" cue now lives inside the #voice-state pill (ptt mode),
+// so a mode flip from Settings just re-renders the indicator.
+window.addEventListener("ptt-changed", renderVoiceState);
 
 function setDiagMic(_text: string) { /* mic device label removed from UI */ }
 
@@ -764,8 +785,7 @@ function applyWakeVisuals() {
   btnWakeToggle.classList.toggle("off", !on);
   wakeLabelEl.textContent = "Always listening";
   document.body.classList.remove("wake-sleeping");
-  updatePttHint();
-  updateStatus(currentState);
+  renderVoiceState(); // reflect the new mode in the idle indicator (ready / ptt)
 }
 
 function reconcileWakeControl() {
