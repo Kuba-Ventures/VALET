@@ -275,6 +275,47 @@ def _password_account_email(observation: dict) -> str:
     return emails[0] if emails else ""
 
 
+def _find_account_element(observation: dict, email: str) -> dict:
+    """The chooser row element whose label contains `email` — a deterministic
+    match off the AX tree (the rows carry the exact address), so we click the
+    RIGHT account instead of letting vision guess between similar names."""
+    email_l = (email or "").lower()
+    if not email_l:
+        return {}
+    for e in observation.get("elements", []) or []:
+        label = " ".join(filter(None, [e.get("title"), e.get("value")])).lower()
+        if "use another account" in label or "remove an account" in label:
+            continue
+        if email_l in label:
+            return e
+    return {}
+
+
+# Passkey / 2-step / biometric screens — including the separate Bitwarden passkey
+# popup window. ONLY the human can complete these (Touch ID is hardware), so VALET
+# must pause cleanly here rather than trying to drive them (which loops).
+_GMAIL_HUMAN_STEP_HINTS = (
+    "verifying it",                       # "Verifying it's you" (any apostrophe)
+    "complete sign-in using your passkey", "use your passkey", "with your passkey",
+    "log in with passkey", "no passkeys found", "use your device or hardware key",
+    "2-step verification", "verification code", "get a verification code",
+    "check your phone", "google prompt", "use your fingerprint", "touch id",
+    "confirm your recovery",
+)
+
+
+def _is_gmail_human_step(observation: dict) -> bool:
+    """True on a passkey / 2-step / biometric screen only the human can finish."""
+    blob = _labels_blob(observation)
+    return any(h in blob for h in _GMAIL_HUMAN_STEP_HINTS)
+
+
+def _is_gmail_inbox(observation: dict) -> bool:
+    """True once the Gmail inbox is loaded (sign-in genuinely complete)."""
+    blob = _labels_blob(observation)
+    return any(h in blob for h in _GMAIL_INBOX_HINTS) and not _is_gmail_signin(observation)
+
+
 def _account_prompt(emails: list) -> str:
     if len(emails) >= 2:
         return f"Which account, sir — {emails[0]} or {emails[1]}?"
@@ -555,6 +596,7 @@ async def run_loop(
     history: list = []
     consecutive_fails = 0
     forced_recheck = False
+    login_handoffs = 0
 
     async def _gmail_vision_click(obs: dict, desc: str) -> bool:
         """Locate `desc` on the current screen (vision resolver) and click it with
@@ -645,8 +687,19 @@ async def run_loop(
         # password step asks approval and clicks the saved-password chip + Next.
         # Each ask is a cross-turn pause (the caller parks it on pending_offer and
         # resumes with the user's spoken answer as `login_choice`).
-        if hands_off and _is_gmail_signin(observation):
+        if hands_off and (_is_gmail_human_step(observation) or _is_gmail_signin(observation)):
             _paused_app = observation.get("app") or app
+
+            # (0) Passkey / 2-step / biometric — only the human can finish it.
+            # Pause ONCE and hand off (never loop trying to drive Touch ID).
+            if _is_gmail_human_step(observation):
+                await _emit("act", "This one needs your fingerprint, sir.",
+                            detail="Clear the passkey box and use Touch ID, then say "
+                                   "'I'm logged in'.", status="active")
+                return {"status": "paused", "reason": "login", "resume_goal": goal,
+                        "app": _paused_app, "steps": step - 1, "history": history,
+                        "message": "This one needs you, sir — clear the passkey box and "
+                                   "use your fingerprint, then tell me when you're in."}
 
             # (a) Account chooser — ask which account, then click it.
             if _is_account_chooser(observation):
@@ -655,10 +708,26 @@ async def run_loop(
                     tgt = login_choice["email"]
                     login_choice = None
                     await _emit("act", f"Selecting {tgt}", status="active")
-                    if await _gmail_vision_click(observation, f"the account row for {tgt}"):
+                    # Deterministic: click the AX row that carries this exact
+                    # address; fall back to vision only if it isn't in the tree.
+                    clicked = False
+                    el = _find_account_element(observation, tgt)
+                    if el:
+                        obs_app = observation.get("app") or app
+                        actor2 = ax_executor or executor
+                        fr = el.get("frame")
+                        if _is_browser(obs_app) and fr and len(fr) == 4:
+                            r = await actor2.click_element(
+                                point=(fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0), app=obs_app)
+                        else:
+                            r = await actor2.click_element(ref=el.get("ref"), app=obs_app)
+                        clicked = bool(getattr(r, "ok", False))
+                    if not clicked:
+                        clicked = await _gmail_vision_click(observation, f"the account row for {tgt}")
+                    if clicked:
                         history.append({"step": step, "action": "click", "target": tgt,
                                         "ok": True, "msg": "chose account"})
-                        # Wait for the chooser to give way to the password page.
+                        # Wait for the chooser to give way to the next screen.
                         for _ in range(8):
                             await asyncio.sleep(0.7)
                             if kill_switch is not None and kill_switch.is_engaged():
@@ -689,13 +758,24 @@ async def run_loop(
                         await _gmail_vision_click(obs2, "the Next button to sign in")
                     history.append({"step": step, "action": "signin", "ok": True,
                                     "msg": "submitted saved login"})
-                    outcome = await _await_login(executor, app, kill_switch, emit, timeout_s=30.0)
-                    if outcome == "halted":
-                        return {"status": "halted", "steps": step, "history": history,
-                                "message": "Halted, sir."}
-                    if outcome == "resume":
-                        return {"status": "done", "reason": "signed_in", "steps": step,
-                                "history": history, "message": "You're in, sir — signed into Gmail."}
+                    # Wait for the outcome, distinguishing the inbox (real success)
+                    # from a passkey/2-step page (needs the human) — so we never
+                    # falsely claim "you're in" while a biometric step is pending.
+                    for _ in range(16):
+                        await asyncio.sleep(1.3)
+                        if kill_switch is not None and kill_switch.is_engaged():
+                            return {"status": "halted", "steps": step, "history": history,
+                                    "message": "Halted, sir."}
+                        o = await perception.build_observation(executor, app=app)
+                        if _is_gmail_human_step(o):
+                            return {"status": "paused", "reason": "login", "resume_goal": goal,
+                                    "app": o.get("app") or _paused_app, "steps": step,
+                                    "history": history,
+                                    "message": "Nearly there, sir — clear the passkey box and "
+                                               "use your fingerprint, then tell me when you're in."}
+                        if _is_gmail_inbox(o):
+                            return {"status": "done", "reason": "signed_in", "steps": step,
+                                    "history": history, "message": "You're in, sir — signed into Gmail."}
                     return {"status": "paused", "reason": "login", "resume_goal": goal,
                             "app": _paused_app, "steps": step, "history": history,
                             "message": "That didn't go through, sir — finish the sign-in "
@@ -720,6 +800,17 @@ async def run_loop(
         # account), then hands off the instant the password page appears, before a
         # ~5s model decide. (Handing off the whole login skipped the account click.)
         if hands_off and _is_credential_page(observation):
+            # Guard against re-handing-off forever: a multi-window login (e.g. a
+            # separate password-manager popup) can make _await_login report the
+            # form "cleared" and then re-appear. After two hand-offs, stop and
+            # leave the sign-in with the user rather than looping.
+            login_handoffs += 1
+            if login_handoffs > 2:
+                return {"status": "paused", "reason": "login", "resume_goal": goal,
+                        "app": observation.get("app") or app, "steps": step - 1,
+                        "history": history,
+                        "message": "I'll leave the sign-in with you, sir — tell me "
+                                   "when you're in and I'll carry on."}
             _r = await _login_handoff(step)
             if _r is not None:
                 return _r

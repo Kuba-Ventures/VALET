@@ -3,6 +3,21 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.39] — 2026-07-17
+
+### Fixed
+- **Guided Gmail sign-in: right account, no passkey loop.** Three fixes to the
+  0.2.38 flow found in testing: (1) the account is now clicked **deterministically**
+  off the accessibility tree by exact email, so "work" no longer lands on the
+  personal account (vision was guessing between two "Finley Underwood" rows);
+  (2) passkey / 2-step / "Verifying it's you" / Touch ID screens — which only a
+  human can complete — now **pause cleanly** and ask you to finish with your
+  fingerprint, instead of falling through to the old hand-off and looping
+  forever; (3) after clicking Next, VALET waits for the actual **inbox** before
+  saying "you're in," and detects a pending passkey step rather than falsely
+  claiming success. A two-hand-off cap backstops the old credential path against
+  any residual multi-window loop. (#284)
+
 ## [0.2.38] — 2026-07-17
 
 ### Added

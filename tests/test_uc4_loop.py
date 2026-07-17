@@ -339,14 +339,10 @@ def test_gmail_password_page_asks_approval(monkeypatch):
 
 
 def test_gmail_account_click_on_choice(monkeypatch):
-    # Given the user's account choice, the loop clicks that row (vision) and moves
-    # on — here the screen flips to the password page, so it then asks approval.
+    # Given the user's account choice, the loop clicks that row deterministically
+    # off the AX tree (no vision guessing) and moves on — the screen flips to the
+    # password page, so it then asks approval.
     _no_capture(monkeypatch)
-    import target_resolver
-
-    async def fake_resolve(obs, desc, client, intent="click"):
-        return type("R", (), {"status": "ref", "ref": "e1", "point": None})()
-    monkeypatch.setattr(target_resolver, "resolve", fake_resolve)
 
     class FakeExecFlow(FakeExec):
         def __init__(self):
@@ -363,8 +359,38 @@ def test_gmail_account_click_on_choice(monkeypatch):
     res = run(agent_loop.run_loop(
         ex, "go to gmail and summarize today's emails", client, ax_executor=ex,
         hands_off=True, login_choice={"email": "finley@qsbsrollover.com"}))
-    assert ("click", "e1") in ex.actions        # clicked the chosen account row
+    assert any(a[0] == "click" for a in ex.actions)   # clicked the chosen account
     assert res["status"] == "paused" and res.get("reason") == "approve_signin"
+
+
+def test_find_account_element_is_exact():
+    # The deterministic matcher must NOT confuse the two Finley accounts.
+    obs = {"app": "Google Chrome", "elements": _GMAIL_CHOOSER_ELS}
+    assert agent_loop._find_account_element(obs, "finley@qsbsrollover.com")["ref"] == "e1"
+    assert agent_loop._find_account_element(obs, "mrfinleyunderwood@gmail.com")["ref"] == "e2"
+
+
+def test_gmail_passkey_page_hands_off_without_looping(monkeypatch):
+    # A passkey / "Verifying it's you" page can't be driven (biometric) — the loop
+    # must pause ONCE and hand off, not loop through the old credential path.
+    _no_capture(monkeypatch)
+    passkey_els = [
+        {"ref": "e0", "role": "AXWebArea", "title": "Verifying it's you", "value": "", "enabled": True, "frame": [0, 100, 800, 500]},
+        {"ref": "e1", "role": "AXStaticText", "title": "Complete sign-in using your passkey", "value": "", "enabled": True, "frame": [60, 300, 400, 20]},
+    ]
+
+    class FakeExecPasskey(FakeExec):
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "Google Chrome", "elements": passkey_els})
+
+    client = FakeClient(['{"action":"click","ref":"e1","reason":"x"}'])
+    ex = FakeExecPasskey()
+    res = run(agent_loop.run_loop(ex, "go to gmail and summarize today's emails",
+                                  client, ax_executor=ex, hands_off=True))
+    assert res["status"] == "paused" and res.get("reason") == "login"
+    assert ex.actions == []                     # never tried to drive the passkey
+    assert "fingerprint" in res["message"].lower()
 
 
 def test_gmail_resume_when_signed_in(monkeypatch):
