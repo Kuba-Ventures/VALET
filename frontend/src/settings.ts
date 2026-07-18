@@ -125,6 +125,14 @@ function buildPanelHTML(): string {
 
           <div class="mono-row setup-hide">
             <div class="mono-row-text">
+              <div class="mono-row-title">Working hum</div>
+              <div class="mono-row-sub">A subtle ambient tone while VALET works</div>
+            </div>
+            <label class="mono-switch"><input type="checkbox" id="input-working-hum" /><span class="mono-slider"></span></label>
+          </div>
+
+          <div class="mono-row setup-hide">
+            <div class="mono-row-text">
               <div class="mono-row-title">Share crash reports</div>
               <div class="mono-row-sub">Error metadata only, never content</div>
             </div>
@@ -632,6 +640,18 @@ function wireEvents() {
     alwaysListen.addEventListener("change", () => {
       (window as unknown as { __valetSetListening?: (on: boolean) => void })
         .__valetSetListening?.(alwaysListen.checked);
+    });
+  }
+
+  // "Working hum" — the ambient tone that fades in while VALET works. Enabled
+  // by default; the flag lives in localStorage["valet.hum.enabled"] ("0" = off),
+  // the same key the hum module reads on load.
+  const workingHum = document.getElementById("input-working-hum") as HTMLInputElement | null;
+  if (workingHum) {
+    workingHum.checked = localStorage.getItem("valet.hum.enabled") !== "0";
+    workingHum.addEventListener("change", () => {
+      (window as unknown as { __valetSetHum?: (on: boolean) => void })
+        .__valetSetHum?.(workingHum.checked);
     });
   }
   void loadVoice();
