@@ -559,6 +559,7 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:SEND_TO_CLAUDE_CODE] — read what's on screen (e.g. an error report, an issue email, a failing dashboard), turn it into a concrete fix task, infer the right repo, and after a confirmation dispatch it to Claude Code to fix. Use when the user says "send this to Claude Code", "have Claude Code fix this", "dispatch this to Claude to fix", etc. Vee shows the brief + target repo and asks before sending.
 - [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
 - [ACTION:OPEN_ON_SCREEN] description — open or click ONE thing the user can see on screen, named in plain words: an email in the open inbox ("the email from Stripe"), a file in a Finder window ("the resume PDF"), a link, a button, a row. Vee clicks it where it sits; if it isn't on the current screen it navigates there first (e.g. opens the Downloads folder, then the file). Use this for "open/read/click the X" when X is on-screen content rather than an installed app or a website. Pass the description verbatim. For launching an app use OPEN_APP; for a website use the web route; for a genuine multi-step "do X then Y" use UI_TASK.
+- [ACTION:SUMMARIZE_INBOX] — go through ALL of today's emails in the OPEN Gmail inbox and speak ONE combined summary. Vee opens each of today's messages in turn, reads it, returns to the inbox, and synthesizes a single digest (per-email one-liners + overall gist). Use for "go through my inbox", "summarize today's emails", "catch me up on my inbox", "what did I get today", "read me my emails" — i.e. a BATCH over the whole inbox. Distinct from SUMMARIZE_SCREEN (which reads only the ONE focused email) and OPEN_ON_SCREEN (which opens ONE named message). Requires Gmail to already be open and signed in; if it isn't, Vee says so. No target needed.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
 - [ACTION:RESEARCH] brief — a LAST resort for questions that genuinely need the live web. It runs a multi-step web search (many seconds) and renders result cards plus a short spoken summary. NEVER produces a file, folder, project, or report document. Pass the question through as the brief.
@@ -870,7 +871,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|STATS|MARKETS|NEWS|LOOKUP|READ_ARTICLE|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|NEW_PROJECT|OPEN_PROJECT|LIST_PROJECTS|REFRESH_CONTEXT|START_DESIGN|SHIP_DESIGN|SCRAP_DESIGN|SHOW_DRAFT|START_DICTATION|DISPATCH_TO_AGENT|MERGE_BRANCH|RESTART_SELF|DELETE_FILE|WRITE_FILE|MOVE_FILE|LIST_FOLDER|APPLESCRIPT|TYPE|SEND|COMPOSE_TEXT|COMPOSE_EMAIL|COMPOSE_SLACK|CREATE_EVENT|CANCEL_EVENT|CHECK_DATE|CHECK_WEATHER|WORLD_TIME|SPORTS|STATS|MARKETS|NEWS|LOOKUP|READ_ARTICLE|DRAFT_EMAIL|SAVE_CONTACT|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|BIO_ADD|CREATE_NOTE|READ_NOTE|SCREEN|SUMMARIZE_SCREEN|SUMMARIZE_INBOX|SEND_TO_CLAUDE_CODE|UI_TASK|OPEN_ON_SCREEN)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -6214,6 +6215,24 @@ _SUMMARIZE_SCREEN_RE = re.compile(
     r'|what\s+does\s+(?:this|it)\s+say'
     r')\s*[.?!]*$',
     re.IGNORECASE)
+# Batch-read today's Gmail inbox (issue #285): open each of today's messages, read
+# each, and speak ONE combined digest. Anchored on BATCH verbs (go through / catch
+# me up on / read me / summarize / recap / digest) + an inbox-scope noun (inbox /
+# emails / mail / messages), so it claims "summarize my emails" (plural, whole
+# inbox) BEFORE _SUMMARIZE_SCREEN_RE would read it as the one focused email — while
+# "summarize THIS email" (deictic, no my/the/all) still falls to the single-email
+# path, and "check my inbox" still goes to the Apple-Mail quick check (no "check"
+# verb here). A trailing qualifier ("… from Stripe") won't match $, so a single
+# named email still routes to OPEN_ON_SCREEN.
+_INBOX_DIGEST_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+|now\s+|hey\s+valet[,\s]+)?'
+    r'(?:go(?:ing)?\s+through|catch\s+me\s+up\s+on|run\s+(?:me\s+)?through|'
+    r'read(?:\s+me|\s+out)?|summari[sz]e|recap|digest)\s+'
+    r'(?:the\s+|my\s+|all\s+(?:of\s+)?(?:my\s+)?)?'
+    r'(?:today\'?s?\s+)?'
+    r'(?:inbox|e-?mails?|mail|messages?)'
+    r'(?:\s+(?:for\s+|from\s+)?today|\s+in\s+my\s+inbox)?\s*[.?!]*$',
+    re.IGNORECASE)
 # Stage 3 — guided walkthroughs. Explicit "teach me" intents only ("how do I X"
 # stays conversational/LLM so it can answer in words).
 _WALKTHROUGH_RE = re.compile(
@@ -6516,6 +6535,12 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         _rh = _CC_REPO_HINT_RE.search(t)
         return {"action": "send_to_claude_code",
                 "repo": (_rh.group("repo") if _rh else "")}
+
+    # Batch-read today's whole Gmail inbox ("go through my inbox", "summarize
+    # today's emails", "catch me up on my emails"). BEFORE _SUMMARIZE_SCREEN_RE so
+    # a plural/inbox-scoped ask isn't collapsed into a single focused-email summary.
+    if _INBOX_DIGEST_RE.match(t):
+        return {"action": "summarize_inbox"}
 
     # Summarize the focused content + action items ("summarize what I need to
     # do", "tldr this", "what does this say"). Before describe_screen so a
@@ -7345,6 +7370,39 @@ async def _handle_summarize(ws, voice_state: dict = None) -> None:
         except Exception as e:
             log.error(f"summarize failed: {e}")
     # Speak the result — unless the user already moved on (barge-in).
+    if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
+        return
+    await _speak(ws, summary)
+
+
+async def _handle_summarize_inbox(ws, voice_state: dict = None) -> None:
+    """'Go through today's emails' — batch-read the OPEN Gmail inbox: enumerate
+    today's messages, open each in turn, read it, return to the inbox, and speak
+    ONE summary across all of them (issue #285). The per-email open/read/back
+    primitives are the same ones OPEN_ON_SCREEN / SUMMARIZE_SCREEN use; the loop
+    that batches them lives in inbox_digest. Panel-first: progress ('Reading 3 of
+    7…') streams to the process panel, then the digest is spoken.
+
+    Preconditions are #284's job (Gmail open + signed in); if the inbox isn't in
+    front we say so rather than guessing."""
+    import inbox_digest
+    dispatch_time = time.time()
+    summary = "I couldn't read your inbox, sir."
+    async with process_bus.task_context("Today's inbox") as task_id:
+        async def _emit(title, detail="", status="active"):
+            await emit_step(task_id, title, detail=detail, status=status)
+        try:
+            today_str = datetime.now().strftime("%A, %B %d, %Y")
+            result = await inbox_digest.run_digest(
+                executor, _ax_executor, anthropic_client,
+                emit=_emit, kill_switch=kill_switch, today_str=today_str)
+            summary = result.get("summary") or summary
+            if result.get("status") == "error":
+                await emit_error(task_id, "Inbox digest failed", detail=summary[:200])
+        except Exception as e:
+            log.error(f"summarize_inbox failed: {e}")
+            await emit_error(task_id, "Inbox digest failed", detail=str(e)[:200])
+    # Speak the digest — unless the user already moved on (barge-in).
     if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
         return
     await _speak(ws, summary)
@@ -8312,6 +8370,11 @@ async def voice_handler(ws: WebSocket):
                             # supervised, hands-off observe→act loop.
                             response_text = "On it, sir — I'll work through it."
                             _track_uc(ws, _handle_ui_task(action.get("goal", ""), ws))
+                        elif action["action"] == "summarize_inbox":
+                            # Batch-read today's Gmail inbox → one spoken digest
+                            # (issue #285). Handler shows the panel + speaks.
+                            response_text = "Going through today's emails now, sir."
+                            _track_uc(ws, _handle_summarize_inbox(ws, voice_state))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
@@ -8583,6 +8646,10 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _handle_screen shows the panel + speaks
                                     elif action_type == "summarize_screen":
                                         response_text = ""  # _handle_summarize shows the panel + speaks
+                                    elif action_type == "summarize_inbox":
+                                        # Batch read is slow — ack up front, then the
+                                        # handler speaks the digest when it's ready.
+                                        response_text = "Going through today's emails now, sir."
                                     elif action_type == "sports":
                                         response_text = ""  # _execute_sports emits the card + speaks
                                     elif action_type == "stats":
@@ -8792,6 +8859,10 @@ async def voice_handler(ws: WebSocket):
                                     if desc:
                                         response_text = "Let me open that, sir."
                                         _track_uc(ws, _handle_ui_open(desc, ws))
+                                elif embedded_action["action"] == "summarize_inbox":
+                                    # Batch-read today's Gmail inbox → one spoken
+                                    # digest. Ack set above; handler speaks the result.
+                                    _track_uc(ws, _handle_summarize_inbox(ws, voice_state))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "save_contact":
