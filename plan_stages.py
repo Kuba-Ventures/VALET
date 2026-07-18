@@ -52,6 +52,7 @@ _DEFAULT_STAGES: dict[str, list[str]] = {
     "research": ["Gather sources", "Read & extract", "Synthesize findings", "Write it up"],
     "refactor": ["Map the code", "Plan the changes", "Refactor", "Verify behavior"],
     "run":      ["Prepare", "Run it", "Report back"],
+    "ui":       ["Open the app", "Navigate", "Do the task", "Wrap up"],
 }
 _GENERIC_STAGES = ["Get oriented", "Do the work", "Verify"]
 
@@ -82,11 +83,14 @@ async def generate_stages(
             model="claude-haiku-4-5-20251001",
             max_tokens=200,
             system=(
-                "You turn a software task into a short build plan for a live "
-                "progress display. Break the work into 3 to 5 SEQUENTIAL stages.\n"
-                "Each stage: a 2-5 word imperative phrase (e.g. 'Scaffold project', "
-                "'Build data layer', 'Create the UI', 'Wire up & test'). "
-                "Order them the way the work actually happens.\n"
+                "You turn a user's task into a short plan for a live progress "
+                "display. Break the work into 3 to 5 SEQUENTIAL steps.\n"
+                "Each step: a 2-5 word imperative phrase naming a real milestone, "
+                "in the task's OWN domain. For a coding task that might be "
+                "'Scaffold project', 'Build data layer', 'Wire up & test'. For an "
+                "app or browser task, name the actual steps a person would take, "
+                "e.g. 'Open Gmail', 'Sign in', 'Summarize inbox' — NOT coding "
+                "stages. Order them the way the work actually happens.\n"
                 "Respond with JSON only, no markdown fences: "
                 '{"stages": ["...", "..."]}'
             ),
