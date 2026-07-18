@@ -348,7 +348,11 @@ async def _enumerate_today(client, obs: dict, cap: int, today_str: str) -> dict:
     parser. Fails soft to an empty list."""
     if not client:
         return {"rows": [], "has_more": False}
-    elements_txt = perception.elements_as_text(obs.get("elements", []), limit=120)
+    # Include the full captured element list, not just the first 120 — Gmail's left
+    # nav + all the custom labels (Billing, Client, Compliance, …) can push the
+    # message rows past a low cap, so the enumerator would see only chrome and
+    # report an empty inbox.
+    elements_txt = perception.elements_as_text(obs.get("elements", []), limit=250)
     system = (
         "You are reading a Gmail inbox's accessibility element list. Return the "
         "conversation-list rows RECEIVED TODAY, top to bottom.\n"
@@ -569,6 +573,16 @@ async def run_digest(executor, ax_executor, client, *,
             return {"status": "no_inbox", "count": 0, "capped": False,
                     "summary": "I don't see your Gmail open in Chrome, sir — open your "
                                "inbox and I'll go through today's mail."}
+
+        # We confirmed Gmail via Chrome's URL — so observe and click the CHROME
+        # window from here on, NOT perception's frontmost-app guess. That guess can
+        # be "frontmost", which resolves to no window and returns an empty element
+        # list — the tab switch succeeds but the inbox reads as empty ("nothing
+        # new"). Pinning to Google Chrome fixes the observation the same way we
+        # fixed tab discovery.
+        if url:
+            app = "Google Chrome"
+        obs = await perception.build_observation(executor, app=app)
         if _is_signin(obs):
             return {"status": "no_inbox", "count": 0, "capped": False,
                     "summary": "You're signed out of Gmail, sir — sign in and I'll go "
@@ -579,8 +593,14 @@ async def run_digest(executor, ax_executor, client, *,
             await _go_back_to_inbox(executor, ax_executor, app)
             obs = await perception.build_observation(executor, app=app)
 
-        # 2) Enumerate today's messages (bounded).
+        # 2) Enumerate today's messages (bounded). A just-activated tab may still be
+        #    building its accessibility tree, so if the first pass finds nothing,
+        #    wait a beat and re-observe once before concluding the inbox is empty.
         enum = await _enumerate_today(client, obs, cap, today_str)
+        if not enum["rows"]:
+            await asyncio.sleep(1.0)
+            obs = await perception.build_observation(executor, app=app)
+            enum = await _enumerate_today(client, obs, cap, today_str)
         targets = enum["rows"]
         capped = enum["has_more"]
         if not targets:
