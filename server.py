@@ -93,7 +93,7 @@ _suppress_dock_icon()
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -559,7 +559,11 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:SEND_TO_CLAUDE_CODE] — read what's on screen (e.g. an error report, an issue email, a failing dashboard), turn it into a concrete fix task, infer the right repo, and after a confirmation dispatch it to Claude Code to fix. Use when the user says "send this to Claude Code", "have Claude Code fix this", "dispatch this to Claude to fix", etc. Vee shows the brief + target repo and asks before sending.
 - [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
 - [ACTION:OPEN_ON_SCREEN] description — open or click ONE thing the user can see on screen, named in plain words: an email in the open inbox ("the email from Stripe"), a file in a Finder window ("the resume PDF"), a link, a button, a row. Vee clicks it where it sits; if it isn't on the current screen it navigates there first (e.g. opens the Downloads folder, then the file). Use this for "open/read/click the X" when X is on-screen content rather than an installed app or a website. Pass the description verbatim. For launching an app use OPEN_APP; for a website use the web route; for a genuine multi-step "do X then Y" use UI_TASK.
-- [ACTION:SUMMARIZE_INBOX] account? — go through ALL of today's emails in the OPEN Gmail inbox and speak ONE combined summary. Vee opens each of today's messages in turn, reads it, returns to the inbox, and synthesizes a single digest (per-email one-liners + overall gist). Use for "go through my inbox", "summarize today's emails", "catch me up on my inbox", "what did I get today", "read me my emails" — i.e. a BATCH over the whole inbox. Distinct from SUMMARIZE_SCREEN (which reads only the ONE focused email) and OPEN_ON_SCREEN (which opens ONE named message). Requires Gmail to already be open and signed in; if it isn't, Vee says so. When the user names WHICH inbox — "my WORK email", "my personal Gmail", an address, or an account name — pass it verbatim as the target (e.g. "go to my work email and summarize" → [ACTION:SUMMARIZE_INBOX] work); Vee matches it to the right account tab. Otherwise pass no target.
+- [ACTION:SUMMARIZE_INBOX] account ||| date — go through a day's emails in the OPEN Gmail inbox and speak ONE combined summary (per-email one-liners + overall gist), built from each message's sender/subject/preview. Use for "go through my inbox", "summarize today's emails", "catch me up on my inbox", "what did I get today", "summarize my emails from July 16 / yesterday / the 12th". Distinct from SUMMARIZE_SCREEN (reads only the ONE focused email) and OPEN_ON_SCREEN (opens ONE named message). Requires Gmail already open and signed in; if not, Vee says so.
+  The target has TWO optional parts separated by "|||":
+  • account — when the user names WHICH inbox ("my WORK email", "my personal Gmail", an address, an account name), pass it verbatim (e.g. "work"). Vee matches it to the right account tab.
+  • date — the day to summarize, RESOLVED to an ISO date YYYY-MM-DD using today's date, OR the words "today"/"yesterday". Default is today.
+  Examples: "summarize my work emails from July 16" → [ACTION:SUMMARIZE_INBOX] work ||| 2026-07-16 ; "summarize yesterday's emails" → [ACTION:SUMMARIZE_INBOX]  ||| yesterday ; "go to my work email and summarize" → [ACTION:SUMMARIZE_INBOX] work ; "catch me up on my inbox" → [ACTION:SUMMARIZE_INBOX]. Omit a part you don't have (but keep "|||" before a date if there's no account).
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
 - [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
 - [ACTION:RESEARCH] brief — a LAST resort for questions that genuinely need the live web. It runs a multi-step web search (many seconds) and renders result cards plus a short spoken summary. NEVER produces a file, folder, project, or report document. Pass the question through as the brief.
@@ -7377,21 +7381,46 @@ async def _handle_summarize(ws, voice_state: dict = None) -> None:
     await _speak(ws, summary)
 
 
-async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "") -> None:
-    """'Go through today's emails' — batch-read the OPEN Gmail inbox: enumerate
-    today's messages, open each in turn, read it, return to the inbox, and speak
-    ONE summary across all of them (issue #285). The per-email open/read/back
-    primitives are the same ones OPEN_ON_SCREEN / SUMMARIZE_SCREEN use; the loop
-    that batches them lives in inbox_digest. Panel-first: progress ('Reading 3 of
-    7…') streams to the process panel, then the digest is spoken.
+def _resolve_digest_date(raw: str) -> tuple[str, str, str]:
+    """Resolve a spoken date hint into (date_iso, date_label, today_iso).
 
-    `account` (from "… my WORK email") picks which inbox when several Gmail
-    accounts are open. Preconditions are #284's job (Gmail open + signed in); if
-    the inbox isn't in front we say so rather than guessing."""
+    Accepts what the LLM emits: an ISO date (YYYY-MM-DD, preferred — it knows
+    today), 'today', 'yesterday', or empty. date_iso is '' for today (the inbox
+    fast path); date_label is the spoken form used in replies."""
+    from datetime import date as _date
+    now = datetime.now()
+    today_iso = now.date().isoformat()
+    raw = (raw or "").strip().lower()
+    if raw in ("", "today"):
+        return "", "today", today_iso
+    if raw == "yesterday":
+        y = now.date() - timedelta(days=1)
+        return y.isoformat(), "yesterday", today_iso
+    try:
+        d = _date.fromisoformat(raw)
+    except ValueError:
+        return "", (raw or "today"), today_iso   # unparseable → treat as today
+    if d.isoformat() == today_iso:
+        return "", "today", today_iso
+    return d.isoformat(), f"{d.strftime('%B')} {d.day}", today_iso
+
+
+async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "",
+                                  date: str = "") -> None:
+    """'Go through today's emails' / 'summarize my emails from July 16' — read the
+    OPEN Gmail inbox for a given day and speak ONE summary across all of them
+    (issue #285). Summaries are built from each row's sender/subject/body-preview;
+    today reads the inbox list, other days scope via a Gmail date search. Panel-
+    first: progress streams to the process panel, then the digest is spoken.
+
+    `account` (from "… my WORK email") picks which inbox when several Gmail accounts
+    are open. `date` (ISO / 'today' / 'yesterday') picks the day. Preconditions are
+    #284's job (Gmail open + signed in); if it isn't we say so rather than guessing."""
     import inbox_digest
     dispatch_time = time.time()
     summary = "I couldn't read your inbox, sir."
-    async with process_bus.task_context("Today's inbox") as task_id:
+    date_iso, date_label, today_iso = _resolve_digest_date(date)
+    async with process_bus.task_context(f"Inbox · {date_label}") as task_id:
         async def _emit(title, detail="", status="active"):
             await emit_step(task_id, title, detail=detail, status=status)
         try:
@@ -7399,7 +7428,8 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
             result = await inbox_digest.run_digest(
                 executor, _ax_executor, anthropic_client,
                 emit=_emit, kill_switch=kill_switch, today_str=today_str,
-                account=account)
+                account=account, date_iso=date_iso, today_iso=today_iso,
+                date_label=date_label)
             summary = result.get("summary") or summary
             if result.get("status") == "error":
                 await emit_error(task_id, "Inbox digest failed", detail=summary[:200])
@@ -8375,11 +8405,12 @@ async def voice_handler(ws: WebSocket):
                             response_text = "On it, sir — I'll work through it."
                             _track_uc(ws, _handle_ui_task(action.get("goal", ""), ws))
                         elif action["action"] == "summarize_inbox":
-                            # Batch-read today's Gmail inbox → one spoken digest
-                            # (issue #285). Handler shows the panel + speaks.
-                            response_text = "Going through today's emails now, sir."
+                            # Summarize a day's Gmail → one spoken digest (issue
+                            # #285). Handler shows the panel + speaks.
+                            response_text = "Going through those emails now, sir."
                             _track_uc(ws, _handle_summarize_inbox(
-                                ws, voice_state, account=action.get("account", "")))
+                                ws, voice_state, account=action.get("account", ""),
+                                date=action.get("date", "")))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
@@ -8865,13 +8896,16 @@ async def voice_handler(ws: WebSocket):
                                         response_text = "Let me open that, sir."
                                         _track_uc(ws, _handle_ui_open(desc, ws))
                                 elif embedded_action["action"] == "summarize_inbox":
-                                    # Batch-read today's Gmail inbox → one spoken
-                                    # digest. Ack set above; handler speaks the result.
-                                    # The tag's target carries an optional account
-                                    # ("work"/"personal"/an email) to pick the inbox.
+                                    # Summarize a day's Gmail → one spoken digest.
+                                    # Ack set above; handler speaks the result. Tag
+                                    # target is "account ||| date": account picks the
+                                    # inbox ("work"/"personal"/email); date picks the
+                                    # day (ISO / 'today' / 'yesterday'). Both optional.
+                                    _si_tgt = (embedded_action.get("target") or "").strip()
+                                    _si_acct, _, _si_date = _si_tgt.partition("|||")
                                     _track_uc(ws, _handle_summarize_inbox(
                                         ws, voice_state,
-                                        account=(embedded_action.get("target") or "").strip()))
+                                        account=_si_acct.strip(), date=_si_date.strip()))
                                 elif embedded_action["action"] == "draft_email":
                                     asyncio.create_task(_execute_draft_email(embedded_action["target"], ws))
                                 elif embedded_action["action"] == "save_contact":
