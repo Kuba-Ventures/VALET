@@ -143,6 +143,7 @@ import contacts_access
 from notes_access import get_recent_notes, read_note, open_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
+from plan_stages import StageTracker, generate_stages, run_tracker_loop
 from page_preview import fetch_page_preview
 # Stage C/D control + safety layer.
 from applescript_executor import AppleScriptExecutor
@@ -3353,11 +3354,31 @@ async def _execute_prompt_project(project_name: str, prompt: str, work_session: 
             dispatch_registry.update_status(dispatch_id, "building")
             await emit_step(task_id, "Claude Code working…", status="active")
 
+            # Break the task into visible stages and light them up as the real
+            # work streams by. StageTracker.begin() emits the branching plan;
+            # run_tracker_loop periodically asks Haiku which stage the streamed
+            # activity has reached and advances the panel forward.
+            stages = await generate_stages(prompt, "build", anthropic_client)
+            tracker = StageTracker(task_id, stages, plan_title=project_name,
+                                   client=anthropic_client)
+            await tracker.begin()
+            stage_loop = asyncio.create_task(run_tracker_loop(tracker))
+
             # Run claude -p in background. WorkSession.send() emits tool.*
             # events as it streams stdout (see work_mode.py + claude_middleware.py
             # — middleware extracts result.* cards via Haiku after completion).
-            full_response = await dispatch.send(prompt, task_id=task_id, anthropic_client=anthropic_client)
+            try:
+                full_response = await dispatch.send(
+                    prompt, task_id=task_id, anthropic_client=anthropic_client,
+                    on_line=tracker.observe,
+                )
+            finally:
+                stage_loop.cancel()
             await dispatch.stop()
+
+            _dispatch_ok = bool(full_response) and not full_response.startswith(
+                ("Hit a problem", "That's taking"))
+            await tracker.finish(ok=_dispatch_ok)
 
             # Auto-open any localhost URLs from response
             import re as _re

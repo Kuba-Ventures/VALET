@@ -14,7 +14,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from process_events import emit_code_task, emit_tool_event
 
@@ -185,7 +185,8 @@ class WorkSession:
         log.info(f"Work mode started: {self._project_name} ({working_dir})")
 
     async def send(self, user_text: str, task_id: str | None = None,
-                   anthropic_client: Any = None, resume: bool = False) -> str:
+                   anthropic_client: Any = None, resume: bool = False,
+                   on_line: Callable[[str], None] | None = None) -> str:
         """Send a message to claude -p and get the full response.
 
         First message in a session: fresh claude -p
@@ -195,6 +196,11 @@ class WorkSession:
 
         If `task_id` is given, stdout is streamed as tool.* events on the
         process bus (plus fallback code_task for unparsed lines).
+
+        If `on_line` is given, it receives a distilled, human-readable string of
+        each meaningful activity beat (tool calls + assistant text) as it
+        streams — used by the plan-stage tracker to follow progress. It must be
+        cheap and non-blocking; it's called from the stdout drain loop.
 
         If both `task_id` AND `anthropic_client` are given, runs the
         post-completion Haiku middleware to extract structured result cards
@@ -262,6 +268,11 @@ class WorkSession:
                                         txt = blk.get("text", "")
                                         if txt:
                                             assistant_text_parts.append(txt)
+                                            if on_line:
+                                                try:
+                                                    on_line(txt)
+                                                except Exception:
+                                                    pass
                             elif obj.get("type") == "user":
                                 msg = obj.get("message") or {}
                                 content = msg.get("content")
@@ -281,6 +292,18 @@ class WorkSession:
 
                     if not task_id:
                         continue
+
+                    if on_line and events:
+                        # Feed the stage tracker a compact activity beat — tool
+                        # names + params, not raw JSON.
+                        try:
+                            bits = [f'{ev.get("title","")} {ev.get("detail","")}'.strip()
+                                    for ev in events]
+                            beat = " · ".join(b for b in bits if b)
+                            if beat:
+                                on_line(beat)
+                        except Exception:
+                            pass
 
                     if events:
                         for ev in events:

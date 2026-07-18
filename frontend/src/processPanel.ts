@@ -31,6 +31,9 @@ export type EventType =
   | "pointer_highlight"
   | "cursor_control"
   | "error"
+  // Live-tracked plan: one event per stage, grouped into a branching plan
+  // block per task. Re-emitted as the stage's status advances.
+  | "plan.stage"
   // Claude Code structured tool calls (from work_mode stream-json parser)
   | "tool.file_read"
   | "tool.file_write"
@@ -116,6 +119,11 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // Per-task code-block elements so consecutive code_task events for the same
   // task append to a single terminal block rather than spawning new ones.
   const codeBlocks = new Map<string, { container: HTMLElement; lines: HTMLElement; expandBtn: HTMLButtonElement; collapsed: boolean; }>();
+
+  // Per-task plan blocks — a branching stage list that updates in place as
+  // each stage's status advances (pending → active → done). Keyed by task_id;
+  // each stage node is keyed by its index within the block.
+  const planBlocks = new Map<string, { container: HTMLElement; nodes: Map<number, HTMLElement> }>();
 
   // Active task count — drives auto-dismiss. A task is "open" between its
   // task_start and task_done events.
@@ -305,6 +313,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     window.setTimeout(() => {
       stream.innerHTML = "";
       codeBlocks.clear();
+      planBlocks.clear();
     }, 260);
   }
 
@@ -384,6 +393,11 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
 
     if (event.type === "code_task") {
       appendCodeLine(event);
+      return;
+    }
+
+    if (event.type === "plan.stage") {
+      renderPlanStage(event);
       return;
     }
 
@@ -1076,6 +1090,80 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     });
 
     return block;
+  }
+
+  // -----------------------------------------------------------------------
+  // Plan stages — branching, live-tracked plan block
+  // -----------------------------------------------------------------------
+
+  const STAGE_GLYPH: Record<EventStatus, string> = {
+    pending: "○",
+    active: "●",
+    done: "✓",
+    error: "✕",
+  };
+
+  function renderPlanStage(event: ProcessEvent) {
+    const p = (event.payload || {}) as Record<string, unknown>;
+    const index = Number(p.index ?? 0);
+    const planTitle = (p.plan_title as string) || "Plan";
+    const status = (event.status || "pending") as EventStatus;
+
+    let block = planBlocks.get(event.task_id);
+    if (!block) {
+      block = createPlanBlock(event.task_id, planTitle);
+      planBlocks.set(event.task_id, block);
+      // Newest at top, consistent with the rest of the stream.
+      stream.insertBefore(block.container, stream.firstChild);
+    }
+
+    let node = block.nodes.get(index);
+    if (!node) {
+      node = document.createElement("div");
+      node.className = "pp-plan-stage";
+      node.dataset.stageIndex = String(index);
+      node.innerHTML = `
+        <span class="pp-plan-rail"></span>
+        <span class="pp-plan-node"></span>
+        <span class="pp-plan-label"></span>
+      `;
+      block.nodes.set(index, node);
+      // Insert in index order so stages stack top-to-bottom.
+      const after = [...block.nodes.entries()]
+        .filter(([i]) => i > index)
+        .sort((a, b) => a[0] - b[0])[0];
+      if (after) block.container.insertBefore(node, after[1]);
+      else block.container.appendChild(node);
+    }
+
+    node.classList.remove(
+      "pp-plan-pending", "pp-plan-active", "pp-plan-done", "pp-plan-error",
+    );
+    node.classList.add(`pp-plan-${status}`);
+    const glyph = node.querySelector<HTMLElement>(".pp-plan-node");
+    if (glyph) glyph.textContent = STAGE_GLYPH[status] ?? "○";
+    const label = node.querySelector<HTMLElement>(".pp-plan-label");
+    if (label) label.textContent = event.title || `Stage ${index + 1}`;
+  }
+
+  function createPlanBlock(taskId: string, planTitle: string) {
+    const container = document.createElement("div");
+    container.className = "pp-plan-block";
+    container.dataset.taskId = taskId;
+
+    const header = document.createElement("div");
+    header.className = "pp-plan-header";
+    const kicker = document.createElement("span");
+    kicker.className = "pp-plan-kicker";
+    kicker.textContent = "Plan";
+    const title = document.createElement("span");
+    title.className = "pp-plan-title";
+    title.textContent = planTitle;
+    header.appendChild(kicker);
+    header.appendChild(title);
+    container.appendChild(header);
+
+    return { container, nodes: new Map<number, HTMLElement>() };
   }
 
   // -----------------------------------------------------------------------

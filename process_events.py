@@ -345,6 +345,28 @@ async def emit_context_event(task_id: str, stage: str, title: str,
     ))
 
 
+async def emit_plan_stage(task_id: str, index: int, total: int, title: str,
+                          status: str = "pending", plan_title: str = "",
+                          payload: dict[str, Any] | None = None) -> None:
+    """Emit one stage of a live-tracked plan for the Process Panel.
+
+    All stages of a plan share the event `task_id`; the frontend groups them
+    into a single branching plan block keyed by that id, and keys each node by
+    `payload.index` so a re-emitted stage (status pending → active → done)
+    updates its node in place rather than appending a new row.
+    """
+    p = {"index": index, "total": total, "plan_title": plan_title}
+    if payload:
+        p.update(payload)
+    await bus.emit(Event(
+        type="plan.stage",
+        task_id=task_id,
+        title=title,
+        status=status,
+        payload=p,
+    ))
+
+
 async def emit_tool_event(task_id: str, event_type: str, title: str,
                           detail: str = "", status: str = "done",
                           payload: dict[str, Any] | None = None) -> None:

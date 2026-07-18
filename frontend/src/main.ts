@@ -7,6 +7,7 @@
 
 import { createOrb, type OrbState } from "./orb";
 import { createAudioPlayer } from "./voice";
+import { createWorkingHum } from "./hum";
 import { createWakeWord } from "./wakeWord";
 import { isPushToTalkEnabled, isEditableTarget } from "./pushToTalk";
 import { createSocket } from "./ws";
@@ -146,6 +147,10 @@ const socket = createSocket(WS_URL);
 
 const audioPlayer = createAudioPlayer();
 orb.setAnalyser(audioPlayer.getAnalyser());
+
+// Ambient "working" hum — fades in while a task is in flight, out when idle.
+// Shares the AudioPlayer's context so it obeys the same autoplay-unlock rules.
+const workingHum = createWorkingHum(audioPlayer.getAnalyser().context as AudioContext);
 
 // Window controls (top-left traffic lights) — dragging is handled natively by
 // #drag-bar; these buttons call the window API (gated by the orb-drag
@@ -407,6 +412,7 @@ function scheduleIdleAutoClose() {
   _idleCloseTimer = window.setTimeout(() => {
     processPanel.tryAutoClose();
     designPanel.tryAutoCloseIfIdle();
+    workingHum.setActive(false);
   }, IDLE_AUTO_CLOSE_MS);
 }
 function cancelIdleAutoClose() {
@@ -500,9 +506,12 @@ socket.onMessage((msg) => {
       showCursorTakeover(!!p?.active, p?.label);
     }
     if (event) processPanel.handleEvent(event);
+    // Match the ambient hum to live work: on while any task is in flight.
+    workingHum.setActive(processPanel.hasActiveTasks());
   } else if (type === "close_panel") {
     // Server-side voice intent ("close it", "dismiss", etc.) closes the panel.
     processPanel.close();
+    workingHum.setActive(false);
   } else if (type === "confirm_request") {
     // Tier 1 action awaiting approval — show the confirm card, reply with the choice.
     const req = msg as unknown as ConfirmRequest;
