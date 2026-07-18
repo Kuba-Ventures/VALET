@@ -348,11 +348,17 @@ async def _enumerate_today(client, obs: dict, cap: int, today_str: str) -> dict:
     parser. Fails soft to an empty list."""
     if not client:
         return {"rows": [], "has_more": False}
-    # Include the full captured element list, not just the first 120 — Gmail's left
-    # nav + all the custom labels (Billing, Client, Compliance, …) can push the
-    # message rows past a low cap, so the enumerator would see only chrome and
-    # report an empty inbox.
-    elements_txt = perception.elements_as_text(obs.get("elements", []), limit=250)
+    # Build the element text OURSELVES with full-length labels. perception's
+    # elements_as_text truncates every label to 60 chars, but Gmail puts the
+    # date/time near the END of a ~100-char row label ("Sender , Subject … , 6:36
+    # AM , snippet"). Truncating chops off the time, so the model can't tell which
+    # rows are today's and reports an empty inbox. Keep the message rows in full.
+    _lines = []
+    for e in (obs.get("elements") or [])[:250]:
+        _lab = (e.get("title") or e.get("value") or "").strip()
+        if _lab:
+            _lines.append(f"[{e.get('ref','')}] {e.get('role','')} — {_lab[:220]}")
+    elements_txt = "\n".join(_lines)
     system = (
         "You are reading a Gmail inbox's accessibility element list. Return the "
         "conversation-list rows RECEIVED TODAY, top to bottom.\n"
