@@ -10152,19 +10152,58 @@ async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int =
     picked, or approval to sign in)."""
     import agent_loop
 
+    # Turn the goal into a visible plan (like Claude Code dispatch does). The
+    # StageTracker renders the branching stages and advances them by classifying
+    # the loop's own observe/decide/act beats — fed in via _emit below. All
+    # best-effort: a Haiku hiccup just means no plan, never a broken task.
+    tracker = None
+    stage_loop = None
+    if task_id and anthropic_client:
+        try:
+            stages = await generate_stages(goal, "ui", anthropic_client)
+            tracker = StageTracker(task_id, stages, plan_title=goal[:48],
+                                   client=anthropic_client)
+            await tracker.begin()
+            stage_loop = asyncio.create_task(run_tracker_loop(tracker))
+        except Exception as e:
+            log.warning(f"ui-task stage plan failed: {e}")
+            tracker = None
+
     async def _emit(kind, title, detail="", status="active"):
         if task_id:
             await emit_step(task_id, title, detail=detail, status=status)
+        if tracker:
+            try:
+                tracker.observe(f"{kind}: {title} {detail}".strip())
+            except Exception:
+                pass
 
     async def _speak_cb(text):
         if ws and text:
             await _speak(ws, text)
 
-    return await agent_loop.run_loop(
-        executor, goal, anthropic_client, app=app, max_steps=max_steps,
-        kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit,
-        hands_off=True, speak=_speak_cb if ws else None, login_choice=login_choice,
-        stop_at_gmail_inbox=stop_at_gmail_inbox)
+    result = None
+    try:
+        result = await agent_loop.run_loop(
+            executor, goal, anthropic_client, app=app, max_steps=max_steps,
+            kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit,
+            hands_off=True, speak=_speak_cb if ws else None, login_choice=login_choice,
+            stop_at_gmail_inbox=stop_at_gmail_inbox)
+        return result
+    finally:
+        if stage_loop:
+            stage_loop.cancel()
+        if tracker:
+            status = (result or {}).get("status")
+            # "paused" is a cross-turn login hand-off, not a finish — leave the
+            # stages where they are (the active step keeps pulsing while the user
+            # signs in); a resume renders a fresh plan. Done → all done; anything
+            # else (failed/halted/vetoed/capped/exception) → mark the active
+            # stage errored.
+            if status == "done":
+                await tracker.finish(ok=True)
+            elif status != "paused":
+                await tracker.finish(ok=False)
 
 
 @app.post("/api/ui/task")
