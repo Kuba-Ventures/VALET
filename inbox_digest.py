@@ -207,12 +207,19 @@ async def _switch_to_gmail(hint: str = "") -> tuple:
 
 
 def _view_from_url(url: str) -> str:
-    """Classify a Gmail URL by its hash: 'list' (thread list — #inbox, #search/…,
-    #label/…) vs 'message' (open conversation — a thread id trails the section,
-    e.g. #inbox/FMfcgz…). Returns '' when the URL isn't Gmail."""
-    if _GMAIL_URL not in (url or ""):
+    """Classify a Gmail URL: 'list' (thread list — #inbox, #search/…, #label/…),
+    'message' (open conversation — a thread id trails the section, e.g.
+    #inbox/FMfcgz…), or 'overlay' (an attachment preview / compose popup sitting
+    over the list — ?projector= / ?compose= — which is NOT a readable message and
+    must be dismissed). Returns '' when the URL isn't Gmail."""
+    u = url or ""
+    if _GMAIL_URL not in u:
         return ""
-    frag = url.split("#", 1)[1] if "#" in url else ""
+    # Attachment "projector" or compose overlay — a click landed on an attachment
+    # chip, not the message. Treat as an overlay to skip + dismiss, never as opened.
+    if "projector=" in u or "?compose=" in u or "&compose=" in u:
+        return "overlay"
+    frag = u.split("#", 1)[1] if "#" in u else ""
     segs = [s for s in frag.split("/") if s]
     last = segs[-1] if segs else ""
     # A thread id is a long alphanumeric token; section names ("inbox") are short,
@@ -594,7 +601,13 @@ async def run_digest(executor, ax_executor, client, *,
                 continue
             fr = row["frame"]
             used.add(_frame_sig(fr))
-            cx, cy = fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0
+            # Click the SUBJECT line, not the row's geometric center. A row with
+            # attachments is two lines tall (subject on top, attachment chips
+            # below); centering the click lands on a chip and opens the attachment
+            # in Gmail's projector overlay instead of the message. Aim ~40% across
+            # (past the checkbox/star, on the subject/snippet) and near the top.
+            cx = fr[0] + fr[2] * 0.4
+            cy = fr[1] + min(fr[3] * 0.3, 14.0)
 
             if _halted():
                 break
@@ -603,12 +616,14 @@ async def run_digest(executor, ax_executor, client, *,
 
             msg_obs = await perception.build_observation(executor, app=app)
             opened = await _current_view(app)
-            if (opened == "message") if opened else _is_message_view(msg_obs):
-                pass
-            else:
-                # The click didn't open the conversation — don't record a list
-                # snapshot as if it were the email.
+            is_msg = (opened == "message") if opened else _is_message_view(msg_obs)
+            if not is_msg:
+                # Click opened an attachment/overlay or nothing — don't record a
+                # non-message snapshot as the email, and dismiss any overlay so the
+                # next iteration starts from a clean list.
                 await _emit(f"Email {i} didn't open — skipping", status="active")
+                if opened == "overlay" or not await _back_on_list(executor, app):
+                    await _go_back_to_inbox(executor, ax_executor, app)
                 continue
             collected.append({
                 "sender": tgt.get("sender", ""),
@@ -628,6 +643,16 @@ async def run_digest(executor, ax_executor, client, *,
         if _halted() and not collected:
             return {"status": "halted", "count": 0, "capped": capped,
                     "summary": "Halted, sir."}
+
+        # We enumerated today's mail but opened none of it — that's a failure to
+        # READ, not an empty inbox. Say so honestly instead of "nothing new today"
+        # (which is what an empty `collected` would otherwise summarize to).
+        if not collected:
+            n = total
+            return {"status": "error", "count": 0, "capped": capped,
+                    "summary": (f"I found {n} email{'s' if n != 1 else ''} from today, sir, "
+                                "but couldn't get them open to read — the inbox may have "
+                                "shifted under me. Shall I try again?")}
 
         # 4) One summary across everything collected.
         await _emit("Summarizing today's mail…", status="active")
