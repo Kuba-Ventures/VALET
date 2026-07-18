@@ -3,6 +3,47 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.40] — 2026-07-17
+
+### Added
+- **The original request survives the login — and the inbox actually gets
+  summarized.** Asking "go to gmail.com and summarize today's emails" while
+  signed out used to sign you in and then stop at "you're in, sir," forgetting
+  the summary. Now the original request is remembered through the entire login
+  (account pick, password, even a passkey/Touch-ID pause and "I'm logged in"),
+  and once the inbox is up VALET reads it and speaks a concise rundown of today's
+  mail. Summary-style Gmail asks ("summarize my inbox", "what emails did I get
+  today", "catch me up") route to the read-and-summarize path; click-style asks
+  ("archive the top email") still use the normal UI loop. (#284, #285)
+
+## [0.2.39] — 2026-07-17
+
+### Fixed
+- **Guided Gmail sign-in: right account, no passkey loop.** Three fixes to the
+  0.2.38 flow found in testing: (1) the account is now clicked **deterministically**
+  off the accessibility tree by exact email, so "work" no longer lands on the
+  personal account (vision was guessing between two "Finley Underwood" rows);
+  (2) passkey / 2-step / "Verifying it's you" / Touch ID screens — which only a
+  human can complete — now **pause cleanly** and ask you to finish with your
+  fingerprint, instead of falling through to the old hand-off and looping
+  forever; (3) after clicking Next, VALET waits for the actual **inbox** before
+  saying "you're in," and detects a pending passkey step rather than falsely
+  claiming success. A two-hand-off cap backstops the old credential path against
+  any residual multi-window loop. (#284)
+
+## [0.2.38] — 2026-07-17
+
+### Added
+- **Guided Gmail sign-in by voice.** The login handshake from 0.2.37 is now
+  interactive instead of "log in entirely yourself." On Google's **Choose an
+  account** screen VALET reads the accounts and asks which one — you answer by
+  "work" / "personal", or by an email fragment ("finley@qsbs",
+  "mrfinleyunderwood") — and it clicks that account. At the **password** step it
+  asks *"Shall I sign you in with your saved password, sir?"*; on your "yes" it
+  clicks the Google Password Manager / Bitwarden suggestion to fill the field and
+  clicks **Next**. It still never types your password. Once you're in it confirms
+  and stops cleanly rather than flailing at the (not-yet-built) summary. (#284)
+
 ## [0.2.37] — 2026-07-17
 
 ### Added
