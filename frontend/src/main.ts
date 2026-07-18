@@ -847,6 +847,12 @@ btnWakeToggle.addEventListener("click", (e) => {
   toggleListening();
 };
 
+// Console Settings → "Working hum" toggle drives this. Persists + applies
+// immediately (fades out mid-work if turned off).
+(window as unknown as { __valetSetHum?: (on: boolean) => void }).__valetSetHum = (on) => {
+  workingHum.setEnabled(on);
+};
+
 // Apply persisted visuals immediately so the button label and orb dim match
 // the saved preference on every load. Mic control runs after wake.start()
 // kicks in (see setTimeout below).
