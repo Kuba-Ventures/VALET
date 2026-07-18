@@ -61,18 +61,100 @@ def _is_browser(app: Optional[str]) -> bool:
     return agent_loop._is_browser(app)
 
 
-def _signed_in_gmail(obs: dict) -> bool:
-    """True on any signed-in Gmail page (list OR open conversation). Gmail's
-    persistent left nav + search box mean `_is_gmail_inbox` fires in both views —
-    it really answers 'signed in?', which is all we use it for here."""
-    import agent_loop
-    return agent_loop._is_gmail_inbox(obs)
+def _is_chrome(app: Optional[str]) -> bool:
+    a = (app or "").lower()
+    return "chrome" in a or "chromium" in a
+
+
+_GMAIL_URL = "mail.google.com"
+
+
+# ── Chrome tab helpers (the authoritative signal) ────────────────────────────
+# Text hints ("inbox", "compose") false-fire on other pages — GitHub's
+# notifications page has an "Inbox" sidebar, which is exactly what made the digest
+# run on the wrong tab. The active tab's URL is unambiguous, so we gate on it.
+async def _osascript(script: str) -> tuple:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osascript", "-e", script,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, _ = await proc.communicate()
+        return proc.returncode, out.decode().strip()
+    except Exception as e:
+        log.warning("osascript failed: %s", e)
+        return 1, ""
+
+
+async def _chrome_active_url() -> str:
+    """URL of Chrome's front-window active tab, or '' (no Chrome / no window /
+    AppleScript denied)."""
+    rc, out = await _osascript(
+        'tell application "Google Chrome"\n'
+        '  if (count of windows) = 0 then return ""\n'
+        '  return URL of active tab of front window\n'
+        'end tell')
+    return out if rc == 0 else ""
+
+
+async def _activate_gmail_tab() -> bool:
+    """Bring an already-open Gmail tab to the front (first match across all Chrome
+    windows). Read-only w.r.t. page content — just changes which tab is active, so
+    'go to my Gmail and summarize' works when Gmail is open but not focused."""
+    rc, out = await _osascript(
+        'tell application "Google Chrome"\n'
+        '  repeat with w in windows\n'
+        '    set i to 0\n'
+        '    repeat with t in tabs of w\n'
+        '      set i to i + 1\n'
+        '      if (URL of t) contains "mail.google.com" then\n'
+        '        set active tab index of w to i\n'
+        '        set index of w to 1\n'
+        '        activate\n'
+        '        return "ok"\n'
+        '      end if\n'
+        '    end repeat\n'
+        '  end repeat\n'
+        '  return "none"\n'
+        'end tell')
+    return rc == 0 and out == "ok"
+
+
+def _view_from_url(url: str) -> str:
+    """Classify a Gmail URL by its hash: 'list' (thread list — #inbox, #search/…,
+    #label/…) vs 'message' (open conversation — a thread id trails the section,
+    e.g. #inbox/FMfcgz…). Returns '' when the URL isn't Gmail."""
+    if _GMAIL_URL not in (url or ""):
+        return ""
+    frag = url.split("#", 1)[1] if "#" in url else ""
+    segs = [s for s in frag.split("/") if s]
+    last = segs[-1] if segs else ""
+    # A thread id is a long alphanumeric token; section names ("inbox") are short,
+    # and search queries carry %/: so they aren't alnum.
+    if len(segs) >= 2 and len(last) >= 16 and last.isalnum():
+        return "message"
+    return "list"
+
+
+# ── AX fallback (non-Chrome browsers, or AppleScript denied) ─────────────────
+def _labels_blob(obs: dict) -> str:
+    return " ".join(_label(e) for e in (obs.get("elements") or [])).lower()
+
+
+def _strict_gmail(obs: dict) -> bool:
+    """Are we on a Gmail thread list? Stricter than a single hint: needs ≥2 of
+    Gmail's distinctive chrome (compose, its search box, a list section) so a
+    stray 'Inbox' label on another site can't pass."""
+    blob = _labels_blob(obs)
+    score = (
+        ("compose" in blob)
+        + ("search mail" in blob or "search in mail" in blob)
+        + any(h in blob for h in ("primary", "snoozed", "conversation list", "more emails"))
+    )
+    return score >= 2
 
 
 # Controls that appear ONLY inside an open conversation, never on the pure thread
-# list — the reliable signal for "a message is open." Gmail's list hover-actions
-# (archive/snooze) aren't in the static AX snapshot, so these don't false-fire on
-# the list. (Targets the default full-width list, no reading/preview pane.)
+# list — the AX signal for "a message is open" when the URL is unavailable.
 _MSG_VIEW_HINTS = (
     "reply all", "forward", "report spam", "show details", "add to tasks",
     "print all", "show trimmed content", "to me",
@@ -80,13 +162,21 @@ _MSG_VIEW_HINTS = (
 
 
 def _is_message_view(obs: dict) -> bool:
-    blob = " ".join(_label(e) for e in (obs.get("elements") or [])).lower()
+    blob = _labels_blob(obs)
     return any(h in blob for h in _MSG_VIEW_HINTS)
 
 
-def _on_list(obs: dict) -> bool:
-    """True when we're on the thread LIST (signed-in Gmail, no conversation open)."""
-    return _signed_in_gmail(obs) and not _is_message_view(obs)
+def _is_signin(obs: dict) -> bool:
+    import agent_loop
+    return agent_loop._is_gmail_signin(obs)
+
+
+async def _current_view(app: Optional[str]) -> str:
+    """Best available list/message classification: the Chrome URL when we can read
+    it, else '' so the caller falls back to AX. Kept cheap (one AppleScript call)."""
+    if _is_chrome(app):
+        return _view_from_url(await _chrome_active_url())
+    return ""
 
 
 def _norm(s: str) -> str:
@@ -268,19 +358,29 @@ def _parse_json(text: str) -> Optional[dict]:
     return None
 
 
+async def _back_on_list(executor, app: Optional[str]) -> bool:
+    """True once we're back on the thread list — URL when Chrome, else AX (strict
+    Gmail chrome present, no message-view controls)."""
+    v = await _current_view(app)
+    if v:
+        return v == "list"
+    obs = await perception.build_observation(executor, app=app)
+    return _strict_gmail(obs) and not _is_message_view(obs)
+
+
 async def _go_back_to_inbox(executor, ax_executor, app: Optional[str]) -> bool:
     """Return from an open conversation to the inbox and CONFIRM we're there before
     the caller clicks the next row (the fragile part per the issue). Opening a Gmail
     conversation pushes a `#inbox/<id>` history entry, so browser-Back (Cmd+[)
-    reliably pops back to the thread list. Verified by re-observation; one retry via
-    a 'Back to Inbox' control if Back didn't land."""
+    reliably pops back to the thread list. Verified by URL/AX; one retry via a
+    'Back to Inbox' control if Back didn't land."""
     for _attempt in range(2):
         await ax_executor.key_combo("cmd+[", app=app)  # Chrome: history back → #inbox
         await asyncio.sleep(_BACK_SETTLE)
-        obs = await perception.build_observation(executor, app=app)
-        if _on_list(obs):
+        if await _back_on_list(executor, app):
             return True
         # Back didn't land — try an explicit "Back to inbox" control before giving up.
+        obs = await perception.build_observation(executor, app=app)
         for e in obs.get("elements", []) or []:
             lab = _norm(_label(e))
             fr = e.get("frame")
@@ -290,8 +390,7 @@ async def _go_back_to_inbox(executor, ax_executor, app: Optional[str]) -> bool:
                 cx, cy = fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0
                 await ax_executor.click_element(point=(cx, cy), app=app)
                 await asyncio.sleep(_BACK_SETTLE)
-                obs = await perception.build_observation(executor, app=app)
-                if _on_list(obs):
+                if await _back_on_list(executor, app):
                     return True
                 break
     return False
@@ -321,20 +420,33 @@ async def run_digest(executor, ax_executor, client, *,
         return kill_switch is not None and kill_switch.is_engaged()
 
     try:
-        # 1) Observe the inbox and confirm we're actually on it. Chrome builds its
-        #    full AX tree lazily, so a first snapshot can miss Gmail's chrome — give
-        #    it one retry before concluding Gmail isn't up.
+        # 1) Find Gmail. Gate on the real Chrome tab URL — a text hint like "inbox"
+        #    also appears on other sites (GitHub notifications), which is what made
+        #    an earlier build run on the wrong tab. If Gmail is open but not the
+        #    active tab, switch to it ("go to my Gmail and summarize").
         await _emit("Reading your inbox…", status="active")
         obs = await perception.build_observation(executor)
         app = obs.get("app")
-        if _is_browser(app) and not _signed_in_gmail(obs):
-            await asyncio.sleep(0.6)
-            obs = await perception.build_observation(executor, app=app)
-        if not _is_browser(app) or not _signed_in_gmail(obs):
+        url = await _chrome_active_url() if _is_chrome(app) else ""
+        on_gmail = (_GMAIL_URL in url) if url else (_is_browser(app) and _strict_gmail(obs))
+        if not on_gmail and _is_chrome(app):
+            if await _activate_gmail_tab():
+                await _emit("Switching to Gmail…", status="active")
+                await asyncio.sleep(0.9)
+                url = await _chrome_active_url()
+                on_gmail = _GMAIL_URL in url
+                obs = await perception.build_observation(executor, app=app)
+        if not on_gmail:
             return {"status": "no_inbox", "count": 0, "capped": False,
-                    "summary": "I need your Gmail inbox open and signed in first, sir."}
+                    "summary": "I don't see your Gmail open in Chrome, sir — open your "
+                               "inbox and I'll go through today's mail."}
+        if _is_signin(obs):
+            return {"status": "no_inbox", "count": 0, "capped": False,
+                    "summary": "You're signed out of Gmail, sir — sign in and I'll go "
+                               "through today's mail."}
         # Started on an open conversation? Step back to the list before enumerating.
-        if _is_message_view(obs):
+        view = _view_from_url(url) if url else ("message" if _is_message_view(obs) else "list")
+        if view == "message":
             await _go_back_to_inbox(executor, ax_executor, app)
             obs = await perception.build_observation(executor, app=app)
 
@@ -361,13 +473,12 @@ async def run_digest(executor, ax_executor, client, *,
                         detail=(tgt.get("subject") or tgt.get("sender") or "")[:80],
                         status="active")
 
-            obs = await perception.build_observation(executor, app=app)
-            if not _on_list(obs):
+            if not await _back_on_list(executor, app):
                 # Lost the list (unexpected) — one recovery attempt, else stop clean.
                 if not await _go_back_to_inbox(executor, ax_executor, app):
                     await _emit("Lost the inbox view", status="error")
                     break
-                obs = await perception.build_observation(executor, app=app)
+            obs = await perception.build_observation(executor, app=app)
 
             row = _find_row_element(obs, tgt.get("sender", ""), tgt.get("subject", ""), used)
             if not row:
@@ -385,7 +496,10 @@ async def run_digest(executor, ax_executor, client, *,
             await asyncio.sleep(_OPEN_SETTLE)
 
             msg_obs = await perception.build_observation(executor, app=app)
-            if not _is_message_view(msg_obs):
+            opened = await _current_view(app)
+            if (opened == "message") if opened else _is_message_view(msg_obs):
+                pass
+            else:
                 # The click didn't open the conversation — don't record a list
                 # snapshot as if it were the email.
                 await _emit(f"Email {i} didn't open — skipping", status="active")
