@@ -96,27 +96,114 @@ async def _chrome_active_url() -> str:
     return out if rc == 0 else ""
 
 
-async def _activate_gmail_tab() -> bool:
-    """Bring an already-open Gmail tab to the front (first match across all Chrome
-    windows). Read-only w.r.t. page content — just changes which tab is active, so
-    'go to my Gmail and summarize' works when Gmail is open but not focused."""
+async def _chrome_active_title() -> str:
+    """Title of Chrome's front-window active tab (Gmail titles carry the account
+    email, e.g. 'Inbox - finley@corp.com - …'), or ''."""
     rc, out = await _osascript(
         'tell application "Google Chrome"\n'
+        '  if (count of windows) = 0 then return ""\n'
+        '  return title of active tab of front window\n'
+        'end tell')
+    return out if rc == 0 else ""
+
+
+_TAB_SEP = "§"  # § — a delimiter that won't appear in a tab title/URL
+
+
+async def _gmail_tabs() -> list:
+    """All open Gmail tabs as [{w, t, title, url}] (window + tab indices for
+    activation). Read-only enumeration."""
+    rc, out = await _osascript(
+        'tell application "Google Chrome"\n'
+        '  set out to ""\n'
+        '  set wi to 0\n'
         '  repeat with w in windows\n'
-        '    set i to 0\n'
+        '    set wi to wi + 1\n'
+        '    set ti to 0\n'
         '    repeat with t in tabs of w\n'
-        '      set i to i + 1\n'
-        '      if (URL of t) contains "mail.google.com" then\n'
-        '        set active tab index of w to i\n'
-        '        set index of w to 1\n'
-        '        activate\n'
-        '        return "ok"\n'
+        '      set ti to ti + 1\n'
+        '      set u to URL of t\n'
+        '      if u contains "mail.google.com" then\n'
+        f'        set out to out & wi & "{_TAB_SEP}" & ti & "{_TAB_SEP}" & (title of t) & "{_TAB_SEP}" & u & linefeed\n'
         '      end if\n'
         '    end repeat\n'
         '  end repeat\n'
-        '  return "none"\n'
+        '  return out\n'
+        'end tell')
+    if rc != 0 or not out:
+        return []
+    tabs = []
+    for line in out.splitlines():
+        p = line.split(_TAB_SEP)
+        if len(p) >= 4 and p[0].isdigit() and p[1].isdigit():
+            tabs.append({"w": int(p[0]), "t": int(p[1]), "title": p[2], "url": p[3]})
+    return tabs
+
+
+_GMAIL_DOMAINS = ("gmail.com", "googlemail.com")
+_STOP_TOKENS = {"the", "and", "for", "inbox", "email", "emails", "e-mail",
+                "mail", "account", "gmail", "messages", "box", "my"}
+
+
+def _email_from_title(title: str) -> str:
+    m = re.search(r"[\w.+-]+@[\w.-]+\.\w+", title or "")
+    return m.group(0) if m else ""
+
+
+def _score_tab(title: str, hint: str) -> int:
+    """How well a Gmail tab's title matches a spoken account hint. A distinctive
+    hint word appearing in the title scores strongest; 'work'/'personal' fall back
+    to the domain (custom domain = work, gmail.com = personal). 0 = no signal."""
+    tl = (title or "").lower()
+    h = (hint or "").strip().lower()
+    if not h:
+        return 0
+    score = 0
+    for tok in re.findall(r"[a-z0-9.+_-]{3,}", h):
+        if tok in _STOP_TOKENS:
+            continue
+        if tok in tl:
+            score += 3
+    dom = _email_from_title(title).split("@", 1)[-1].lower() if "@" in _email_from_title(title) else ""
+    is_personal = any(dom.endswith(d) for d in _GMAIL_DOMAINS)
+    if any(w in h for w in ("work", "business", "company", "corporate", "office")):
+        if dom and not is_personal:
+            score += 2
+    if any(w in h for w in ("personal", "home", "private")):
+        if is_personal:
+            score += 2
+    return score
+
+
+async def _activate_tab(w: int, t: int) -> bool:
+    rc, out = await _osascript(
+        'tell application "Google Chrome"\n'
+        f'  set active tab index of window {w} to {t}\n'
+        f'  set index of window {w} to 1\n'
+        '  activate\n'
+        '  return "ok"\n'
         'end tell')
     return rc == 0 and out == "ok"
+
+
+async def _switch_to_gmail(hint: str = "") -> tuple:
+    """Activate the open Gmail tab that best matches `hint` (or the first Gmail tab
+    when no account was named). Returns (status, email):
+      ("ok", email)       switched — email of the tab we landed on
+      ("no_match", "")    an account was named but no open tab matches it
+      ("none", "")        no Gmail tab open at all"""
+    tabs = await _gmail_tabs()
+    if not tabs:
+        return "none", ""
+    if hint:
+        best = max(tabs, key=lambda x: _score_tab(x["title"], hint))
+        if _score_tab(best["title"], hint) <= 0:
+            return "no_match", ""
+        tab = best
+    else:
+        tab = tabs[0]
+    ok = await _activate_tab(tab["w"], tab["t"])
+    return ("ok" if ok else "none"), _email_from_title(tab["title"])
 
 
 def _view_from_url(url: str) -> str:
@@ -399,12 +486,16 @@ async def _go_back_to_inbox(executor, ax_executor, app: Optional[str]) -> bool:
 async def run_digest(executor, ax_executor, client, *,
                      emit: Optional[EmitFn] = None,
                      kill_switch=None, cap: int = _DEFAULT_CAP,
-                     today_str: str = "today") -> dict:
+                     today_str: str = "today", account: str = "") -> dict:
     """Read every message received today in the OPEN Gmail inbox and return one
     summary across all of them.
 
     Preconditions: Gmail is open and signed in (issue #284 owns the login). If the
     focused window isn't a Gmail inbox we say so rather than guessing.
+
+    `account` is an optional spoken hint for WHICH inbox ("work", "personal", an
+    email, or a name) when several Gmail accounts are open — we match it against
+    the tab titles, which carry the account email.
 
     Returns {status, summary, count, capped}:
       status: done | empty | no_inbox | halted | error
@@ -420,22 +511,37 @@ async def run_digest(executor, ax_executor, client, *,
         return kill_switch is not None and kill_switch.is_engaged()
 
     try:
-        # 1) Find Gmail. Gate on the real Chrome tab URL — a text hint like "inbox"
-        #    also appears on other sites (GitHub notifications), which is what made
-        #    an earlier build run on the wrong tab. If Gmail is open but not the
-        #    active tab, switch to it ("go to my Gmail and summarize").
+        # 1) Find the RIGHT Gmail. Gate on the real Chrome tab URL — a text hint
+        #    like "inbox" also appears on other sites (GitHub notifications), which
+        #    is what made an earlier build run on the wrong tab. When an account is
+        #    named, match it against the tab TITLES (they carry the email) and
+        #    switch even if we're already on a *different* Gmail account.
         await _emit("Reading your inbox…", status="active")
         obs = await perception.build_observation(executor)
         app = obs.get("app")
-        url = await _chrome_active_url() if _is_chrome(app) else ""
+        chrome = _is_chrome(app)
+        url = await _chrome_active_url() if chrome else ""
+        title = await _chrome_active_title() if chrome else ""
         on_gmail = (_GMAIL_URL in url) if url else (_is_browser(app) and _strict_gmail(obs))
-        if not on_gmail and _is_chrome(app):
-            if await _activate_gmail_tab():
-                await _emit("Switching to Gmail…", status="active")
+
+        # Do we need to switch tabs? Yes if: not on Gmail at all, OR an account was
+        # named and the current tab isn't that account.
+        need_switch = chrome and (
+            not on_gmail or (account and _score_tab(title, account) <= 0))
+        if need_switch:
+            status, email = await _switch_to_gmail(account)
+            if status == "ok":
+                await _emit(f"Switching to {email or 'Gmail'}…", status="active")
                 await asyncio.sleep(0.9)
                 url = await _chrome_active_url()
                 on_gmail = _GMAIL_URL in url
                 obs = await perception.build_observation(executor, app=app)
+            elif status == "no_match" and account:
+                return {"status": "no_inbox", "count": 0, "capped": False,
+                        "summary": f"I don't see your {account} Gmail open in Chrome, "
+                                   "sir — open that inbox and I'll go through it."}
+            # status == "none": no Gmail tab; fall through to the honest miss below
+            #                   unless we were already on Gmail.
         if not on_gmail:
             return {"status": "no_inbox", "count": 0, "capped": False,
                     "summary": "I don't see your Gmail open in Chrome, sir — open your "
