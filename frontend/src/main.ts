@@ -506,8 +506,10 @@ socket.onMessage((msg) => {
       showCursorTakeover(!!p?.active, p?.label);
     }
     if (event) processPanel.handleEvent(event);
-    // Match the ambient hum to live work: on while any task is in flight.
-    workingHum.setActive(processPanel.hasActiveTasks());
+    // Match the ambient hum to *substantial* work only: on while a live plan is
+    // up in the panel (a dispatched, staged task). Quick plan-less actions —
+    // opening an app, a timer, a quick lookup — stay silent.
+    workingHum.setActive(processPanel.hasActivePlan());
   } else if (type === "close_panel") {
     // Server-side voice intent ("close it", "dismiss", etc.) closes the panel.
     processPanel.close();
