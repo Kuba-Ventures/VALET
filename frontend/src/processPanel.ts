@@ -89,6 +89,12 @@ export interface ProcessPanel {
    *  dispatched build) never force-closes the panel — the panel's own
    *  task-driven dismiss owns closure in that case. */
   hasActiveTasks(): boolean;
+  /** True while a live plan is up in the panel — i.e. a dispatched task has
+   *  emitted plan stages and hasn't finished yet. main.ts uses this to gate
+   *  the ambient hum so it only sounds during substantial (staged) work, not
+   *  quick actions. Goes false on the task's task_done, even though the (now
+   *  all-done) plan block stays visible until the panel dismisses. */
+  hasActivePlan(): boolean;
   /** Toggle the "· dictation" indicator (amber). Distinct from · design
    *  so the user knows their voice is being captured verbatim, not
    *  routed through the design partner. */
@@ -124,6 +130,12 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
   // each stage's status advances (pending → active → done). Keyed by task_id;
   // each stage node is keyed by its index within the block.
   const planBlocks = new Map<string, { container: HTMLElement; nodes: Map<number, HTMLElement> }>();
+
+  // Task ids that currently have a *live* plan (stages emitted, task not yet
+  // done). Drives hasActivePlan() → the ambient hum. A task is added on its
+  // first plan.stage and removed on task_done, so the hum tracks real staged
+  // work and stays silent for quick, plan-less actions.
+  const activePlanTasks = new Set<string>();
 
   // Active task count — drives auto-dismiss. A task is "open" between its
   // task_start and task_done events.
@@ -314,6 +326,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       stream.innerHTML = "";
       codeBlocks.clear();
       planBlocks.clear();
+      activePlanTasks.clear();
     }, 260);
   }
 
@@ -360,6 +373,9 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
 
     if (event.type === "task_done") {
       activeTaskCount = Math.max(0, activeTaskCount - 1);
+      // The staged work for this task is finished — drop it from the hum gate.
+      // The (now all-done) plan block stays on screen until dismiss.
+      activePlanTasks.delete(event.task_id);
       // Find the matching task_start row and update its icon to ✓/✗.
       const startRow = stream.querySelector<HTMLElement>(
         `.pp-event-task_start[data-task-id="${cssEscape(event.task_id)}"]`,
@@ -397,6 +413,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
     }
 
     if (event.type === "plan.stage") {
+      activePlanTasks.add(event.task_id);
       renderPlanStage(event);
       return;
     }
@@ -1229,6 +1246,7 @@ export function createProcessPanel(rootId: string = "process-panel-root"): Proce
       closeAndClear();
     },
     hasActiveTasks: () => activeTaskCount > 0,
+    hasActivePlan: () => activePlanTasks.size > 0,
   };
 }
 
