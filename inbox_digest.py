@@ -265,12 +265,12 @@ def _is_signin(obs: dict) -> bool:
     return agent_loop._is_gmail_signin(obs)
 
 
-async def _current_view(app: Optional[str]) -> str:
-    """Best available list/message classification: the Chrome URL when we can read
-    it, else '' so the caller falls back to AX. Kept cheap (one AppleScript call)."""
-    if _is_chrome(app):
-        return _view_from_url(await _chrome_active_url())
-    return ""
+async def _current_view(app: Optional[str] = None) -> str:
+    """Best available list/message/overlay classification from Chrome's active-tab
+    URL, or '' (Chrome not scriptable / not on Gmail) so the caller falls back to
+    AX. Queries Chrome directly — never gated on perception's frontmost-app guess.
+    Kept cheap (one AppleScript call)."""
+    return _view_from_url(await _chrome_active_url())
 
 
 def _norm(s: str) -> str:
@@ -526,29 +526,45 @@ async def run_digest(executor, ax_executor, client, *,
         await _emit("Reading your inbox…", status="active")
         obs = await perception.build_observation(executor)
         app = obs.get("app")
-        chrome = _is_chrome(app)
-        url = await _chrome_active_url() if chrome else ""
-        title = await _chrome_active_title() if chrome else ""
-        on_gmail = (_GMAIL_URL in url) if url else (_is_browser(app) and _strict_gmail(obs))
 
-        # Do we need to switch tabs? Yes if: not on Gmail at all, OR an account was
-        # named and the current tab isn't that account.
-        need_switch = chrome and (
-            not on_gmail or (account and _score_tab(title, account) <= 0))
-        if need_switch:
+        # Ask Chrome directly which tabs are Gmail — do NOT gate on perception's
+        # frontmost-app guess. That guess returns "frontmost"/the wrong app when
+        # focus is ambiguous (e.g. VALET itself was frontmost when you spoke), and
+        # gating on it made us skip Chrome entirely and wrongly say "no Gmail open".
+        # Querying Chrome also means "go TO my email" works when Chrome isn't the
+        # focused app yet.
+        url = await _chrome_active_url()          # "" if Chrome not running/scriptable
+        title = await _chrome_active_title()
+        tabs = await _gmail_tabs()                # [] if no Gmail tab / Chrome down
+        active_is_gmail = _GMAIL_URL in url
+
+        # Switch to the right tab unless the ACTIVE tab already satisfies the ask.
+        if account:
+            already = active_is_gmail and _score_tab(title, account) > 0
+            must_switch = not already
+        elif active_is_gmail:
+            must_switch = False                   # already on a Gmail tab, keep it
+        else:
+            must_switch = bool(tabs)              # not on Gmail → grab a Gmail tab
+
+        if must_switch:
             status, email = await _switch_to_gmail(account)
+            if status == "no_match" and account:
+                return {"status": "no_inbox", "count": 0, "capped": False,
+                        "summary": f"I don't see your {account} Gmail open in Chrome, "
+                                   "sir — open that inbox and I'll go through it."}
             if status == "ok":
                 await _emit(f"Switching to {email or 'Gmail'}…", status="active")
                 await asyncio.sleep(0.9)
                 url = await _chrome_active_url()
-                on_gmail = _GMAIL_URL in url
+                active_is_gmail = _GMAIL_URL in url
                 obs = await perception.build_observation(executor, app=app)
-            elif status == "no_match" and account:
-                return {"status": "no_inbox", "count": 0, "capped": False,
-                        "summary": f"I don't see your {account} Gmail open in Chrome, "
-                                   "sir — open that inbox and I'll go through it."}
-            # status == "none": no Gmail tab; fall through to the honest miss below
-            #                   unless we were already on Gmail.
+            # status == "none": no Gmail tab at all → honest miss below.
+
+        # On Gmail if Chrome's active tab is Gmail, or (Chrome unavailable) a
+        # non-Chrome browser is showing Gmail per the AX snapshot.
+        on_gmail = active_is_gmail or (
+            not url and _is_browser(app) and _strict_gmail(obs))
         if not on_gmail:
             return {"status": "no_inbox", "count": 0, "capped": False,
                     "summary": "I don't see your Gmail open in Chrome, sir — open your "
