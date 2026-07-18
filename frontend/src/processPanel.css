@@ -1224,3 +1224,116 @@
   color: var(--pp-text-faint);
   margin-top: 2px;
 }
+
+/* ---------------------------------------------------------------------------
+   Plan stages (plan.stage) — a branching, live-tracked plan block. Emitted at
+   dispatch time; each stage node advances pending → active → done as the real
+   Claude Code work streams by. Visual idiom mirrors Claude Code's plan view:
+   a vertical rail with a node per stage.
+   --------------------------------------------------------------------------- */
+.pp-plan-block {
+  margin: 4px 6px 10px;
+  padding: 10px 12px 6px;
+  border: 1px solid var(--pp-border);
+  border-radius: 8px;
+  background: linear-gradient(
+    180deg,
+    rgba(70, 220, 255, 0.05) 0,
+    rgba(70, 220, 255, 0.015) 100%
+  );
+  animation: pp-event-in 0.22s ease-out;
+}
+.pp-plan-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.pp-plan-kicker {
+  font-family: var(--pp-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--pp-accent);
+  opacity: 0.8;
+}
+.pp-plan-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pp-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Each stage: [rail | node | label]. The rail draws the connector line up to
+   the previous node; the node is the glyph; the label is the stage name. */
+.pp-plan-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  align-items: center;
+  column-gap: 8px;
+  min-height: 22px;
+  padding: 1px 0;
+}
+.pp-plan-rail {
+  position: absolute;
+  left: 7px;
+  top: -3px;
+  bottom: 50%;
+  width: 1.5px;
+  background: var(--pp-border);
+}
+/* First stage has no upward rail; last stage's node terminates the branch. */
+.pp-plan-block .pp-plan-stage:first-of-type .pp-plan-rail { display: none; }
+.pp-plan-node {
+  grid-column: 1;
+  justify-self: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--pp-pending);
+  transition: color 0.25s ease, text-shadow 0.25s ease;
+  z-index: 1;
+}
+.pp-plan-label {
+  grid-column: 2;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--pp-text-dim);
+  transition: color 0.25s ease;
+}
+
+/* Status colouring — pending dim, active cyan+pulse, done green, error red. */
+.pp-plan-pending .pp-plan-node { color: var(--pp-pending); }
+.pp-plan-pending .pp-plan-label { color: var(--pp-text-faint); }
+
+.pp-plan-active .pp-plan-node {
+  color: var(--pp-accent);
+  text-shadow: 0 0 8px rgba(70, 220, 255, 0.6);
+  animation: pp-plan-pulse 1.4s ease-in-out infinite;
+}
+.pp-plan-active .pp-plan-label {
+  color: var(--pp-text);
+  font-weight: 600;
+}
+
+.pp-plan-done .pp-plan-node {
+  color: var(--pp-active);
+  text-shadow: 0 0 6px rgba(124, 255, 176, 0.4);
+}
+.pp-plan-done .pp-plan-label { color: var(--pp-text-dim); }
+
+.pp-plan-error .pp-plan-node {
+  color: var(--pp-error);
+  text-shadow: 0 0 6px var(--pp-error-glow);
+}
+.pp-plan-error .pp-plan-label { color: var(--pp-text); }
+
+@keyframes pp-plan-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pp-plan-active .pp-plan-node { animation: none; }
+}
