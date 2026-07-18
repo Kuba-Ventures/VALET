@@ -341,7 +341,8 @@ def _frame_sig(fr: list) -> tuple:
 
 async def _enumerate_today(client, obs: dict, cap: int, today_str: str) -> dict:
     """Ask the model to read the inbox element list and return TODAY's conversation
-    rows, top to bottom. Returns {"rows": [{"sender","subject"}...], "has_more": bool}.
+    rows, top to bottom, each with its body preview. Returns
+    {"rows": [{"sender","subject","snippet"}...], "has_more": bool}.
 
     Model-driven on purpose: Gmail's row labels vary (unread markers, categories,
     attachments), and the model reading the labels is far more robust than a rigid
@@ -368,15 +369,18 @@ async def _enumerate_today(client, obs: dict, cap: int, today_str: str) -> dict:
         "token is a time of day — those are today's.\n"
         "Ignore the compose button, search box, category tabs (Primary/Social/"
         "Promotions), labels, nav, and footer — only real message rows.\n"
+        "A row label reads 'Sender , Subject , [time] , body preview…'. For each "
+        "today row give the sender, the subject, and the snippet (the body-preview "
+        "text after the time — verbatim, don't invent).\n"
         f"Return AT MOST {cap} rows. Reply with STRICT JSON only:\n"
-        '{"rows":[{"sender":"...","subject":"..."}],"has_more":false}\n'
+        '{"rows":[{"sender":"...","subject":"...","snippet":"..."}],"has_more":false}\n'
         f'Set "has_more" true if there are MORE than {cap} rows received today '
         "(so we can tell the user we capped)."
     )
     try:
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=800,
+            max_tokens=1200,
             system=system,
             messages=[{"role": "user", "content": f"Inbox elements:\n{elements_txt}"}],
         )
@@ -385,7 +389,8 @@ async def _enumerate_today(client, obs: dict, cap: int, today_str: str) -> dict:
             return {"rows": [], "has_more": False}
         rows = [
             {"sender": (r.get("sender") or "").strip(),
-             "subject": (r.get("subject") or "").strip()}
+             "subject": (r.get("subject") or "").strip(),
+             "snippet": (r.get("snippet") or "").strip()}
             for r in (data.get("rows") or [])
             if isinstance(r, dict) and (r.get("subject") or r.get("sender"))
         ][:cap]
@@ -607,109 +612,34 @@ async def run_digest(executor, ax_executor, client, *,
             await asyncio.sleep(1.0)
             obs = await perception.build_observation(executor, app=app)
             enum = await _enumerate_today(client, obs, cap, today_str)
-        targets = enum["rows"]
+        rows = enum["rows"]
         capped = enum["has_more"]
-        if not targets:
+        if not rows:
             return {"status": "empty", "count": 0, "capped": False,
                     "summary": "Nothing new in your inbox today, sir."}
-        total = len(targets)
-        await _emit(f"Found {total} today{' (capped)' if capped else ''}",
-                    detail="reading each in turn", status="active")
+        total = len(rows)
 
-        # 3) Open each in turn → read → back to inbox. Re-observe every iteration so
-        #    stale refs never bite; dedupe by on-screen position so we can't loop on
-        #    one row or read the same one twice.
-        collected: list = []
-        used: set = set()
-        for i, tgt in enumerate(targets, 1):
-            if _halted():
-                break
-            await _emit(f"Reading {i} of {total}…",
-                        detail=(tgt.get("subject") or tgt.get("sender") or "")[:80],
-                        status="active")
-
-            if not await _back_on_list(executor, app):
-                # Lost the list (unexpected) — one recovery attempt, else stop clean.
-                if not await _go_back_to_inbox(executor, ax_executor, app):
-                    await _emit("Lost the inbox view", status="error")
-                    break
-            obs = await perception.build_observation(executor, app=app)
-
-            row = _find_row_element(obs, tgt.get("sender", ""), tgt.get("subject", ""), used)
-            if not row:
-                # Row scrolled off / relabeled — skip it honestly rather than guess.
-                await _emit(f"Couldn't find email {i} on screen — skipping",
-                            status="active")
-                continue
-            fr = row["frame"]
-            used.add(_frame_sig(fr))
-            # Click the SUBJECT line, not the row's geometric center. A row with
-            # attachments is two lines tall (subject on top, attachment chips
-            # below); centering the click lands on a chip and opens the attachment
-            # in Gmail's projector overlay instead of the message. Aim ~40% across
-            # (past the checkbox/star, on the subject/snippet) and near the top.
-            cx = fr[0] + fr[2] * 0.4
-            cy = fr[1] + min(fr[3] * 0.3, 14.0)
-
-            if _halted():
-                break
-            await ax_executor.click_element(point=(cx, cy), app=app)
-            await asyncio.sleep(_OPEN_SETTLE)
-
-            msg_obs = await perception.build_observation(executor, app=app)
-            opened = await _current_view(app)
-            is_msg = (opened == "message") if opened else _is_message_view(msg_obs)
-            if not is_msg:
-                # Click opened an attachment/overlay or nothing — don't record a
-                # non-message snapshot as the email, and dismiss any overlay so the
-                # next iteration starts from a clean list.
-                await _emit(f"Email {i} didn't open — skipping", status="active")
-                if opened == "overlay" or not await _back_on_list(executor, app):
-                    await _go_back_to_inbox(executor, ax_executor, app)
-                continue
-            collected.append({
-                "sender": tgt.get("sender", ""),
-                "subject": tgt.get("subject", ""),
-                "body": _visible_text(msg_obs),
-            })
-            await _emit(f"Read {i} of {total}",
-                        detail=(tgt.get("subject") or "")[:80], status="done")
-
-            # Back to the inbox before the next row (verified).
-            if i < total and not _halted():
-                if not await _go_back_to_inbox(executor, ax_executor, app):
-                    await _emit("Couldn't return to the inbox — stopping here",
-                                status="error")
-                    break
-
-        if _halted() and not collected:
-            return {"status": "halted", "count": 0, "capped": capped,
-                    "summary": "Halted, sir."}
-
-        # We enumerated today's mail but opened none of it — that's a failure to
-        # READ, not an empty inbox. Say so honestly instead of "nothing new today"
-        # (which is what an empty `collected` would otherwise summarize to).
-        if not collected:
-            n = total
-            return {"status": "error", "count": 0, "capped": capped,
-                    "summary": (f"I found {n} email{'s' if n != 1 else ''} from today, sir, "
-                                "but couldn't get them open to read — the inbox may have "
-                                "shifted under me. Shall I try again?")}
-
-        # 4) One summary across everything collected.
-        await _emit("Summarizing today's mail…", status="active")
-        read_n = len(collected)
-        total_hint = (f"{read_n} email(s) received today."
-                      + (" (More arrived than were read — this is the recent batch.)"
-                         if capped else ""))
+        # 3) Summarize straight from the inbox rows. Each Gmail row already carries
+        #    the sender, subject, and a body preview (~100 chars) in its label — we
+        #    verified that's enough for a useful digest. We deliberately do NOT open
+        #    each message by clicking: coordinate clicks + browser-back proved
+        #    fragile (they resized/duplicated the window, drifted to the wrong Gmail
+        #    account, and hit the address bar). Reading the list is deterministic
+        #    and stays put. Fuller per-message reading is a future enhancement, best
+        #    done via Gmail's own j/o/u keyboard navigation rather than clicks.
+        await _emit(f"Summarizing {total} from today{' (capped)' if capped else ''}",
+                    status="active")
+        collected = [{"sender": r.get("sender", ""),
+                      "subject": r.get("subject", ""),
+                      "body": r.get("snippet", "")} for r in rows]
+        total_hint = f"{total} email(s) received today (summarized from the inbox previews)."
         summary = await _aggregate(client, collected, total_hint)
-        # State the cap deterministically (issue: never silently truncate) rather
-        # than trusting the model to have mentioned it.
+        # State the cap deterministically (issue: never silently truncate).
         if capped:
-            summary = (summary.rstrip() + f" That's the {read_n} most recent, sir — "
-                       "more came in today than I read.")
-        await _emit(f"Digest ready — {read_n} email(s)", status="done")
-        return {"status": "done", "count": read_n, "capped": capped, "summary": summary}
+            summary = (summary.rstrip() + f" That's the {total} most recent, sir — "
+                       "more came in today.")
+        await _emit(f"Digest ready — {total} email(s)", status="done")
+        return {"status": "done", "count": total, "capped": capped, "summary": summary}
     except Exception as e:
         log.error("inbox digest failed: %s", e)
         return {"status": "error", "count": 0, "capped": False,
