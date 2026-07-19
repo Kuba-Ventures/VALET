@@ -642,7 +642,9 @@ def _note_body_from_structured(items: list, date_label: str, total: int,
     for it in items:
         subj = (it.get("subject") or "").strip() or "(no subject)"
         frm = (it.get("from") or "").strip()
-        lines.append(f"{frm}: {subj}" if frm else subj)
+        # Bold the per-email heading (**…**) so cards separate visually; the note
+        # was reading as one undifferentiated block. _body_to_html renders it <b>.
+        lines.append(f"**{frm}: {subj}**" if frm else f"**{subj}**")
         task = (it.get("task") or "").strip()
         if task:
             lines.append(f"- [ ] {task}")

@@ -345,6 +345,7 @@ def _body_to_html(body: str) -> str:
 
     Supports:
     - Checklist items: "- [ ] task" / "- [x] task" → a ☐ / ☑ glyph line
+    - Bold line: "**heading**" → a bold paragraph (Notes honors <b> on import)
     - Bullet points: "- item" → bullet
     - Numbered lists: "1. item" → numbered
     - Plain text → paragraphs
@@ -370,6 +371,9 @@ def _body_to_html(body: str) -> str:
         elif re.match(r"^-\s*\[\s?\]\s*", stripped):
             text = re.sub(r"^-\s*\[\s?\]\s*", "", stripped)
             html_lines.append(f"<div>&#9744; {text}</div>")   # ☐ unchecked
+        elif stripped.startswith("**") and stripped.endswith("**") and len(stripped) >= 5:
+            text = stripped[2:-2].strip()   # **heading** → bold line
+            html_lines.append(f"<div><b>{text}</b></div>")
         elif re.match(r"^[-*+]\s+", stripped):
             text = re.sub(r"^[-*+]\s+", "", stripped)
             html_lines.append(f"<div>• {text}</div>")
