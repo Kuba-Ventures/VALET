@@ -144,6 +144,12 @@ html, body {
   left: 50%;
   transform: translateX(-50%);
   max-width: min(640px, 80vw);
+  /* Grows upward from the bottom anchor; cap the height to the space above it
+     (with a small top margin) and scroll internally so a long reply can never
+     overflow past the window's top edge and clip the first lines. */
+  max-height: calc(100vh - 96px - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px 16px;
   color: rgba(190, 175, 255, 0.92);
   background: rgba(20, 14, 48, 0.55);
