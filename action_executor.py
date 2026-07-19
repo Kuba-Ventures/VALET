@@ -42,6 +42,7 @@ class Capability(str, Enum):
     OBSERVE_UI = "observe_ui"        # enumerate the focused window's AX tree (read)
     CLICK_ELEMENT = "click_element"  # click an element by ref or point (input)
     KEY_COMBO = "key_combo"          # send a modifier+key chord (input)
+    SCROLL = "scroll"                # move the viewport (input, non-mutating)
 
 
 @dataclass
@@ -228,4 +229,18 @@ class ActionExecutor(ABC):
         return ActionResult.not_supported(
             Capability.KEY_COMBO,
             reason=f"{self.name} cannot synthesize key combos",
+        )
+
+    async def scroll(
+        self, *, direction: str = "down", amount: str = "page",
+        ref: Optional[str] = None, point: Optional[tuple] = None,
+        app: Optional[str] = None, task_id: Optional[str] = None,
+    ) -> ActionResult:
+        """Scroll the viewport under `ref` / `point` (default: the focused
+        window's centre). `direction` ∈ up|down|left|right, `amount` is
+        'page' | 'half' | a pixel count. Moves the view only — nothing is
+        clicked, typed or mutated — so it is Tier 0 (no confirm card)."""
+        return ActionResult.not_supported(
+            Capability.SCROLL,
+            reason=f"{self.name} cannot scroll",
         )

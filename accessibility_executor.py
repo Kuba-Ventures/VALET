@@ -380,6 +380,56 @@ def _mouse_click(x: float, y: float) -> None:
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
 
+def _scroll_pixels(amount, span: float) -> int:
+    """How far one scroll step travels, in pixels.
+
+    'page' is deliberately ~85% of the visible span, not 100%: leaving a couple
+    of lines of overlap is how every real scroller works, and it means a
+    "scroll until you find X" sweep can't skip X by landing it exactly between
+    two frames. An int/numeric string is taken as a literal pixel count."""
+    try:
+        px = int(float(str(amount).strip().rstrip("px") or 0))
+        if px > 0:
+            return px
+    except (TypeError, ValueError):
+        pass
+    span = float(span or 700.0)
+    if str(amount).strip().lower() in ("half", "small", "a bit", "little"):
+        return max(120, int(span * 0.45))
+    return max(200, int(span * 0.85))
+
+
+def _scroll_wheel(x: float, y: float, dy: int, dx: int = 0, *, steps: int = 6) -> None:
+    """Synthetic scroll wheel at a global screen point.
+
+    A scroll event is delivered to whatever is UNDER THE CURSOR, not to the
+    focused element — so we move the mouse there first, exactly like
+    `_mouse_click`. Pixel units (not lines) because web content in Chromium
+    ignores a line-unit wheel on some pages.
+
+    The delta is split into `steps` smaller events with gaps: one giant wheel
+    event is treated as a fling by momentum-scrolling views (Chrome, Safari)
+    and often lands nowhere near the requested distance, whereas a short train
+    of events scrolls the same way a trackpad does.
+    """
+    pt = Quartz.CGPointMake(x, y)
+    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    move = Quartz.CGEventCreateMouseEvent(
+        src, Quartz.kCGEventMouseMoved, pt, Quartz.kCGMouseButtonLeft)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, move)
+    time.sleep(0.02)
+    per_y, per_x = int(dy / steps), int(dx / steps)
+    for _ in range(steps):
+        ev = Quartz.CGEventCreateScrollWheelEvent(
+            src, Quartz.kCGScrollEventUnitPixel, 2, per_y, per_x)
+        # Scroll events carry their own location; without this they land at the
+        # cursor's *last posted* position, which is right, but being explicit
+        # keeps it correct if the user nudges the mouse mid-scroll.
+        Quartz.CGEventSetLocation(ev, pt)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+        time.sleep(0.02)
+
+
 # --------------------------------------------------------------------------- #
 # Stage 2 — visible cursor glide (point-and-teach's act sibling).
 #
@@ -742,6 +792,63 @@ class AccessibilityExecutor(ActionExecutor):
                                         backend=self.name)
         return ActionResult.failure(Capability.KEY_COMBO, error="post_failed",
                                     message=f"I couldn't send {combo}, sir.")
+
+    # --- scroll (Tier 0 — moves the view, mutates nothing) ----------------
+    async def scroll(self, *, direction: str = "down", amount: str = "page",
+                     ref: Optional[str] = None, point: Optional[tuple] = None,
+                     app: Optional[str] = None,
+                     task_id: Optional[str] = None) -> ActionResult:
+        if not _PYOBJC:
+            return self._unavailable(Capability.SCROLL)
+        if not is_trusted():
+            return self._untrusted(Capability.SCROLL)
+        d = (direction or "down").strip().lower()
+        if d not in ("up", "down", "left", "right"):
+            return ActionResult.failure(Capability.SCROLL, error="bad_direction",
+                                        message=f"I don't know which way {direction} is, sir.")
+
+        def _do():
+            # Where to scroll: an explicit point, the resolved element's centre,
+            # or — the common case, "scroll down" with nothing named — the centre
+            # of the focused window, which is inside its main scroll area.
+            frame = None
+            if point is not None:
+                x, y = float(point[0]), float(point[1])
+            else:
+                el = self._ref_map.get(ref) if ref else None
+                if el is None:
+                    pid = _pid_for_app(app)
+                    if pid is None:
+                        return None, "no_target_app"
+                    el = _focused_window(_AX.AXUIElementCreateApplication(pid))
+                    if el is None:
+                        return None, "no_window"
+                frame = _frame_of(el)
+                if not frame:
+                    return None, "no_frame"
+                x, y = frame[0] + frame[2] / 2.0, frame[1] + frame[3] / 2.0
+            span = frame[3] if frame else 700.0
+            px = _scroll_pixels(amount, span)
+            # Positive wheel deltas scroll the content DOWN the screen, i.e. they
+            # move the viewport UP the document. Down/right are the negatives.
+            dy = px if d == "up" else -px if d == "down" else 0
+            dx = px if d == "left" else -px if d == "right" else 0
+            if app:
+                _activate_app(app)
+                time.sleep(0.12)
+            _scroll_wheel(x, y, dy, dx)
+            return px, None
+
+        px, err = await asyncio.to_thread(_do)
+        if err:
+            msg = {
+                "no_target_app": "I can't see that app, sir.",
+                "no_window": "There's no window to scroll, sir.",
+                "no_frame": "I can't tell where that is on screen, sir.",
+            }.get(err, "I couldn't scroll that, sir.")
+            return ActionResult.failure(Capability.SCROLL, error=err, message=msg)
+        return ActionResult.success(Capability.SCROLL, message="Scrolled, sir.",
+                                    backend=self.name, direction=d, pixels=px)
 
     # --- focus (UC3 helper) ----------------------------------------------
     async def focus_element(self, ref: str) -> bool:

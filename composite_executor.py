@@ -93,3 +93,9 @@ class CompositeExecutor(ActionExecutor):
     async def key_combo(self, combo: str, *, app: Optional[str] = None,
                        task_id: Optional[str] = None) -> ActionResult:
         return await self._with_fallback("key_combo", combo, app=app, task_id=task_id)
+
+    async def scroll(self, *, direction: str = "down", amount: str = "page",
+                     ref: Optional[str] = None, point: Optional[tuple] = None,
+                     app: Optional[str] = None, task_id: Optional[str] = None) -> ActionResult:
+        return await self._with_fallback("scroll", direction=direction, amount=amount,
+                                         ref=ref, point=point, app=app, task_id=task_id)
