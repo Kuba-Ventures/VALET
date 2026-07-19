@@ -240,6 +240,43 @@ def test_summarize_does_not_hijack_describe_or_research():
         assert a is None or a["action"] != "summarize_screen", (phrase, a)
 
 
+class _FakeWS:
+    """Minimal stand-in carrying a held summary for the router."""
+    def __init__(self, last_summary=None):
+        self.last_summary = last_summary
+
+
+def test_save_summary_note_routes_with_fresh_summary():
+    # "Put that summary in a note" (issue #286) — the cross-turn handoff. Claimed
+    # only when a fresh summary is held on the session.
+    import time
+    ws = _FakeWS({"text": "Three emails today.", "title": "Gmail summary - today",
+                  "ts": time.time()})
+    for phrase in ("Ok, put that summary in a new apple note",
+                   "put that in a note", "save that summary as a note",
+                   "save that as a note", "note that down", "pop that in a note"):
+        a = server.detect_action_fast(phrase, ws=ws)
+        assert a and a["action"] == "save_summary_note", (phrase, a)
+
+
+def test_save_summary_note_falls_through_without_summary():
+    # No held summary → must NOT claim it (falls to the LLM's CREATE_NOTE path).
+    ws = _FakeWS(None)
+    a = server.detect_action_fast("save that as a note", ws=ws)
+    assert a is None or a["action"] != "save_summary_note", a
+    # None ws (no session) also can't route here.
+    b = server.detect_action_fast("put that in a note", ws=None)
+    assert b is None or b["action"] != "save_summary_note", b
+
+
+def test_save_summary_note_falls_through_when_stale():
+    # A summary older than the TTL is not resurrected by "put that in a note".
+    ws = _FakeWS({"text": "old digest", "title": "x",
+                  "ts": 0})  # ts=0 → decades stale
+    a = server.detect_action_fast("put that in a note", ws=ws)
+    assert a is None or a["action"] != "save_summary_note", a
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

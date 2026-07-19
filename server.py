@@ -1280,6 +1280,17 @@ async def _handle_pending_offer(transcript: str, ws) -> bool:
             return True
         return False
 
+    # After a spoken summary, "Shall I save that to a note?" — a bare "yes" / "do
+    # it" saves the held summary (issue #286). "No" is caught by cancel_words up
+    # top; anything else (incl. "put that in a note", which the fast-path handles)
+    # falls through so the offer is dropped and the utterance routes normally.
+    if offer["kind"] == "save_summary_note":
+        if t in confirm_words or any(t.startswith(w + " ") for w in confirm_words) \
+                or any(c in t for c in ("save it", "do that", "note it", "go for it")):
+            await _handle_save_summary_note(ws)
+            return True
+        return False
+
     return False
 
 
@@ -6247,6 +6258,28 @@ _INBOX_DIGEST_RE = re.compile(
     r'(?:\s+(?:for\s+|from\s+)?(?P<when>' + _WHEN + r'))?'
     r'(?:\s+in\s+my\s+inbox)?\s*[.?!]*$',
     re.IGNORECASE)
+# "Put that in a note" / "save that summary as a new apple note" (issue #286) —
+# the cross-turn handoff: take the summary VALET last spoke (held on
+# ws.last_summary, often from an EARLIER turn) and write it verbatim into a fresh
+# Apple Note. Only claimed when a recent summary is actually held (gated in
+# detect_action_fast); otherwise it falls through to the LLM's normal CREATE_NOTE
+# so a plain "save that as a note" with real content still works.
+_SAVE_TO_NOTE_RE = re.compile(
+    r'^(?:ok(?:ay)?|alright|and|now|then|great|perfect)?[,\s]*'
+    r'(?:can\s+you\s+|could\s+you\s+|please\s+|go\s+ahead\s+and\s+)?'
+    r'(?:'
+    r'(?:put|save|stick|drop|add|throw|pop|copy|stash|jot)\s+'
+    r'(?:that\s+summary|the\s+summary|that|it|this)\s+'
+    r'(?:down\s+)?(?:in(?:to)?|to|as|on)\s+'
+    r'(?:a\s+|an\s+|my\s+|the\s+)?(?:new\s+|fresh\s+)?(?:apple\s+)?notes?(?:\s+app)?'
+    r'|(?:make|take|write|jot)\s+(?:a\s+|me\s+a\s+)?(?:new\s+)?(?:apple\s+)?note\s+'
+    r'(?:of|about|from|with|out\s+of)\s+(?:that\s+summary|the\s+summary|that|it|this)'
+    r'|note\s+(?:that|it|this)\s+down'
+    r'|save\s+(?:that\s+summary|the\s+summary|that|it|this)\s+(?:as|to|in)\b.*\bnotes?\b'
+    r')\s*[.?!]*$',
+    re.IGNORECASE)
+# How long a spoken summary stays "that summary" for a follow-up save (30 min).
+_SUMMARY_NOTE_TTL = 1800
 # Stage 3 — guided walkthroughs. Explicit "teach me" intents only ("how do I X"
 # stays conversational/LLM so it can answer in words).
 _WALKTHROUGH_RE = re.compile(
@@ -6549,6 +6582,17 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         _rh = _CC_REPO_HINT_RE.search(t)
         return {"action": "send_to_claude_code",
                 "repo": (_rh.group("repo") if _rh else "")}
+
+    # "Put that summary in a note" (issue #286) — the cross-turn handoff. Only
+    # claimed when a recent summary is actually held on the session; otherwise it
+    # falls through so a plain "save that as a note" (with content the LLM has in
+    # context) still routes to the normal CREATE_NOTE path. Freshness-gated so an
+    # hours-old summary doesn't get resurrected by a stray "put that in a note".
+    _ls = getattr(ws, "last_summary", None) if ws else None
+    if (_ls and (_ls.get("text") or "").strip()
+            and (time.time() - _ls.get("ts", 0)) <= _SUMMARY_NOTE_TTL
+            and _SAVE_TO_NOTE_RE.match(t)):
+        return {"action": "save_summary_note"}
 
     # Batch-read today's whole Gmail inbox ("go through my inbox", "summarize
     # today's emails", "catch me up on my emails"). BEFORE _SUMMARIZE_SCREEN_RE so
@@ -7360,6 +7404,47 @@ async def _handle_screen(ws, voice_state: dict = None) -> None:
     await _speak(ws, desc)
 
 
+def _stash_summary(ws, text: str, source: str, title: str) -> None:
+    """Hold the most recent spoken summary on the session so a follow-up
+    'put that in a note' (issue #286) can save exactly this text on a later
+    turn. Replaced on each new summary; error-fallback text is ignored so a
+    failed read never becomes a saveable 'summary'."""
+    if not ws or not (text or "").strip():
+        return
+    ws.last_summary = {"text": text.strip(), "source": source,
+                       "title": title, "ts": time.time()}
+
+
+async def _handle_save_summary_note(ws, voice_state: dict = None) -> None:
+    """'Put that summary in a new note' (issue #286) — take the summary VALET
+    last spoke (held on ws.last_summary, possibly from an earlier turn) and write
+    it verbatim into a new Apple Note, then bring Notes forward showing it. Never
+    writes a blank note: a missing or stale summary is reported, not saved."""
+    summ = getattr(ws, "last_summary", None)
+    text = (summ.get("text") or "").strip() if summ else ""
+    if not text or (time.time() - summ.get("ts", 0)) > _SUMMARY_NOTE_TTL:
+        await _speak(ws, "I don't have a recent summary to save, sir.")
+        return
+    title = summ.get("title") or "VALET summary"
+    ok = False
+    async with process_bus.task_context(f"Saving note · {title}") as task_id:
+        await emit_step(task_id, "Creating the note…", status="active")
+        try:
+            ok = await create_apple_note(title, text)
+        except Exception as e:
+            log.error(f"create note failed: {e}")
+        if ok:
+            await emit_step(task_id, "Note created", detail=title, status="done")
+            try:
+                await open_note(title)      # activate Notes + show the new note
+            except Exception as e:
+                log.warning(f"open note after create failed: {e}")
+        else:
+            await emit_error(task_id, "Couldn't create the note")
+    await _speak(ws, "Saved it to a new note, sir." if ok
+                 else "I couldn't save that note, sir.")
+
+
 async def _handle_summarize(ws, voice_state: dict = None) -> None:
     """'Summarize what I need to do' — read the FOCUSED window (screenshot + AX
     text) and speak a tight gist + action items. App-agnostic (email, doc,
@@ -7367,10 +7452,13 @@ async def _handle_summarize(ws, voice_state: dict = None) -> None:
     then speak the summary."""
     dispatch_time = time.time()
     summary = "I couldn't read the screen well enough to summarize, sir."
+    got = False
+    app_name = "screen"
     async with process_bus.task_context("Summarizing the screen") as task_id:
         try:
             import perception
             obs = await perception.build_observation(executor)
+            app_name = obs.get("app") or "screen"
             img = obs.get("image")
             if img:
                 try:
@@ -7378,18 +7466,28 @@ async def _handle_summarize(ws, voice_state: dict = None) -> None:
                     shot_dir.mkdir(parents=True, exist_ok=True)
                     (shot_dir / "window.png").write_bytes(base64.b64decode(img["b64"]))
                     await emit_screenshot(task_id, f"{task_id}/window.png",
-                                          caption=obs.get("app") or "screen")
+                                          caption=app_name)
                 except Exception as e:
                     log.warning(f"summarize thumbnail save failed: {e}")
             if obs.get("image") or obs.get("elements"):
                 summary = await perception.summarize_observation(obs, anthropic_client)
+                got = bool((summary or "").strip())
             await emit_step(task_id, summary, status="done")
         except Exception as e:
             log.error(f"summarize failed: {e}")
     # Speak the result — unless the user already moved on (barge-in).
     if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
         return
-    await _speak(ws, summary)
+    # Hold the summary so a later "put that in a note" can save it (issue #286),
+    # and offer to do so now (the next "yes" saves it — see _handle_pending_offer).
+    if got:
+        _now = datetime.now()
+        _stash_summary(ws, summary, source=f"screen:{app_name}",
+                       title=f"{app_name} summary - {_now.strftime('%b')} {_now.day}")
+        ws.pending_offer = {"kind": "save_summary_note"}
+        await _speak(ws, summary + " Shall I save that to a note, sir?")
+    else:
+        await _speak(ws, summary)
 
 
 _MONTH_NUM = {m: i for i, ms in enumerate(
@@ -7466,6 +7564,7 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
     import inbox_digest
     dispatch_time = time.time()
     summary = "I couldn't read your inbox, sir."
+    got = False
     date_iso, date_label, today_iso = _resolve_digest_date(date)
     stages = ["Finding your inbox", f"Reading {date_label}'s mail", "Summarizing"]
     async with staged_task(f"Inbox · {date_label}", stages) as st:
@@ -7485,6 +7584,8 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
                 await st.finish(ok=False)
                 if result.get("status") == "error":
                     await emit_error(st.task_id, "Inbox digest failed", detail=summary[:200])
+            else:
+                got = bool((summary or "").strip())
         except Exception as e:
             log.error(f"summarize_inbox failed: {e}")
             await emit_error(st.task_id, "Inbox digest failed", detail=str(e)[:200])
@@ -7492,7 +7593,16 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
     # Speak the digest — unless the user already moved on (barge-in).
     if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
         return
-    await _speak(ws, summary)
+    # Hold the digest so a later "put that in a note" can save it (issue #286), and
+    # offer to save it now (the next "yes" saves it — see _handle_pending_offer).
+    if got:
+        acct_bit = f"{account.strip().title()} " if account.strip() else ""
+        title = f"{acct_bit}Gmail summary - {date_label}"
+        _stash_summary(ws, summary, source=f"gmail-{date_label}", title=title)
+        ws.pending_offer = {"kind": "save_summary_note"}
+        await _speak(ws, summary + " Shall I save that to a note, sir?")
+    else:
+        await _speak(ws, summary)
 
 
 def _match_repo_name(hint: str, projects: list[dict]) -> Optional[str]:
@@ -8464,6 +8574,11 @@ async def voice_handler(ws: WebSocket):
                             _track_uc(ws, _handle_summarize_inbox(
                                 ws, voice_state, account=action.get("account", ""),
                                 date=action.get("date", "")))
+                        elif action["action"] == "save_summary_note":
+                            # "Put that summary in a new note" (issue #286) — write
+                            # the held summary to Apple Notes + bring it forward.
+                            response_text = ""  # handler speaks the confirmation
+                            _track_uc(ws, _handle_save_summary_note(ws, voice_state))
                         elif action["action"] == "ui_act":
                             # UC3 — "click on X" / "type X into the Y field". Resolve +
                             # gated execute on a background task (keeps the WS loop free
