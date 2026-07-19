@@ -37,7 +37,7 @@ _MAX_CONSECUTIVE_FAILS = 2
 # screenshots mid-animation and "can't see" a menu the user clearly can.
 _ACT_SETTLE = 0.5
 
-_ACTIONS = ("click", "type", "key", "open_app", "done", "fail")
+_ACTIONS = ("click", "type", "key", "scroll", "open_app", "done", "fail")
 
 # ── Hybrid autonomy (risk tiers per step) ───────────────────────────────────
 # In hands-off mode each decided step is classified before it runs:
@@ -127,6 +127,11 @@ def _classify_step(decision: dict, observation: dict) -> str:
     own stated reason. Conservative: a credential field → 'login'; any destructive
     or payment cue → 'confirm'; everything else → 'auto'."""
     act = decision.get("action")
+    # Scrolling changes nothing and is trivially undone, so it never cards —
+    # including when the reason mentions a destructive word ("scroll down to
+    # the delete button"), which the keyword sweep below would otherwise catch.
+    if act == "scroll":
+        return "auto"
     el = _find_element(observation, decision.get("ref"))
     role = (el.get("role") or "").lower()
     label = " ".join(filter(None, [
@@ -358,6 +363,17 @@ def _elements_block(elements: list, limit: int = 60) -> str:
     return "\n".join(out)
 
 
+def _view_signature(observation: dict) -> tuple:
+    """A cheap fingerprint of what's on screen, used to tell whether a scroll
+    actually moved anything. Labels AND vertical positions: a long list can show
+    the same labels after scrolling a few pixels, and a table of identical rows
+    can move without any label changing — only both together are reliable."""
+    return tuple(
+        (e.get("title") or e.get("value") or "", round((e.get("frame") or [0, 0])[1]))
+        for e in (observation.get("elements") or [])[:40]
+    )
+
+
 def _history_block(history: list, limit: int = 8) -> str:
     if not history:
         return "(none yet)"
@@ -385,6 +401,9 @@ _NEXT_ACTION_TOOL = {
             "text": {"type": "string", "description": "text to type (for action=type)"},
             "app": {"type": "string", "description": "app name (for action=open_app)"},
             "combo": {"type": "string", "description": "key chord like cmd+s (for action=key)"},
+            "direction": {"type": "string", "enum": ["up", "down", "left", "right"],
+                          "description": "which way to move the view (for action=scroll)"},
+            "amount": {"type": "string", "description": "for action=scroll: 'page' (default) or 'half'"},
             "reason": {"type": "string", "description": "one short clause"},
         },
         "required": ["action", "reason"],
@@ -401,6 +420,7 @@ _DECIDE_SYSTEM = (
     '{"action":"click","ref":"<ref>","reason":"..."}\n'
     '{"action":"type","ref":"<field ref>","text":"<text>","reason":"..."}\n'
     '{"action":"key","combo":"cmd+s","reason":"..."}\n'
+    '{"action":"scroll","direction":"down","amount":"page","reason":"..."}\n'
     '{"action":"open_app","app":"<name>","reason":"..."}\n'
     '{"action":"done","reason":"goal achieved"}\n'
     '{"action":"fail","reason":"why it cannot be done"}\n'
@@ -411,6 +431,16 @@ _DECIDE_SYSTEM = (
     "- Use \"click\" only for buttons, links, menu items, checkboxes, popups. Never "
     "click a container (AXGroup, AXScrollArea, AXWindow) or an element with no label.\n"
     "- Use \"key\" for keyboard shortcuts (save = cmd+s, select-all = cmd+a).\n"
+    "- SCROLLING: use action \"scroll\" with a direction (up/down/left/right) to move "
+    "the view — never a click or a Page Down key chord, which land in the wrong pane. "
+    "amount is \"page\" (default) or \"half\". Optionally pass the ref of the scroll "
+    "area / list you mean; omit it to scroll the main content.\n"
+    "- SEARCHING BY SCROLLING: for a goal like 'scroll until you find X', scroll ONE "
+    "page at a time and re-read the screen after each. Return \"done\" the moment X is "
+    "visible in the elements or the screenshot. If the last two screens are IDENTICAL "
+    "you have hit the end of the page — do not keep scrolling the same way; return "
+    "\"fail\" saying X isn't there (or scroll back the other way if you started "
+    "mid-page). Never scroll past a target you can already see.\n"
     "- LOGIN: if a password field is ALREADY FILLED (it shows masked dots, e.g. the "
     "browser autofilled a saved login), do NOT type — click the Sign in / Log in / "
     "Submit / Next button to log in. Only when the password field is EMPTY should you "
@@ -512,6 +542,15 @@ async def _execute(actor, ax_executor, decision: dict, app: Optional[str],
         return await actor.open_app(decision.get("app") or "")
     if act == "key":
         return await actor.key_combo(decision.get("combo") or "", app=app)
+    if act == "scroll":
+        # Scroll the app we're actually LOOKING at (like click does) — the
+        # run_loop `app` param can name a different app than the focused one,
+        # and a scroll sent there moves a window the user isn't watching.
+        return await actor.scroll(
+            direction=(decision.get("direction") or "down"),
+            amount=(decision.get("amount") or "page"),
+            ref=decision.get("ref") or None,
+            app=(observation or {}).get("app") or app)
     if act == "type":
         ref = decision.get("ref")
         if ref and ax_executor is not None:
@@ -836,7 +875,7 @@ async def run_loop(
         decision = await _decide(client, goal, observation, history)
         act = decision.get("action")
         summary = decision.get("reason", "")
-        await _emit("decide", f"{act} {decision.get('target') or decision.get('app') or decision.get('combo') or decision.get('ref') or ''}".strip(),
+        await _emit("decide", f"{act} {decision.get('target') or decision.get('app') or decision.get('combo') or decision.get('direction') or decision.get('ref') or ''}".strip(),
                     detail=summary)
 
         # Guard against a lazy first-step "done" (the model glancing at a busy
@@ -936,11 +975,26 @@ async def run_loop(
 
         result = await _execute(actor, ax_executor, decision, app, observation)
         ok = bool(getattr(result, "ok", False))
+        msg = getattr(result, "message", "")
+
+        # End-of-page detection for scrolling. A scroll at the bottom of a page
+        # "succeeds" — the event posts fine, nothing moves — so a search loop
+        # would happily scroll down eight more times. Compare the view before and
+        # after and tell the model, in its own history, that it has hit the end;
+        # the prompt then turns that into a `fail` instead of a stuck sweep.
+        if ok and act == "scroll":
+            await asyncio.sleep(_ACT_SETTLE)
+            after = await perception.build_observation(executor, app=app)
+            if _view_signature(after) == _view_signature(observation):
+                msg = (f"the view did not move — this is the "
+                       f"{'top' if decision.get('direction') == 'up' else 'end'} of the page")
+
         history.append({"step": step, "action": act,
-                        "target": decision.get("ref") or decision.get("app") or decision.get("combo"),
-                        "ok": ok, "msg": getattr(result, "message", "")})
-        await _emit("act", getattr(result, "message", "") or act,
-                    status="done" if ok else "error")
+                        "target": (decision.get("direction") if act == "scroll"
+                                   else decision.get("ref") or decision.get("app")
+                                   or decision.get("combo")),
+                        "ok": ok, "msg": msg})
+        await _emit("act", msg or act, status="done" if ok else "error")
 
         # Let the UI settle (menu open animation, page nav) before re-observing —
         # otherwise the next screenshot catches it mid-render and the model can't
