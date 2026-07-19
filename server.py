@@ -6228,6 +6228,14 @@ _SUMMARIZE_SCREEN_RE = re.compile(
 # path, and "check my inbox" still goes to the Apple-Mail quick check (no "check"
 # verb here). A trailing qualifier ("… from Stripe") won't match $, so a single
 # named email still routes to OPEN_ON_SCREEN.
+_MONTHS = (r'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|'
+           r'jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|'
+           r'nov(?:ember)?|dec(?:ember)?')
+# A spoken date tail the digest understands: today / yesterday / "July 16(th)" /
+# "the 16th". Specific months/days are resolved to an ISO date in the handler.
+_WHEN = (r'today|yesterday'
+         r'|(?:' + _MONTHS + r')\.?\s+\d{1,2}(?:st|nd|rd|th)?'
+         r'|the\s+\d{1,2}(?:st|nd|rd|th)?')
 _INBOX_DIGEST_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+|now\s+|hey\s+valet[,\s]+)?'
     r'(?:go(?:ing)?\s+through|catch\s+me\s+up\s+on|run\s+(?:me\s+)?through|'
@@ -6236,7 +6244,8 @@ _INBOX_DIGEST_RE = re.compile(
     r'(?P<acct>work|personal|business|home|office)?\s*'
     r'(?:today\'?s?\s+)?'
     r'(?:inbox|e-?mails?|mail|messages?)'
-    r'(?:\s+(?:for\s+|from\s+)?today|\s+in\s+my\s+inbox)?\s*[.?!]*$',
+    r'(?:\s+(?:for\s+|from\s+)?(?P<when>' + _WHEN + r'))?'
+    r'(?:\s+in\s+my\s+inbox)?\s*[.?!]*$',
     re.IGNORECASE)
 # Stage 3 — guided walkthroughs. Explicit "teach me" intents only ("how do I X"
 # stays conversational/LLM so it can answer in words).
@@ -6546,7 +6555,9 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # a plural/inbox-scoped ask isn't collapsed into a single focused-email summary.
     _idm = _INBOX_DIGEST_RE.match(t)
     if _idm:
-        return {"action": "summarize_inbox", "account": (_idm.group("acct") or "")}
+        return {"action": "summarize_inbox",
+                "account": (_idm.group("acct") or ""),
+                "date": (_idm.group("when") or "")}
 
     # Summarize the focused content + action items ("summarize what I need to
     # do", "tldr this", "what does this say"). Before describe_screen so a
@@ -7381,25 +7392,57 @@ async def _handle_summarize(ws, voice_state: dict = None) -> None:
     await _speak(ws, summary)
 
 
+_MONTH_NUM = {m: i for i, ms in enumerate(
+    [("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"),
+     ("may",), ("jun", "june"), ("jul", "july"), ("aug", "august"),
+     ("sep", "sept", "september"), ("oct", "october"), ("nov", "november"),
+     ("dec", "december")], start=1) for m in ms}
+
+
 def _resolve_digest_date(raw: str) -> tuple[str, str, str]:
     """Resolve a spoken date hint into (date_iso, date_label, today_iso).
 
-    Accepts what the LLM emits: an ISO date (YYYY-MM-DD, preferred — it knows
-    today), 'today', 'yesterday', or empty. date_iso is '' for today (the inbox
-    fast path); date_label is the spoken form used in replies."""
+    Accepts an ISO date (YYYY-MM-DD), 'today', 'yesterday', a spoken 'July 16(th)',
+    or 'the 16th'. date_iso is '' for today (the inbox fast path); date_label is the
+    spoken form used in replies. A parsed day in the future rolls back a year/month
+    (you meant the most recent one)."""
     from datetime import date as _date
     now = datetime.now()
-    today_iso = now.date().isoformat()
-    raw = (raw or "").strip().lower()
+    today = now.date()
+    today_iso = today.isoformat()
+    raw = (raw or "").strip().lower().rstrip(".?!")
     if raw in ("", "today"):
         return "", "today", today_iso
     if raw == "yesterday":
-        y = now.date() - timedelta(days=1)
-        return y.isoformat(), "yesterday", today_iso
+        return (today - timedelta(days=1)).isoformat(), "yesterday", today_iso
+
+    d = None
     try:
         d = _date.fromisoformat(raw)
     except ValueError:
-        return "", (raw or "today"), today_iso   # unparseable → treat as today
+        # "july 16", "jul 16th"
+        m = re.match(r'([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?$', raw)
+        if m and m.group(1) in _MONTH_NUM:
+            try:
+                d = _date(today.year, _MONTH_NUM[m.group(1)], int(m.group(2)))
+                if d > today:                      # that month/day hasn't come yet
+                    d = d.replace(year=today.year - 1)
+            except ValueError:
+                d = None
+        else:
+            # "the 16th" / "16th" → that day in the current month (or last month)
+            m2 = re.match(r'(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?$', raw)
+            if m2:
+                day = int(m2.group(1))
+                try:
+                    d = today.replace(day=day)
+                    if d > today:
+                        mm, yy = (today.month - 1, today.year) if today.month > 1 else (12, today.year - 1)
+                        d = _date(yy, mm, day)
+                except ValueError:
+                    d = None
+    if d is None:
+        return "", (raw or "today"), today_iso     # unparseable → treat as today
     if d.isoformat() == today_iso:
         return "", "today", today_iso
     return d.isoformat(), f"{d.strftime('%B')} {d.day}", today_iso
