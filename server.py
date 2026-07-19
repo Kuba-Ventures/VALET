@@ -6245,8 +6245,9 @@ _MONTHS = (r'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|'
 # A spoken date tail the digest understands: today / yesterday / "July 16(th)" /
 # "the 16th". Specific months/days are resolved to an ISO date in the handler.
 _WHEN = (r'today|yesterday'
-         r'|(?:' + _MONTHS + r')\.?\s+\d{1,2}(?:st|nd|rd|th)?'
-         r'|the\s+\d{1,2}(?:st|nd|rd|th)?')
+         r'|(?:' + _MONTHS + r')\.?\s+\d{1,2}(?:st|nd|rd|th)?'          # "July 16"
+         r'|(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:' + _MONTHS + r')'  # "25 June", "the 25th of June"
+         r'|the\s+\d{1,2}(?:st|nd|rd|th)?')                             # "the 16th"
 _INBOX_DIGEST_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+|now\s+|hey\s+valet[,\s]+)?'
     r'(?:go(?:ing)?\s+through|catch\s+me\s+up\s+on|run\s+(?:me\s+)?through|'
@@ -7544,19 +7545,26 @@ def _resolve_digest_date(raw: str) -> tuple[str, str, str]:
     if raw == "yesterday":
         return (today - timedelta(days=1)).isoformat(), "yesterday", today_iso
 
+    def _most_recent(month: int, day: int):
+        """That month/day, this year — or last year if it hasn't come yet."""
+        try:
+            dd = _date(today.year, month, day)
+            return dd.replace(year=today.year - 1) if dd > today else dd
+        except ValueError:
+            return None
+
     d = None
     try:
         d = _date.fromisoformat(raw)
     except ValueError:
-        # "july 16", "jul 16th"
+        # "july 16", "jul 16th" (month-day, US order)
         m = re.match(r'([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?$', raw)
+        # "25 june", "25th june", "the 25th of june" (day-month, British order)
+        m3 = re.match(r'(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-z]+)\.?$', raw)
         if m and m.group(1) in _MONTH_NUM:
-            try:
-                d = _date(today.year, _MONTH_NUM[m.group(1)], int(m.group(2)))
-                if d > today:                      # that month/day hasn't come yet
-                    d = d.replace(year=today.year - 1)
-            except ValueError:
-                d = None
+            d = _most_recent(_MONTH_NUM[m.group(1)], int(m.group(2)))
+        elif m3 and m3.group(2) in _MONTH_NUM:
+            d = _most_recent(_MONTH_NUM[m3.group(2)], int(m3.group(1)))
         else:
             # "the 16th" / "16th" → that day in the current month (or last month)
             m2 = re.match(r'(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?$', raw)
@@ -8882,8 +8890,11 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _handle_summarize shows the panel + speaks
                                     elif action_type == "summarize_inbox":
                                         # Batch read is slow — ack up front, then the
-                                        # handler speaks the digest when it's ready.
-                                        response_text = "Going through today's emails now, sir."
+                                        # handler speaks the digest when it's ready. Date-
+                                        # agnostic ("those", not "today's"): the request may
+                                        # scope to any day, and the handler speaks the real
+                                        # day back (issue #311).
+                                        response_text = "Going through those emails now, sir."
                                     elif action_type == "sports":
                                         response_text = ""  # _execute_sports emits the card + speaks
                                     elif action_type == "stats":
@@ -10705,59 +10716,34 @@ def _looks_like_account_reply(reply: str) -> bool:
         "qsbs", "rollover", "the first", "the second", "first one", "second one")))
 
 
-async def _gmail_inbox_summary(observation: dict) -> str:
-    """LLM summary of the loaded Gmail inbox (screenshot + AX text) — a concise
-    spoken rundown of today's mail."""
-    import perception
-    system = (
-        "You are VALET reading the user's Gmail inbox aloud. Give a tight spoken "
-        "rundown of the emails received TODAY — skip older mail and obvious "
-        "promo/social clutter unless notable. Lead with the count, then the few "
-        "that matter by sender and a one-line gist. British butler tone, dry and "
-        "economical. No markdown, no bullets — this is spoken. Under about 70 "
-        "words. If nothing arrived today, say so plainly, sir."
-    )
-    elements = observation.get("elements", [])
-    ax_text = perception.elements_as_text(elements, limit=80)
-    user_text = (f"Gmail inbox ({observation.get('app', 'Chrome')}).\n"
-                 f"Visible rows / text:\n{ax_text}\n\nSummarize today's emails.")
-    try:
-        content = [{"type": "text", "text": user_text}]
-        img = observation.get("image")
-        if img:
-            content.insert(0, {"type": "image", "source": {
-                "type": "base64", "media_type": img["media_type"], "data": img["b64"]}})
-        resp = await anthropic_client.messages.create(
-            model="claude-haiku-4-5-20251001", max_tokens=400, system=system,
-            messages=[{"role": "user", "content": content}])
-        return resp.content[0].text
-    except Exception as e:
-        log.warning(f"gmail summary failed: {e}")
-        return "I couldn't read your inbox clearly, sir."
+# Pull the date + account scope back out of a Gmail summarize goal ("go to my
+# gmail and summarize today's emails") so the guided-login hand-off runs the SAME
+# date-honoring digest as the direct path. `_WHEN` matches today/yesterday/"July
+# 16"/"the 16th" exactly as `_INBOX_DIGEST_RE` does; the account word mirrors
+# `_INBOX_GOTO_ACCT_RE`. Search (not match) — the scope sits mid-sentence.
+_GMAIL_GOAL_WHEN_RE = re.compile(r'\b(?P<when>' + _WHEN + r')', re.IGNORECASE)
+_GMAIL_GOAL_ACCT_RE = re.compile(
+    r'\b(?P<acct>work|personal|business|home|office)\b', re.IGNORECASE)
 
 
-async def _summarize_gmail_inbox(ws, observation=None) -> None:
-    """Read the loaded Gmail inbox and speak a summary of today's mail — the payoff
-    of the guided-login flow (the original 'summarize today's emails' request, run
-    once we're actually in). Waits briefly for the inbox to finish loading."""
-    import perception
-    import agent_loop
-    async with process_bus.task_context("Summarize Gmail") as task_id:
-        await emit_step(task_id, "Reading your inbox…", status="active")
-        obs = observation
-        for _ in range(6):
-            if obs and agent_loop._is_gmail_inbox(obs):
-                break
-            await asyncio.sleep(1.0)
-            obs = await perception.build_observation(executor, app=None)
-        if not (obs and agent_loop._is_gmail_inbox(obs)):
-            await emit_step(task_id, "Inbox not visible", status="error")
-            await _speak(ws, "I'm signed in but not seeing the inbox yet, sir — say "
-                             "'summarize my inbox' when it's up.")
-            return
-        summary = await _gmail_inbox_summary(obs)
-        await emit_step(task_id, "Summary ready", status="done")
-    await _speak(ws, summary)
+def _gmail_goal_scope(goal: str) -> tuple[str, str]:
+    """(account, date) parsed from a 'go to gmail and summarize <when>' goal, so the
+    post-login digest scopes to the day/account the user actually named."""
+    g = goal or ""
+    a = _GMAIL_GOAL_ACCT_RE.search(g)
+    w = _GMAIL_GOAL_WHEN_RE.search(g)
+    return (a.group("acct") if a else ""), (w.group("when") if w else "")
+
+
+async def _summarize_gmail_inbox(ws, goal: str = "") -> None:
+    """Payoff of the guided-login flow: once we're actually in Gmail, run the SAME
+    date-honoring inbox digest as the direct 'summarize today's emails' path,
+    scoped to whatever day/account the original goal named (issue #311). Earlier
+    this read the whole visible list with an ad-hoc LLM call and silently dropped
+    the 'today' scope — so 'go to my gmail and summarize today's emails' summarized
+    everything on screen instead of just today's mail."""
+    account, date = _gmail_goal_scope(goal)
+    await _handle_summarize_inbox(ws, account=account, date=date)
 
 
 async def _handle_ui_task(goal: str, ws, prenav: bool = True,
@@ -10808,7 +10794,7 @@ async def _handle_ui_task(goal: str, ws, prenav: bool = True,
     # Reached the inbox (signed in just now, or already were) → honor the original
     # summarize request instead of stopping at "you're in".
     if is_summary and result.get("reason") in ("at_inbox", "signed_in"):
-        await _summarize_gmail_inbox(ws)
+        await _summarize_gmail_inbox(ws, goal=goal)
         return
     await _speak(ws, result.get("message") or "Done, sir.")
 
