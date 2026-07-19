@@ -245,11 +245,18 @@ def _body_to_html(body: str) -> str:
     """Convert plain text / markdown to HTML for Apple Notes.
 
     Supports:
-    - Checklist items: "- [ ] task" or "- [x] task" → checkbox
+    - Checklist items: "- [ ] task" / "- [x] task" → a ☐ / ☑ glyph line
     - Bullet points: "- item" → bullet
     - Numbered lists: "1. item" → numbered
     - Plain text → paragraphs
-    """
+
+    NOTE on checkboxes: `<input type="checkbox">` is NOT used — modern Apple Notes
+    (macOS 26 / Notes 4.13, verified) silently DROPS <input> on AppleScript body
+    import, leaving the task as bare text indistinguishable from other lines. No
+    HTML markup (Apple-dash-list, todo lists, etc.) produces a native *tickable*
+    checklist via AppleScript on this version. The ☐/☑ glyph is the reliable way to
+    render a checkbox that's visible and distinct; it isn't tap-to-check, but a
+    real tickable checklist would need GUI automation, not body HTML."""
     import re
     lines = body.split("\n")
     html_lines = []
@@ -260,10 +267,10 @@ def _body_to_html(body: str) -> str:
             html_lines.append("<br>")
         elif re.match(r"^-\s*\[x\]\s*", stripped, re.IGNORECASE):
             text = re.sub(r"^-\s*\[x\]\s*", "", stripped, flags=re.IGNORECASE)
-            html_lines.append(f'<div><input type="checkbox" checked="checked"> {text}</div>')
+            html_lines.append(f"<div>&#9745; {text}</div>")   # ☑ checked
         elif re.match(r"^-\s*\[\s?\]\s*", stripped):
             text = re.sub(r"^-\s*\[\s?\]\s*", "", stripped)
-            html_lines.append(f'<div><input type="checkbox"> {text}</div>')
+            html_lines.append(f"<div>&#9744; {text}</div>")   # ☐ unchecked
         elif re.match(r"^[-*+]\s+", stripped):
             text = re.sub(r"^[-*+]\s+", "", stripped)
             html_lines.append(f"<div>• {text}</div>")
