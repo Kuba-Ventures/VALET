@@ -143,7 +143,7 @@ import contacts_access
 from notes_access import get_recent_notes, read_note, open_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
-from plan_stages import StageTracker, generate_stages, run_tracker_loop
+from plan_stages import StageTracker, generate_stages, run_tracker_loop, staged_task
 from page_preview import fetch_page_preview
 # Stage C/D control + safety layer.
 from applescript_executor import AppleScriptExecutor
@@ -7458,27 +7458,37 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
 
     `account` (from "… my WORK email") picks which inbox when several Gmail accounts
     are open. `date` (ISO / 'today' / 'yesterday') picks the day. Preconditions are
-    #284's job (Gmail open + signed in); if it isn't we say so rather than guessing."""
+    #284's job (Gmail open + signed in); if it isn't we say so rather than guessing.
+
+    Runs as a STAGED task — a fixed three-step plan (find → read → summarize) that
+    checks itself off deterministically, so the panel shows live progress and the
+    ambient working hum sounds while it runs."""
     import inbox_digest
     dispatch_time = time.time()
     summary = "I couldn't read your inbox, sir."
     date_iso, date_label, today_iso = _resolve_digest_date(date)
-    async with process_bus.task_context(f"Inbox · {date_label}") as task_id:
+    stages = ["Finding your inbox", f"Reading {date_label}'s mail", "Summarizing"]
+    async with staged_task(f"Inbox · {date_label}", stages) as st:
         async def _emit(title, detail="", status="active"):
-            await emit_step(task_id, title, detail=detail, status=status)
+            await emit_step(st.task_id, title, detail=detail, status=status)
         try:
             today_str = datetime.now().strftime("%A, %B %d, %Y")
             result = await inbox_digest.run_digest(
                 executor, _ax_executor, anthropic_client,
-                emit=_emit, kill_switch=kill_switch, today_str=today_str,
-                account=account, date_iso=date_iso, today_iso=today_iso,
-                date_label=date_label, user_name=USER_NAME)
+                emit=_emit, stage=st.advance, kill_switch=kill_switch,
+                today_str=today_str, account=account, date_iso=date_iso,
+                today_iso=today_iso, date_label=date_label, user_name=USER_NAME)
             summary = result.get("summary") or summary
-            if result.get("status") == "error":
-                await emit_error(task_id, "Inbox digest failed", detail=summary[:200])
+            # no_inbox / error / halted didn't complete the plan — mark it errored
+            # (empty is a real completion: we read, there was just nothing).
+            if result.get("status") in ("no_inbox", "error", "halted"):
+                await st.finish(ok=False)
+                if result.get("status") == "error":
+                    await emit_error(st.task_id, "Inbox digest failed", detail=summary[:200])
         except Exception as e:
             log.error(f"summarize_inbox failed: {e}")
-            await emit_error(task_id, "Inbox digest failed", detail=str(e)[:200])
+            await emit_error(st.task_id, "Inbox digest failed", detail=str(e)[:200])
+            await st.finish(ok=False)
     # Speak the digest — unless the user already moved on (barge-in).
     if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
         return

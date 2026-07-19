@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from process_events import emit_plan_stage
@@ -173,6 +174,18 @@ class StageTracker:
         await self._emit(idx, "active")
         self.current = idx
 
+    # --- deterministic advancement (no Haiku) --------------------------------
+    # For fixed pipelines whose stages are known up front (e.g. the inbox digest):
+    # declare the stages, then check them off by hand. Monotonic, like the
+    # classifier path, but free — no client, no run_tracker_loop.
+    async def advance_to(self, idx: int) -> None:
+        """Move the active stage to `idx` (marking any skipped stages done)."""
+        await self._advance_to(idx)
+
+    async def advance(self) -> None:
+        """Advance to the next stage."""
+        await self._advance_to(self.current + 1)
+
     async def tick(self) -> None:
         """One classify-and-maybe-advance beat. Safe to call frequently."""
         if self._done or not self.client:
@@ -242,3 +255,33 @@ async def run_tracker_loop(tracker: StageTracker) -> None:
         pass
     except Exception as e:  # defensive: a ticker crash must not surface
         log.debug("tracker loop stopped: %s", e)
+
+
+@asynccontextmanager
+async def staged_task(title: str, stages: list[str], *, detail: str = "",
+                      plan_title: Optional[str] = None):
+    """One-liner staging for a FIXED, deterministic multi-step task: opens a
+    process-panel task, renders `stages` as a live plan, and yields a StageTracker
+    to check them off with `.advance()`. On exit it closes the plan out (errored if
+    the body raised). No Haiku, no classifier — the plan mirrors the code's own
+    linear progress, which also lights the ambient "working" hum (gated on
+    plan.stage events).
+
+        async with staged_task("Inbox · today", ["Find inbox", "Read", "Summarize"]) as st:
+            ...; await st.advance()      # → Read
+            ...; await st.advance()      # → Summarize
+            ...
+
+    The task_id is on the yielded tracker (`st.task_id`) for emitting granular
+    step events alongside the plan."""
+    from process_events import bus as process_bus
+    async with process_bus.task_context(title, detail) as task_id:
+        tracker = StageTracker(task_id, stages, plan_title or title)
+        await tracker.begin()
+        try:
+            yield tracker
+        except Exception:
+            await tracker.finish(ok=False)
+            raise
+        else:
+            await tracker.finish(ok=True)
