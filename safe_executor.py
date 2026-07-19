@@ -147,6 +147,18 @@ class SafeExecutor(ActionExecutor):
                                     targets=[app] if app else [])
         return blocked or await self._delegate.key_combo(combo, app=app, task_id=task_id)
 
+    async def scroll(self, *, direction: str = "down", amount: str = "page",
+                     ref: Optional[str] = None, point: Optional[tuple] = None,
+                     app: Optional[str] = None, task_id: Optional[str] = None) -> ActionResult:
+        # Tier 0 like observe_ui — scrolling moves the view and mutates nothing,
+        # so it never pops a confirm card. The kill switch still applies.
+        blocked = await self._guard(Capability.SCROLL,
+                                    summary=f"Scroll {direction}" + (f" in {app}" if app else ""),
+                                    targets=[app] if app else [])
+        return blocked or await self._delegate.scroll(
+            direction=direction, amount=amount, ref=ref, point=point,
+            app=app, task_id=task_id)
+
     # --- introspection (no gate) ----------------------------------------
     async def is_app_scriptable(self, app: str) -> bool:
         return await self._delegate.is_app_scriptable(app)

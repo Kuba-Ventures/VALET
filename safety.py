@@ -57,6 +57,10 @@ _ALWAYS_TIER0 = {
     Capability.NAVIGATE,
     # Reading the accessibility tree is a pure observation.
     Capability.OBSERVE_UI,
+    # Scrolling only moves the viewport — nothing is pressed, typed or changed,
+    # and it's fully undone by scrolling back. Carding it would put a confirm
+    # tap in front of every step of a "scroll until you find X" sweep.
+    Capability.SCROLL,
 }
 
 # Protected roots: writing/moving/deleting under these warrants an explicit
