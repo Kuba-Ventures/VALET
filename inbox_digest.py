@@ -416,11 +416,18 @@ async def _enumerate_rows(client, obs: dict, cap: int, when_str: str,
     # date/time near the END of a ~100-char row label ("Sender , Subject … , 6:36
     # AM , snippet"). Truncating chops off the time, so the model can't tell which
     # rows are today's and reports an empty inbox. Keep the message rows in full.
+    #
+    # 420 (was 220): the row label carries a chunk of the BODY preview after the
+    # date, and the specific detail we want for the note (issue #310 — e.g. a Search
+    # Console reason "Duplicate, Google chose different canonical than user") often
+    # sits ~100+ chars into that body, AFTER a long subject. A 220 cap chopped it
+    # off, so the structured summary could only restate the subject. Keeping more of
+    # the label lets the enumerator capture the specific detail into `snippet`.
     _lines = []
     for e in (obs.get("elements") or [])[:250]:
         _lab = (e.get("title") or e.get("value") or "").strip()
         if _lab:
-            _lines.append(f"[{e.get('ref','')}] {e.get('role','')} — {_lab[:220]}")
+            _lines.append(f"[{e.get('ref','')}] {e.get('role','')} — {_lab[:420]}")
     elements_txt = "\n".join(_lines)
     if mode == "date":
         which = (
@@ -443,8 +450,11 @@ async def _enumerate_rows(client, obs: dict, cap: int, when_str: str,
         "A row label reads 'Participants , Subject , [date/time] , body preview…'. "
         "For each row give: sender = the participant/sender text EXACTLY as shown "
         "(e.g. 'me, Jacques' — keep 'me' and all names, verbatim); subject; and "
-        "snippet = the body-preview text after the date/time (verbatim, the latest "
-        "message in the thread — don't invent).\n"
+        "snippet = the body-preview text after the date/time — capture ALL of it "
+        "verbatim (it's the latest message in the thread; don't invent, don't "
+        "shorten). Keep any SPECIFIC detail it contains — a concrete reason, error, "
+        "amount, name, or status (e.g. 'Duplicate, Google chose different canonical "
+        "than user') — that's the useful part, so never drop it.\n"
         f"Return AT MOST {cap} rows. Reply with STRICT JSON only:\n"
         '{"rows":[{"sender":"...","subject":"...","snippet":"..."}],"has_more":false}\n'
         f'Set "has_more" true if there are MORE than {cap} matching rows '
@@ -521,6 +531,128 @@ async def _aggregate(client, emails: list, total_hint: str, user_name: str = "")
     except Exception as e:
         log.warning("inbox aggregate failed: %s", e)
         return _fallback_digest(emails)
+
+
+async def _structure(client, emails: list, user_name: str = "") -> list:
+    """Break the collected emails into per-email note fields — one dict each with
+    `from` (who actually sent the latest message), `subject`, `task` (a single
+    action item the user must DO, '' if none), and `summary` (one short line).
+
+    This is the STRUCTURED artifact the note is written from (issue #310); the
+    spoken digest (`_aggregate`) stays a paragraph. Order and count mirror
+    `emails`. Fails soft to a sender/subject/preview projection so the note still
+    saves when the model is unavailable or returns junk."""
+    if not emails:
+        return []
+    if not client:
+        return _fallback_structured(emails)
+    blocks = []
+    for i, e in enumerate(emails, 1):
+        blocks.append(
+            f"[{i}] Participants: {e.get('sender') or 'unknown'}\n"
+            f"Subject: {e.get('subject') or '(none)'}\n"
+            f"Latest message preview: {e.get('body') or '(unreadable)'}")
+    owner = (user_name or "").strip()
+    who_is_me = (f" The account owner is {owner}, shown as 'me' in the participant "
+                 "list." if owner and owner.lower() != "sir" else
+                 " The account owner is shown as 'me' in the participant list.")
+    system = (
+        "You are structuring a batch of emails into per-email note entries. Return "
+        "ONE entry per numbered email, IN ORDER, same count as the input.\n"
+        "For each email give:\n"
+        "  from    = who actually sent the LATEST message (a clean name, not the "
+        "raw participant list).\n"
+        "  subject = the email's subject, verbatim.\n"
+        "  task    = the ONE action item the user must DO because of this email, "
+        "phrased as a short imperative ('Review the failed fixes'). Use \"\" (empty) "
+        "if the email needs no action — do NOT invent a task.\n"
+        "  summary = the SPECIFIC substance of the email — the concrete reason, "
+        "error, figure, decision, or status found in the preview (e.g. 'Duplicate, "
+        "Google chose different canonical than user'), NOT a paraphrase of the "
+        "subject. The subject already tells the user the headline; the summary must "
+        "ADD the specific detail. If the preview genuinely carries nothing beyond "
+        "the subject, give the single most useful concrete fact or use \"\" — never "
+        "just restate the subject in other words.\n\n"
+        "IMPORTANT — sender attribution: 'Participants' is Gmail's thread "
+        "participant list, NOT the sender." + who_is_me + " The preview is the MOST "
+        "RECENT message; work out who sent it (usually the OTHER participant). A "
+        "preview greeting the owner by name was sent TO the owner.\n"
+        "Write plain text with NO em dashes or en dashes (— or –) in any field; "
+        "use commas or separate sentences instead.\n"
+        "Reply with STRICT JSON only:\n"
+        '{"items":[{"from":"...","subject":"...","task":"...","summary":"..."}]}')
+    user = "\n\n".join(blocks)
+    try:
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1200,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        data = _parse_json(resp.content[0].text)
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list) or not items:
+            return _fallback_structured(emails)
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            out.append({
+                "from": (it.get("from") or "").strip(),
+                "subject": (it.get("subject") or "").strip(),
+                "task": (it.get("task") or "").strip(),
+                "summary": (it.get("summary") or "").strip(),
+            })
+        return out or _fallback_structured(emails)
+    except Exception as e:
+        log.warning("inbox structure failed: %s", e)
+        return _fallback_structured(emails)
+
+
+def _fallback_structured(emails: list) -> list:
+    """No-model projection of the collected rows into note fields: sender/subject as
+    given, the body preview as the summary, and no task (we can't infer one without
+    the model). Keeps the note saving even when the aggregation model is down."""
+    return [{"from": (e.get("sender") or "").strip(),
+             "subject": (e.get("subject") or "").strip(),
+             "task": "",
+             "summary": (e.get("body") or "").strip()} for e in emails]
+
+
+def _strip_dashes(text: str) -> str:
+    """Remove em/en dashes from note text — the user wants none in saved notes. A
+    dash used as a spaced prose break becomes a comma; any remaining em/en dash
+    becomes a plain hyphen so compounds stay readable. Ordinary hyphen-minus is
+    never touched (it doesn't match)."""
+    text = re.sub(r"\s+[—–]\s+", ", ", text)   # "word — word" → "word, word"
+    text = re.sub(r"[—–]", "-", text)          # any leftover em/en dash → hyphen
+    return text
+
+
+def _note_body_from_structured(items: list, date_label: str, total: int,
+                               capped: bool) -> str:
+    """Render the structured per-email entries into the note body — one block per
+    email (a 'From: Subject' heading, a tickable '- [ ]' task line when there's an
+    action item, and the one-line summary). `notes_access._body_to_html` turns the
+    '- [ ]' lines into real Notes checkboxes and the blank lines into spacing. The
+    whole body is run through `_strip_dashes` so no em dashes reach the note (user
+    preference) — including any the model put in a subject/task/summary."""
+    header = f"{total} email{'s' if total != 1 else ''} from {date_label}"
+    lines = [header, ""]
+    for it in items:
+        subj = (it.get("subject") or "").strip() or "(no subject)"
+        frm = (it.get("from") or "").strip()
+        lines.append(f"{frm}: {subj}" if frm else subj)
+        task = (it.get("task") or "").strip()
+        if task:
+            lines.append(f"- [ ] {task}")
+        summ = (it.get("summary") or "").strip()
+        if summ:
+            lines.append(summ)
+        lines.append("")
+    if capped:
+        lines.append(f"(The {total} most recent from {date_label}; there were more.)")
+    return _strip_dashes("\n".join(lines).strip())
 
 
 def cap_len(emails: list) -> int:
@@ -612,8 +744,11 @@ async def run_digest(executor, ax_executor, client, *,
     Gmail `after:/before:` search (so mail that isn't on the inbox's first page
     still shows). `date_label` is the spoken form ("today", "yesterday", "July 16").
 
-    Returns {status, summary, count, capped}:
+    Returns {status, summary, count, capped, note_body}:
       status: done | empty | no_inbox | halted | error
+      summary:   the spoken paragraph digest.
+      note_body: structured per-email text to write to a note (issue #310) —
+                 present only on status=done; falls back to `summary` upstream.
     """
     async def _emit(title, detail="", status="active"):
         if emit:
@@ -717,11 +852,17 @@ async def run_digest(executor, ax_executor, client, *,
         when = today_str if is_today else _gmail_date_display(date_iso)
         mode = "today" if is_today else "date"
         enum = await _enumerate_rows(client, obs, cap, when, mode=mode)
-        if not enum["rows"]:
-            # Rows may have painted just after we read, or the model under-returned
-            # — settle once more and retry before concluding the day is empty.
-            await asyncio.sleep(1.5)
-            obs = await perception.build_observation(executor, app=app)
+        # False-empty guard. An empty result on an inbox that HAS mail is the common
+        # flake ("randomly can't find my emails, works on the second try"): Gmail's
+        # SPA is still painting rows into the AX tree, or the enumerator under-
+        # returned on a heavy list. Retry a few times, each time RE-WAITING for rows
+        # to actually render (not just a fixed sleep), before concluding the day is
+        # empty. Bails immediately on the kill switch.
+        _tries = 0
+        while not enum["rows"] and _tries < 3 and not _halted():
+            _tries += 1
+            await asyncio.sleep(1.0)
+            obs = await _await_inbox_ready(executor, app, _halted, tries=5, delay=0.6)
             enum = await _enumerate_rows(client, obs, cap, when, mode=mode)
         rows = enum["rows"]
         capped = enum["has_more"]
@@ -750,13 +891,22 @@ async def run_digest(executor, ax_executor, client, *,
                       "subject": r.get("subject", ""),
                       "body": r.get("snippet", "")} for r in rows]
         total_hint = f"{total} email(s) from {date_label} (summarized from the inbox previews)."
-        summary = await _aggregate(client, collected, total_hint, user_name=user_name)
+        # Spoken paragraph (_aggregate) and the structured per-email note body
+        # (_structure, issue #310) come from the same rows — run them together so
+        # the extra call adds no wall-clock. The note is written from `note_body`;
+        # the voice line stays the conversational paragraph.
+        summary, structured = await asyncio.gather(
+            _aggregate(client, collected, total_hint, user_name=user_name),
+            _structure(client, collected, user_name=user_name),
+        )
+        note_body = _note_body_from_structured(structured, date_label, total, capped)
         # State the cap deterministically (issue: never silently truncate).
         if capped:
             summary = (summary.rstrip() + f" That's the {total} most recent from "
                        f"{date_label}, sir — there were more.")
         await _emit(f"Digest ready — {total} email(s)", status="done")
-        return {"status": "done", "count": total, "capped": capped, "summary": summary}
+        return {"status": "done", "count": total, "capped": capped,
+                "summary": summary, "note_body": note_body}
     except Exception as e:
         log.error("inbox digest failed: %s", e)
         return {"status": "error", "count": 0, "capped": False,
