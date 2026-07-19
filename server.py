@@ -7429,7 +7429,7 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
                 executor, _ax_executor, anthropic_client,
                 emit=_emit, kill_switch=kill_switch, today_str=today_str,
                 account=account, date_iso=date_iso, today_iso=today_iso,
-                date_label=date_label)
+                date_label=date_label, user_name=USER_NAME)
             summary = result.get("summary") or summary
             if result.get("status") == "error":
                 await emit_error(task_id, "Inbox digest failed", detail=summary[:200])

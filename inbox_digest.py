@@ -415,9 +415,11 @@ async def _enumerate_rows(client, obs: dict, cap: int, when_str: str,
         "You are reading a Gmail accessibility element list.\n" + which +
         "Ignore the compose button, search box, category tabs (Primary/Social/"
         "Promotions), labels, nav, and footer — only real message rows.\n"
-        "A row label reads 'Sender , Subject , [date/time] , body preview…'. For "
-        "each row give the sender, the subject, and the snippet (the body-preview "
-        "text after the date/time — verbatim, don't invent).\n"
+        "A row label reads 'Participants , Subject , [date/time] , body preview…'. "
+        "For each row give: sender = the participant/sender text EXACTLY as shown "
+        "(e.g. 'me, Jacques' — keep 'me' and all names, verbatim); subject; and "
+        "snippet = the body-preview text after the date/time (verbatim, the latest "
+        "message in the thread — don't invent).\n"
         f"Return AT MOST {cap} rows. Reply with STRICT JSON only:\n"
         '{"rows":[{"sender":"...","subject":"...","snippet":"..."}],"has_more":false}\n'
         f'Set "has_more" true if there are MORE than {cap} matching rows '
@@ -446,7 +448,7 @@ async def _enumerate_rows(client, obs: dict, cap: int, when_str: str,
         return {"rows": [], "has_more": False}
 
 
-async def _aggregate(client, emails: list, total_hint: str) -> str:
+async def _aggregate(client, emails: list, total_hint: str, user_name: str = "") -> str:
     """Synthesize ONE spoken digest over all collected emails: a lead gist plus a
     quick per-email one-liner. British-butler voice, suitable to speak AND to write
     to a note (#286)."""
@@ -457,17 +459,30 @@ async def _aggregate(client, emails: list, total_hint: str) -> str:
     blocks = []
     for i, e in enumerate(emails, 1):
         blocks.append(
-            f"[{i}] From: {e.get('sender') or 'unknown'}\n"
+            f"[{i}] Participants: {e.get('sender') or 'unknown'}\n"
             f"Subject: {e.get('subject') or '(none)'}\n"
-            f"Content: {e.get('body') or '(unreadable)'}")
+            f"Latest message preview: {e.get('body') or '(unreadable)'}")
+    owner = (user_name or "").strip()
+    who_is_me = (f" The account owner is {owner}, shown as 'me' in the participant "
+                 "list." if owner and owner.lower() != "sir" else
+                 " The account owner is shown as 'me' in the participant list.")
     system = (
-        "You are VALET giving the user a spoken digest of the emails they received "
-        "today. Lead with ONE plain sentence gist (how many, overall theme). Then "
-        "give a quick one-liner per email — who it's from and the one thing that "
-        "matters or that they must DO — as a natural spoken run, not a list "
-        "('From Stripe, this month's invoice is ready; from Jane, the review moved "
-        "to Thursday'). British butler tone, dry and economical. No markdown, no "
-        "bullet characters, no headings — this is read aloud."
+        "You are VALET giving the user a spoken digest of their emails. Lead with "
+        "ONE plain sentence gist (how many, overall theme). Then a quick one-liner "
+        "per email — who it's from and the one thing that matters or that they must "
+        "DO — as a natural spoken run, not a list ('From Stripe, this month's "
+        "invoice is ready; from Jane, the review moved to Thursday'). British "
+        "butler tone, dry and economical. No markdown, no bullet characters, no "
+        "headings — this is read aloud.\n\n"
+        "IMPORTANT — sender attribution: 'Participants' is Gmail's thread "
+        "participant list, NOT the sender." + who_is_me + " The 'Latest message "
+        "preview' is the MOST RECENT message in the thread. Work out who actually "
+        "sent that latest message and attribute it to them — it is usually the "
+        "OTHER participant, not the owner. A preview that greets the owner by name "
+        "(e.g. 'Thanks Finley, …') was sent TO the owner, so it's from the other "
+        "person. Only say a message is 'from you'/'from yourself' if the owner "
+        "genuinely sent the latest message. Frame each as mail the user RECEIVED "
+        "unless it's clearly one they sent."
     )
     user = f"{total_hint}\n\n" + "\n\n".join(blocks)
     try:
@@ -556,7 +571,7 @@ async def run_digest(executor, ax_executor, client, *,
                      kill_switch=None, cap: int = _DEFAULT_CAP,
                      today_str: str = "today", account: str = "",
                      date_iso: str = "", today_iso: str = "",
-                     date_label: str = "today") -> dict:
+                     date_label: str = "today", user_name: str = "") -> dict:
     """Summarize a day's Gmail — today by default, or any specific day.
 
     Preconditions: Gmail is open and signed in (issue #284 owns the login). If the
@@ -699,7 +714,7 @@ async def run_digest(executor, ax_executor, client, *,
                       "subject": r.get("subject", ""),
                       "body": r.get("snippet", "")} for r in rows]
         total_hint = f"{total} email(s) from {date_label} (summarized from the inbox previews)."
-        summary = await _aggregate(client, collected, total_hint)
+        summary = await _aggregate(client, collected, total_hint, user_name=user_name)
         # State the cap deterministically (issue: never silently truncate).
         if capped:
             summary = (summary.rstrip() + f" That's the {total} most recent from "
