@@ -241,6 +241,105 @@ end tell
     return False
 
 
+def _as_str(s: str) -> str:
+    """Escape a Python string for embedding in an AppleScript double-quoted
+    literal (backslash and double-quote). Newlines are left literal — valid
+    inside an AppleScript string."""
+    return (s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_checklist_script(title: str, plain_html: str, glyph_html: str,
+                            tasks: list[str], folder: str) -> str:
+    """AppleScript that creates the note with its full text ALREADY in place
+    (`plain_html`, written silently — no keystrokes), then converts each task line
+    to a native tickable checklist by driving the Notes UI: Find the task text,
+    then click Format ▸ Checklist (NOT the ⇧⌘L shortcut, which users may have
+    rebound — e.g. to Loom). It re-asserts Notes as frontmost before every step and
+    BAILS to the ☐-glyph body if focus is lost, so keystrokes can never leak into
+    another app. Returns 'ok', 'fallback', or an error string."""
+    tasks_literal = "{" + ", ".join('"' + _as_str(t) + '"' for t in tasks) + "}"
+    return f'''
+set plainBody to "{_as_str(plain_html)}"
+set glyphBody to "{_as_str(glyph_html)}"
+set taskList to {tasks_literal}
+tell application "Notes"
+	activate
+	set theNote to make new note at folder "{_as_str(folder)}" with properties {{name:"{_as_str(title)}", body:plainBody}}
+	show theNote
+end tell
+delay 1.2
+tell application "System Events"
+	tell process "Notes" to set frontmost to true
+end tell
+delay 0.4
+tell application "System Events"
+	if (name of first application process whose frontmost is true) is not "Notes" then
+		tell application "Notes" to set body of theNote to glyphBody
+		return "fallback"
+	end if
+end tell
+repeat with t in taskList
+	tell application "System Events"
+		tell process "Notes" to set frontmost to true
+		delay 0.35
+		if (name of first application process whose frontmost is true) is not "Notes" then
+			tell application "Notes" to set body of theNote to glyphBody
+			return "fallback"
+		end if
+		keystroke "f" using {{command down}}
+		delay 0.35
+		keystroke (t as text)
+		delay 0.45
+		key code 36
+		delay 0.35
+		key code 53
+		delay 0.3
+		tell process "Notes" to click menu item "Checklist" of menu "Format" of menu bar item "Format" of menu bar 1
+		delay 0.35
+	end tell
+end repeat
+return "ok"
+'''
+
+
+async def create_apple_note_with_checklists(title: str, body: str,
+                                            folder: str = "Notes") -> bool:
+    """Create a note whose "- [ ]" task lines become NATIVE, tap-to-check Notes
+    checklist items.
+
+    Apple Notes' scripting `body` is checklist-blind (it can't create OR read a
+    checkbox), so the only way to a real checklist is the Notes UI. This writes the
+    full note text silently via `body` FIRST (so nothing is ever typed and no text
+    can leak), then drives the UI to convert just the task lines — Find each task,
+    then Format ▸ Checklist. If Notes isn't frontmost at any step it abandons the UI
+    and leaves the ☐-glyph body instead, so a save always yields a complete note.
+
+    Falls back to the plain `create_apple_note` path when there are no task lines
+    (e.g. a screen summary), which needs no UI automation."""
+    tasks: list[str] = []
+    plain_lines: list[str] = []
+    for line in body.split("\n"):
+        m = re.match(r"^-\s*\[\s?\]\s*(.+)", line.strip())
+        if m:
+            txt = m.group(1).strip()
+            tasks.append(txt)
+            plain_lines.append(txt)          # plain text — the Find target
+        else:
+            plain_lines.append(line)
+    if not tasks:
+        return await create_apple_note(title, body, folder)
+
+    plain_html = _body_to_html("\n".join(plain_lines))   # tasks as plain text
+    glyph_html = _body_to_html(body)                     # tasks as ☐ (fallback)
+    script = _build_checklist_script(title, plain_html, glyph_html, tasks, folder)
+    # UI automation with per-task delays — scale the timeout with the task count.
+    result = await _run_notes_script(script, timeout=20 + 4 * len(tasks))
+    log.info(f"Created checklist note '{title}': {result or '(no result)'}")
+    # 'ok'/'fallback' both created a complete note; "" means osascript failed or
+    # timed out (a partial note may exist, but report failure so the caller says so).
+    return result in ("ok", "fallback")
+
+
 def _body_to_html(body: str) -> str:
     """Convert plain text / markdown to HTML for Apple Notes.
 

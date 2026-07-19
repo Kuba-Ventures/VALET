@@ -140,7 +140,8 @@ from memory import (
     add_contact, find_contact, list_contacts, delete_contact,
 )
 import contacts_access
-from notes_access import get_recent_notes, read_note, open_note, search_notes_apple, create_apple_note
+from notes_access import (get_recent_notes, read_note, open_note, search_notes_apple,
+                          create_apple_note, create_apple_note_with_checklists)
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 from plan_stages import StageTracker, generate_stages, run_tracker_loop, staged_task
@@ -7474,7 +7475,9 @@ async def _handle_save_summary_note(ws, voice_state: dict = None) -> None:
     async with process_bus.task_context(f"Saving note · {title}") as task_id:
         await emit_step(task_id, "Creating the note…", status="active")
         try:
-            ok = await create_apple_note(title, body)
+            # Task lines ("- [ ]") become native tickable Notes checklists via the
+            # UI (Notes comes to the front briefly); no-task notes save silently.
+            ok = await create_apple_note_with_checklists(title, body)
         except Exception as e:
             log.error(f"create note failed: {e}")
         if ok:
