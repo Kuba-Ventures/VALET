@@ -275,97 +275,62 @@ end tell
     return (await _run_notes_script(script, timeout=10)) == "OK"
 
 
-def _build_checklist_script(plain_html: str, glyph_html: str,
-                            tasks: list[str], folder: str) -> str:
-    """AppleScript that creates the note with its full text ALREADY in place
-    (`plain_html`, written silently — no keystrokes), then converts each task line
-    to a native tickable checklist by driving the Notes UI: Find the task text,
-    then click Format ▸ Checklist (NOT the ⇧⌘L shortcut, which users may have
-    rebound — e.g. to Loom). It re-asserts Notes as frontmost before every step and
-    BAILS to the ☐-glyph body if focus is lost, so keystrokes can never leak into
-    another app. Returns 'ok', 'fallback', or an error string."""
-    tasks_literal = "{" + ", ".join('"' + _as_str(t) + '"' for t in tasks) + "}"
-    return f'''
-set plainBody to "{_as_str(plain_html)}"
-set glyphBody to "{_as_str(glyph_html)}"
-set taskList to {tasks_literal}
-tell application "Notes"
-	activate
-	set theNote to make new note at folder "{_as_str(folder)}" with properties {{body:plainBody}}
-	show theNote
-end tell
-delay 1.2
-tell application "System Events"
-	tell process "Notes" to set frontmost to true
-end tell
-delay 0.4
-tell application "System Events"
-	if (name of first application process whose frontmost is true) is not "Notes" then
-		tell application "Notes" to set body of theNote to glyphBody
-		return "fallback"
-	end if
-end tell
-repeat with t in taskList
-	tell application "System Events"
-		tell process "Notes" to set frontmost to true
-		delay 0.35
-		if (name of first application process whose frontmost is true) is not "Notes" then
-			tell application "Notes" to set body of theNote to glyphBody
-			return "fallback"
-		end if
-		keystroke "f" using {{command down}}
-		delay 0.35
-		keystroke (t as text)
-		delay 0.45
-		key code 36
-		delay 0.35
-		key code 53
-		delay 0.3
-		tell process "Notes" to click menu item "Checklist" of menu "Format" of menu bar item "Format" of menu bar 1
-		delay 0.35
-	end tell
-end repeat
-return "ok"
-'''
-
-
-async def create_apple_note_with_checklists(title: str, body: str,
-                                            folder: str = "Notes") -> bool:
-    """Create a note whose "- [ ]" task lines become NATIVE, tap-to-check Notes
-    checklist items.
-
-    Apple Notes' scripting `body` is checklist-blind (it can't create OR read a
-    checkbox), so the only way to a real checklist is the Notes UI. This writes the
-    full note text silently via `body` FIRST (so nothing is ever typed and no text
-    can leak), then drives the UI to convert just the task lines — Find each task,
-    then Format ▸ Checklist. If Notes isn't frontmost at any step it abandons the UI
-    and leaves the ☐-glyph body instead, so a save always yields a complete note.
-
-    The note gets the standard summary header (a big bold <h1> title). When there
-    are no task lines (e.g. a screen summary) it writes silently with no UI."""
-    header = _title_header_html(title)
-    tasks: list[str] = []
-    plain_lines: list[str] = []
+def _task_lines_from_body(body: str) -> list[str]:
+    """Pull the action-item text out of a note body's "- [ ]" lines (order kept)."""
+    out = []
     for line in body.split("\n"):
         m = re.match(r"^-\s*\[\s?\]\s*(.+)", line.strip())
         if m:
-            txt = m.group(1).strip()
-            tasks.append(txt)
-            plain_lines.append(txt)          # plain text — the Find target
-        else:
-            plain_lines.append(line)
-    if not tasks:
-        return await _create_note_html(header + _body_to_html(body), folder)
+            out.append(m.group(1).strip())
+    return out
 
-    plain_html = header + _body_to_html("\n".join(plain_lines))   # tasks plain
-    glyph_html = header + _body_to_html(body)                     # tasks ☐ (fallback)
-    script = _build_checklist_script(plain_html, glyph_html, tasks, folder)
-    # UI automation with per-task delays — scale the timeout with the task count.
-    result = await _run_notes_script(script, timeout=20 + 4 * len(tasks))
-    log.info(f"Created checklist note '{title}': {result or '(no result)'}")
-    # 'ok'/'fallback' both created a complete note; "" means osascript failed or
-    # timed out (a partial note may exist, but report failure so the caller says so).
-    return result in ("ok", "fallback")
+
+_REMINDERS_LIST = "VALET"
+
+
+async def add_reminders(tasks: list[str], list_name: str = _REMINDERS_LIST) -> int:
+    """Create each task as a native Apple Reminders item — real, tap-to-check
+    reminders — SILENTLY via AppleScript. Unlike a Notes checklist this needs no UI
+    automation, so it never takes over the screen or the keyboard. Groups them in a
+    dedicated list (created on first use) so digest tasks stay together and don't
+    clutter the user's default list. Returns the number created."""
+    tasks = [t.strip() for t in (tasks or []) if t and t.strip()]
+    if not tasks:
+        return 0
+    makes = "\n        ".join(
+        f'make new reminder with properties {{name:"{_as_str(t)}"}}' for t in tasks)
+    script = f'''
+tell application "Reminders"
+    if not (exists list "{_as_str(list_name)}") then make new list with properties {{name:"{_as_str(list_name)}"}}
+    tell list "{_as_str(list_name)}"
+        {makes}
+    end tell
+    return "OK"
+end tell
+'''
+    # Generous timeout: the FIRST call can be slow — Reminders may cold-start and
+    # macOS may show a one-time "control Reminders" automation prompt.
+    ok = (await _run_notes_script(script, timeout=30)) == "OK"
+    if ok:
+        log.info(f"Added {len(tasks)} reminder(s) to '{list_name}'")
+    return len(tasks) if ok else 0
+
+
+async def save_summary_note_and_reminders(title: str, body: str,
+                                          folder: str = "Notes") -> tuple[bool, int]:
+    """Save a summary two ways, both SILENTLY (no screen/keyboard takeover):
+      1) a Notes note — the readable summary, with the big <h1> title header and
+         each action item shown as a ☐ glyph line (visual, distinct from prose);
+      2) each action item ALSO as a native, tap-to-check Apple Reminder.
+
+    This is the resolution to the Notes-checklist problem: Notes can't create a
+    tickable checkbox without driving its UI (which locks the machine for the whole
+    save), so the *tappable* copy of each task lives in Reminders — created via the
+    scripting API with zero UI. Returns (note_created, reminders_added)."""
+    note_ok = await _create_note_html(_title_header_html(title) + _body_to_html(body),
+                                      folder)
+    n = await add_reminders(_task_lines_from_body(body))
+    return note_ok, n
 
 
 def _body_to_html(body: str) -> str:
