@@ -248,7 +248,34 @@ def _as_str(s: str) -> str:
     return (s or "").replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _build_checklist_script(title: str, plain_html: str, glyph_html: str,
+def _html_escape(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _title_header_html(title: str) -> str:
+    """The standard summary-note header (issue #310, "Big title" option): the title
+    as an <h1> so Apple Notes renders it in its big, bold Title style. We do NOT set
+    the note's `name` separately — Notes derives the title/name from this first line,
+    which avoids a duplicate title line. Applies to every summary note (Gmail,
+    screen, and future doc/web/task summaries)."""
+    return f"<h1>{_html_escape(title)}</h1>\n"
+
+
+async def _create_note_html(body_html: str, folder: str = "Notes") -> bool:
+    """Create a note straight from ready HTML, WITHOUT a `name` (so the leading
+    <h1> becomes the title). Used for the no-checklist summary path."""
+    script = f'''
+tell application "Notes"
+    tell folder "{_as_str(folder)}"
+        make new note with properties {{body:"{_as_str(body_html)}"}}
+    end tell
+    return "OK"
+end tell
+'''
+    return (await _run_notes_script(script, timeout=10)) == "OK"
+
+
+def _build_checklist_script(plain_html: str, glyph_html: str,
                             tasks: list[str], folder: str) -> str:
     """AppleScript that creates the note with its full text ALREADY in place
     (`plain_html`, written silently — no keystrokes), then converts each task line
@@ -264,7 +291,7 @@ set glyphBody to "{_as_str(glyph_html)}"
 set taskList to {tasks_literal}
 tell application "Notes"
 	activate
-	set theNote to make new note at folder "{_as_str(folder)}" with properties {{name:"{_as_str(title)}", body:plainBody}}
+	set theNote to make new note at folder "{_as_str(folder)}" with properties {{body:plainBody}}
 	show theNote
 end tell
 delay 1.2
@@ -314,8 +341,9 @@ async def create_apple_note_with_checklists(title: str, body: str,
     then Format ▸ Checklist. If Notes isn't frontmost at any step it abandons the UI
     and leaves the ☐-glyph body instead, so a save always yields a complete note.
 
-    Falls back to the plain `create_apple_note` path when there are no task lines
-    (e.g. a screen summary), which needs no UI automation."""
+    The note gets the standard summary header (a big bold <h1> title). When there
+    are no task lines (e.g. a screen summary) it writes silently with no UI."""
+    header = _title_header_html(title)
     tasks: list[str] = []
     plain_lines: list[str] = []
     for line in body.split("\n"):
@@ -327,11 +355,11 @@ async def create_apple_note_with_checklists(title: str, body: str,
         else:
             plain_lines.append(line)
     if not tasks:
-        return await create_apple_note(title, body, folder)
+        return await _create_note_html(header + _body_to_html(body), folder)
 
-    plain_html = _body_to_html("\n".join(plain_lines))   # tasks as plain text
-    glyph_html = _body_to_html(body)                     # tasks as ☐ (fallback)
-    script = _build_checklist_script(title, plain_html, glyph_html, tasks, folder)
+    plain_html = header + _body_to_html("\n".join(plain_lines))   # tasks plain
+    glyph_html = header + _body_to_html(body)                     # tasks ☐ (fallback)
+    script = _build_checklist_script(plain_html, glyph_html, tasks, folder)
     # UI automation with per-task delays — scale the timeout with the task count.
     result = await _run_notes_script(script, timeout=20 + 4 * len(tasks))
     log.info(f"Created checklist note '{title}': {result or '(no result)'}")

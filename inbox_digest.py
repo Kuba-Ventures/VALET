@@ -636,9 +636,12 @@ def _note_body_from_structured(items: list, date_label: str, total: int,
     action item, and the one-line summary). `notes_access._body_to_html` turns the
     '- [ ]' lines into real Notes checkboxes and the blank lines into spacing. The
     whole body is run through `_strip_dashes` so no em dashes reach the note (user
-    preference) — including any the model put in a subject/task/summary."""
-    header = f"{total} email{'s' if total != 1 else ''} from {date_label}"
-    lines = [header, ""]
+    preference) — including any the model put in a subject/task/summary.
+
+    The note's <h1> title (added by notes_access) already carries the summary label
+    and day, so this body opens with just a short UPPERCASE count caption."""
+    caption = f"{total} EMAIL{'S' if total != 1 else ''}"
+    lines = [caption, ""]
     for it in items:
         subj = (it.get("subject") or "").strip() or "(no subject)"
         frm = (it.get("from") or "").strip()

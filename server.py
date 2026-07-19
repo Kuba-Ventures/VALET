@@ -7654,7 +7654,7 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
     # offer to save it now (the next "yes" saves it — see _handle_pending_offer).
     if got:
         acct_bit = f"{account.strip().title()} " if account.strip() else ""
-        title = f"{acct_bit}Gmail summary - {date_label}"
+        title = f"{acct_bit}Gmail summary, {date_label}"
         _stash_summary(ws, summary, source=f"gmail-{date_label}", title=title,
                        note_body=(result.get("note_body") or ""))
         ws.pending_offer = {"kind": "save_summary_note"}
