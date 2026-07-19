@@ -558,7 +558,7 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:SUMMARIZE_SCREEN] — read the FOCUSED content (the open email, doc, dashboard, article…) and speak a tight summary plus what the user needs to DO. Use when the user asks to summarize / TL;DR / "give me the gist" / "what do I need to do here" / "what does this say" about what's in front of them. Distinct from SCREEN, which just names what's open; this reads the content and extracts action items.
   NEVER use SUMMARIZE_SCREEN (or SCREEN) for a follow-up about something YOU just told the user about — a headline, article, or source you surfaced. Those live under RECENTLY SHOWN, not on their screen: "tell me more about the Falklands banner issue" after reading them the news is [ACTION:READ_ARTICLE], NOT a screen summary. Screen actions require the user to clearly mean what is literally in front of them ("summarize THIS page", "what's on my screen").
 - [ACTION:SEND_TO_CLAUDE_CODE] — read what's on screen (e.g. an error report, an issue email, a failing dashboard), turn it into a concrete fix task, infer the right repo, and after a confirmation dispatch it to Claude Code to fix. Use when the user says "send this to Claude Code", "have Claude Code fix this", "dispatch this to Claude to fix", etc. Vee shows the brief + target repo and asks before sending.
-- [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Pass the goal through verbatim.
+- [ACTION:UI_TASK] goal — a MULTI-STEP task done by driving the on-screen UI (clicking/typing across an app), e.g. "open TextEdit, type a note, and save it as notes.txt" or "in Chrome, go to the dashboard and click Deploy". Vee runs a supervised observe→act loop, confirming each step. Use for multi-step "do X then Y" UI requests that aren't a coding/build task and aren't a single click (a single "click on Submit" is handled automatically — don't tag it). Vee CAN scroll the page, so "scroll until you find the pricing table" is a valid goal — but a plain "scroll down" is handled automatically, so don't tag that. Pass the goal through verbatim.
 - [ACTION:OPEN_ON_SCREEN] description — open or click ONE thing the user can see on screen, named in plain words: an email in the open inbox ("the email from Stripe"), a file in a Finder window ("the resume PDF"), a link, a button, a row. Vee clicks it where it sits; if it isn't on the current screen it navigates there first (e.g. opens the Downloads folder, then the file). Use this for "open/read/click the X" when X is on-screen content rather than an installed app or a website. Pass the description verbatim. For launching an app use OPEN_APP; for a website use the web route; for a genuine multi-step "do X then Y" use UI_TASK.
 - [ACTION:SUMMARIZE_INBOX] account ||| date — go through a day's emails in the OPEN Gmail inbox and speak ONE combined summary (per-email one-liners + overall gist), built from each message's sender/subject/preview. Use for "go through my inbox", "summarize today's emails", "catch me up on my inbox", "what did I get today", "summarize my emails from July 16 / yesterday / the 12th". Distinct from SUMMARIZE_SCREEN (reads only the ONE focused email) and OPEN_ON_SCREEN (opens ONE named message). Requires Gmail already open and signed in; if not, Vee says so.
   The target has TWO optional parts separated by "|||":
@@ -6080,6 +6080,44 @@ _GMAIL_TASK_RE = re.compile(
 _GO_BACK_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:go|take\s+me|head|navigate|click)\s+back\b(?!\s+to\s+sleep)', re.IGNORECASE)
+
+# ── Scrolling (issue #291) ───────────────────────────────────────────────────
+# "scroll until you find the pricing table" — a SEARCH, so it goes to the
+# supervised loop, which scrolls a page, re-reads the screen, and stops when the
+# target shows up. Matched BEFORE the plain scroll below, which would otherwise
+# eat "scroll down until…" as a one-shot scroll down.
+_SCROLL_FIND_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?(?:keep\s+)?'
+    r'scroll(?:ing|s)?\s+(?:up|down|left|right)?\s*'
+    r'(?:the\s+(?:page|screen|window|list)\s+)?'
+    r'(?:until|till|til|down\s+to|up\s+to)\s+'
+    r'(?:you\s+|i\s+|we\s+)?(?:can\s+)?(?:find|see|reach|get\s+to|spot|hit)\s+'
+    r'(?P<target>.+)$', re.IGNORECASE)
+# Plain "scroll down" / "page up" / "scroll to the bottom" / "scroll down a bit".
+_SCROLL_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:scroll|page|swipe)\s+'
+    r'(?:the\s+(?:page|screen|window|list)\s+)?'
+    r'(?P<dir>up|down|left|right|to\s+the\s+top|to\s+the\s+bottom|back\s+up)'
+    r'(?P<amt>[^.?!]*)[.?!]*$', re.IGNORECASE)
+
+
+def _scroll_params(dir_word: str, amt_words: str) -> tuple[str, str]:
+    """('down', 'page') from the matched words. 'to the top/bottom' becomes a
+    deliberately huge pixel count — one jump to the end rather than a loop."""
+    d = (dir_word or "").strip().lower()
+    a = (amt_words or "").strip().lower()
+    if "top" in d or "back up" in d:
+        return "up", "20000"
+    if "bottom" in d:
+        return "down", "20000"
+    if any(w in a for w in ("all the way", "to the bottom", "to the end")):
+        return d, "20000"
+    if any(w in a for w in ("a bit", "a little", "slightly", "a touch", "a smidge")):
+        return d, "half"
+    return d, "page"
+
+
 # Built-in timer + stopwatch (VALET announces when done — no Clock app needed).
 _TIMER_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
@@ -6606,6 +6644,19 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
     # arrow). One-shot click via the proven resolver path.
     if _GO_BACK_RE.match(t):
         return {"action": "ui_act", "ui_action": "click", "target": "back button"}
+
+    # Scrolling (issue #291). "scroll until you find X" is a search → the loop;
+    # a plain "scroll down" is one synthetic wheel event, no model round-trip.
+    _sf = _SCROLL_FIND_RE.match(t)
+    if _sf:
+        _tgt = _sf.group("target").strip(" .?!")
+        return {"action": "ui_task",
+                "goal": f"scroll until {_tgt} is visible on screen",
+                "max_steps": 14}
+    _sc = _SCROLL_RE.match(t)
+    if _sc:
+        _dir, _amt = _scroll_params(_sc.group("dir"), _sc.group("amt"))
+        return {"action": "scroll", "direction": _dir, "amount": _amt}
 
     # "Send this to Claude Code to fix" — read the screen, brief it, dispatch.
     # Before summarize/describe so "send this to Claude to fix" isn't read as a
@@ -8624,11 +8675,20 @@ async def voice_handler(ws: WebSocket):
                                 _track_uc(ws, _execute_compose_slack(_starget, _sbody, ws))
                             else:
                                 response_text = "Who on Slack, and what should it say, sir?"
+                        elif action["action"] == "scroll":
+                            # One-shot scroll — no model round-trip, so the page
+                            # moves while the acknowledgement is still speaking.
+                            response_text = ""
+                            _track_uc(ws, _handle_scroll(
+                                action.get("direction", "down"),
+                                action.get("amount", "page"), ws))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
                             response_text = "On it, sir — I'll work through it."
-                            _track_uc(ws, _handle_ui_task(action.get("goal", ""), ws))
+                            _track_uc(ws, _handle_ui_task(
+                                action.get("goal", ""), ws,
+                                max_steps=action.get("max_steps", 8)))
                         elif action["action"] == "summarize_inbox":
                             # Summarize a day's Gmail → one spoken digest (issue
                             # #285). Handler shows the panel + speaks.
@@ -10770,8 +10830,33 @@ async def _summarize_gmail_inbox(ws, goal: str = "") -> None:
     await _handle_summarize_inbox(ws, account=account, date=date)
 
 
+async def _handle_scroll(direction: str, amount: str, ws) -> None:
+    """Voice path for a one-shot scroll (issue #291). Scrolls the app the user is
+    LOOKING at — `app=None` resolves to the frontmost non-VALET window, so the orb
+    being focused while they talk doesn't send the scroll to Vee's own panel."""
+    async with process_bus.task_context(f"Scroll {direction}") as task_id:
+        await emit_step(task_id, f"Scrolling {direction}", status="active")
+        try:
+            result = await executor.scroll(direction=direction, amount=amount,
+                                           task_id=task_id)
+        except Exception as e:
+            log.error(f"scroll error: {e}")
+            await emit_step(task_id, "Scroll failed", detail=str(e), status="error")
+            await _speak(ws, "I couldn't scroll that, sir.")
+            return
+        ok = bool(getattr(result, "ok", False))
+        await emit_step(task_id, f"Scrolled {direction}" if ok else "Scroll failed",
+                        status="done" if ok else "error")
+    # Deliberately silent on SUCCESS: the user is watching the page move, and a
+    # spoken "scrolled down, sir" after every nudge of a long read is grating.
+    # A failure still speaks — silence there is the bug this issue was filed for.
+    if not ok:
+        await _speak(ws, getattr(result, "message", "") or "I couldn't scroll that, sir.")
+
+
 async def _handle_ui_task(goal: str, ws, prenav: bool = True,
-                          login_choice: Optional[dict] = None) -> None:
+                          login_choice: Optional[dict] = None,
+                          max_steps: int = 8) -> None:
     """Voice path for UC4 — runs the loop on a background task (keeps the WS loop
     free for per-step confirm replies + STOP), then speaks the outcome.
 
@@ -10796,6 +10881,7 @@ async def _handle_ui_task(goal: str, ws, prenav: bool = True,
     try:
         async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
             result = await _run_ui_task(goal, task_id=task_id, ws=ws,
+                                        max_steps=max_steps,
                                         login_choice=login_choice,
                                         stop_at_gmail_inbox=is_summary)
     except Exception as e:
