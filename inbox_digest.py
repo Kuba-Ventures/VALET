@@ -370,6 +370,31 @@ def _frame_sig(fr: list) -> tuple:
     return (round(fr[0] / 5.0), round(fr[1] / 5.0))
 
 
+def _count_ax_rows(obs: dict) -> int:
+    """Number of Gmail conversation rows in the AX snapshot. Gmail renders each
+    inbox row as an AXRow; zero means the list hasn't painted into the tree yet."""
+    return sum(1 for e in (obs.get("elements") or []) if e.get("role") == "AXRow")
+
+
+async def _await_inbox_ready(executor, app, halted, *, tries: int = 8,
+                             delay: float = 0.7) -> dict:
+    """Poll build_observation until Gmail's conversation list has rendered into the
+    accessibility tree (message rows present), or we run out of tries; returns the
+    last observation regardless.
+
+    Gmail is a heavy SPA: after switching account and hash-navigating to #inbox the
+    list can take a few seconds to (re)render. Reading before the rows exist yields
+    an empty element list and a FALSE 'nothing new today' — this wait is what makes
+    the read land on the actual inbox instead of a still-loading frame."""
+    obs = await perception.build_observation(executor, app=app)
+    for _ in range(tries):
+        if _count_ax_rows(obs) > 0 or (halted and halted()):
+            return obs
+        await asyncio.sleep(delay)
+        obs = await perception.build_observation(executor, app=app)
+    return obs
+
+
 async def _enumerate_rows(client, obs: dict, cap: int, when_str: str,
                           mode: str = "today") -> dict:
     """Read the Gmail element list and return the conversation rows we want, each
@@ -682,21 +707,22 @@ async def run_digest(executor, ax_executor, client, *,
         #    search reads as empty. The inbox rows carry each day's date label
         #    ("Jul 17") or a clock time (today), which is all we need to filter.
         await _gmail_go_to_inbox(_account_base(url))
-        await asyncio.sleep(1.2)
-        obs = await perception.build_observation(executor, app=app)
+        # Wait for the conversation list to actually render into the AX tree before
+        # reading. Gmail's SPA re-render after the account switch + #inbox nav lags
+        # a few seconds; the old fixed 1.2s sleep read a still-loading frame and
+        # reported a false "nothing new today" even on an inbox full of mail.
+        obs = await _await_inbox_ready(executor, app, _halted)
         await _stage()            # → "Reading …"
 
-        if is_today:
-            enum = await _enumerate_rows(client, obs, cap, today_str, mode="today")
-        else:
-            date_display = _gmail_date_display(date_iso)   # e.g. "Jul 17"
-            enum = await _enumerate_rows(client, obs, cap, date_display, mode="date")
+        when = today_str if is_today else _gmail_date_display(date_iso)
+        mode = "today" if is_today else "date"
+        enum = await _enumerate_rows(client, obs, cap, when, mode=mode)
         if not enum["rows"]:
-            await asyncio.sleep(1.2)
+            # Rows may have painted just after we read, or the model under-returned
+            # — settle once more and retry before concluding the day is empty.
+            await asyncio.sleep(1.5)
             obs = await perception.build_observation(executor, app=app)
-            when = today_str if is_today else _gmail_date_display(date_iso)
-            enum = await _enumerate_rows(client, obs, cap, when,
-                                         mode="today" if is_today else "date")
+            enum = await _enumerate_rows(client, obs, cap, when, mode=mode)
         rows = enum["rows"]
         capped = enum["has_more"]
         if not rows:
