@@ -568,6 +568,7 @@ async def _go_back_to_inbox(executor, ax_executor, app: Optional[str]) -> bool:
 
 async def run_digest(executor, ax_executor, client, *,
                      emit: Optional[EmitFn] = None,
+                     stage: Optional[Callable[[], Awaitable[None]]] = None,
                      kill_switch=None, cap: int = _DEFAULT_CAP,
                      today_str: str = "today", account: str = "",
                      date_iso: str = "", today_iso: str = "",
@@ -593,6 +594,13 @@ async def run_digest(executor, ax_executor, client, *,
         if emit:
             try:
                 await emit(title, detail, status)
+            except Exception:
+                pass
+
+    async def _stage():           # advance the caller's plan (best-effort)
+        if stage:
+            try:
+                await stage()
             except Exception:
                 pass
 
@@ -676,6 +684,7 @@ async def run_digest(executor, ax_executor, client, *,
         await _gmail_go_to_inbox(_account_base(url))
         await asyncio.sleep(1.2)
         obs = await perception.build_observation(executor, app=app)
+        await _stage()            # → "Reading …"
 
         if is_today:
             enum = await _enumerate_rows(client, obs, cap, today_str, mode="today")
@@ -708,6 +717,7 @@ async def run_digest(executor, ax_executor, client, *,
         #    account, and hit the address bar). Reading the list is deterministic
         #    and stays put. Fuller per-message reading is a future enhancement, best
         #    done via Gmail's own j/o/u keyboard navigation rather than clicks.
+        await _stage()            # → "Summarizing"
         await _emit(f"Summarizing {total} from {date_label}{' (capped)' if capped else ''}",
                     status="active")
         collected = [{"sender": r.get("sender", ""),
