@@ -241,11 +241,104 @@ end tell
     return False
 
 
+def _as_str(s: str) -> str:
+    """Escape a Python string for embedding in an AppleScript double-quoted
+    literal (backslash and double-quote). Newlines are left literal — valid
+    inside an AppleScript string."""
+    return (s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _html_escape(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _title_header_html(title: str) -> str:
+    """The standard summary-note header (issue #310, "Big title" option): the title
+    as an <h1> so Apple Notes renders it in its big, bold Title style. We do NOT set
+    the note's `name` separately — Notes derives the title/name from this first line,
+    which avoids a duplicate title line. Applies to every summary note (Gmail,
+    screen, and future doc/web/task summaries)."""
+    return f"<h1>{_html_escape(title)}</h1>\n"
+
+
+async def _create_note_html(body_html: str, folder: str = "Notes") -> bool:
+    """Create a note straight from ready HTML, WITHOUT a `name` (so the leading
+    <h1> becomes the title). Used for the no-checklist summary path."""
+    script = f'''
+tell application "Notes"
+    tell folder "{_as_str(folder)}"
+        make new note with properties {{body:"{_as_str(body_html)}"}}
+    end tell
+    return "OK"
+end tell
+'''
+    return (await _run_notes_script(script, timeout=10)) == "OK"
+
+
+def _task_lines_from_body(body: str) -> list[str]:
+    """Pull the action-item text out of a note body's "- [ ]" lines (order kept)."""
+    out = []
+    for line in body.split("\n"):
+        m = re.match(r"^-\s*\[\s?\]\s*(.+)", line.strip())
+        if m:
+            out.append(m.group(1).strip())
+    return out
+
+
+_REMINDERS_LIST = "VALET"
+
+
+async def add_reminders(tasks: list[str], list_name: str = _REMINDERS_LIST) -> int:
+    """Create each task as a native Apple Reminders item — real, tap-to-check
+    reminders — SILENTLY via AppleScript. Unlike a Notes checklist this needs no UI
+    automation, so it never takes over the screen or the keyboard. Groups them in a
+    dedicated list (created on first use) so digest tasks stay together and don't
+    clutter the user's default list. Returns the number created."""
+    tasks = [t.strip() for t in (tasks or []) if t and t.strip()]
+    if not tasks:
+        return 0
+    makes = "\n        ".join(
+        f'make new reminder with properties {{name:"{_as_str(t)}"}}' for t in tasks)
+    script = f'''
+tell application "Reminders"
+    if not (exists list "{_as_str(list_name)}") then make new list with properties {{name:"{_as_str(list_name)}"}}
+    tell list "{_as_str(list_name)}"
+        {makes}
+    end tell
+    return "OK"
+end tell
+'''
+    # Generous timeout: the FIRST call can be slow — Reminders may cold-start and
+    # macOS may show a one-time "control Reminders" automation prompt.
+    ok = (await _run_notes_script(script, timeout=30)) == "OK"
+    if ok:
+        log.info(f"Added {len(tasks)} reminder(s) to '{list_name}'")
+    return len(tasks) if ok else 0
+
+
+async def save_summary_note_and_reminders(title: str, body: str,
+                                          folder: str = "Notes") -> tuple[bool, int]:
+    """Save a summary two ways, both SILENTLY (no screen/keyboard takeover):
+      1) a Notes note — the readable summary, with the big <h1> title header and
+         each action item shown as a ☐ glyph line (visual, distinct from prose);
+      2) each action item ALSO as a native, tap-to-check Apple Reminder.
+
+    This is the resolution to the Notes-checklist problem: Notes can't create a
+    tickable checkbox without driving its UI (which locks the machine for the whole
+    save), so the *tappable* copy of each task lives in Reminders — created via the
+    scripting API with zero UI. Returns (note_created, reminders_added)."""
+    note_ok = await _create_note_html(_title_header_html(title) + _body_to_html(body),
+                                      folder)
+    n = await add_reminders(_task_lines_from_body(body))
+    return note_ok, n
+
+
 def _body_to_html(body: str) -> str:
     """Convert plain text / markdown to HTML for Apple Notes.
 
     Supports:
     - Checklist items: "- [ ] task" / "- [x] task" → a ☐ / ☑ glyph line
+    - Bold line: "**heading**" → a bold paragraph (Notes honors <b> on import)
     - Bullet points: "- item" → bullet
     - Numbered lists: "1. item" → numbered
     - Plain text → paragraphs
@@ -271,6 +364,9 @@ def _body_to_html(body: str) -> str:
         elif re.match(r"^-\s*\[\s?\]\s*", stripped):
             text = re.sub(r"^-\s*\[\s?\]\s*", "", stripped)
             html_lines.append(f"<div>&#9744; {text}</div>")   # ☐ unchecked
+        elif stripped.startswith("**") and stripped.endswith("**") and len(stripped) >= 5:
+            text = stripped[2:-2].strip()   # **heading** → bold line
+            html_lines.append(f"<div><b>{text}</b></div>")
         elif re.match(r"^[-*+]\s+", stripped):
             text = re.sub(r"^[-*+]\s+", "", stripped)
             html_lines.append(f"<div>• {text}</div>")

@@ -140,7 +140,8 @@ from memory import (
     add_contact, find_contact, list_contacts, delete_contact,
 )
 import contacts_access
-from notes_access import get_recent_notes, read_note, open_note, search_notes_apple, create_apple_note
+from notes_access import (get_recent_notes, read_note, open_note, search_notes_apple,
+                          create_apple_note, save_summary_note_and_reminders)
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 from plan_stages import StageTracker, generate_stages, run_tracker_loop, staged_task
@@ -7453,10 +7454,13 @@ def _stash_summary(ws, text: str, source: str, title: str,
 
 
 async def _handle_save_summary_note(ws, voice_state: dict = None) -> None:
-    """'Put that summary in a new note' (issue #286) — take the summary VALET
-    last spoke (held on ws.last_summary, possibly from an earlier turn) and write
-    it verbatim into a new Apple Note, then bring Notes forward showing it. Never
-    writes a blank note: a missing or stale summary is reported, not saved."""
+    """'Put that summary in a new note' (issue #286/#310) — take the summary VALET
+    last spoke (held on ws.last_summary, possibly from an earlier turn) and save it,
+    SILENTLY in the background (no app takeover):
+      - the readable summary → a new Apple Note (big-title header, ☐ action lines);
+      - each action item → a native, tap-to-check Apple Reminder.
+    Reminders is how action items stay tappable without Notes' UI hijacking the
+    screen. Never saves a blank note: a missing/stale summary is reported."""
     summ = getattr(ws, "last_summary", None)
     text = (summ.get("text") or "").strip() if summ else ""
     if not text or (time.time() - summ.get("ts", 0)) > _SUMMARY_NOTE_TTL:
@@ -7470,23 +7474,26 @@ async def _handle_save_summary_note(ws, voice_state: dict = None) -> None:
     # the digest path, and the one place that also cleans screen-summary notes.
     body = re.sub(r"\s+[—–]\s+", ", ", body)
     body = re.sub(r"[—–]", "-", body)
-    ok = False
+    ok, n_rem = False, 0
     async with process_bus.task_context(f"Saving note · {title}") as task_id:
         await emit_step(task_id, "Creating the note…", status="active")
         try:
-            ok = await create_apple_note(title, body)
+            ok, n_rem = await save_summary_note_and_reminders(title, body)
         except Exception as e:
-            log.error(f"create note failed: {e}")
+            log.error(f"save summary failed: {e}")
         if ok:
-            await emit_step(task_id, "Note created", detail=title, status="done")
-            try:
-                await open_note(title)      # activate Notes + show the new note
-            except Exception as e:
-                log.warning(f"open note after create failed: {e}")
+            detail = title + (f" · {n_rem} reminder{'s' if n_rem != 1 else ''}"
+                              if n_rem else "")
+            await emit_step(task_id, "Saved", detail=detail, status="done")
         else:
-            await emit_error(task_id, "Couldn't create the note")
-    await _speak(ws, "Saved it to a new note, sir." if ok
-                 else "I couldn't save that note, sir.")
+            await emit_error(task_id, "Couldn't save the summary")
+    if not ok:
+        await _speak(ws, "I couldn't save that note, sir.")
+    elif n_rem:
+        await _speak(ws, f"Saved it to a note, and put {n_rem} "
+                         f"{'item' if n_rem == 1 else 'items'} in your reminders, sir.")
+    else:
+        await _speak(ws, "Saved it to a new note, sir.")
 
 
 async def _handle_summarize(ws, voice_state: dict = None) -> None:
@@ -7651,7 +7658,7 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
     # offer to save it now (the next "yes" saves it — see _handle_pending_offer).
     if got:
         acct_bit = f"{account.strip().title()} " if account.strip() else ""
-        title = f"{acct_bit}Gmail summary - {date_label}"
+        title = f"{acct_bit}Gmail summary, {date_label}"
         _stash_summary(ws, summary, source=f"gmail-{date_label}", title=title,
                        note_body=(result.get("note_body") or ""))
         ws.pending_offer = {"kind": "save_summary_note"}

@@ -376,19 +376,49 @@ def _count_ax_rows(obs: dict) -> int:
     return sum(1 for e in (obs.get("elements") or []) if e.get("role") == "AXRow")
 
 
-async def _await_inbox_ready(executor, app, halted, *, tries: int = 8,
-                             delay: float = 0.7) -> dict:
-    """Poll build_observation until Gmail's conversation list has rendered into the
-    accessibility tree (message rows present), or we run out of tries; returns the
-    last observation regardless.
+# A row's date column is either a clock time ("2:47 PM" — today) or a calendar date
+# ("Jul 18", "Nov 3"). Its PRESENCE is the signal the row's TEXT has actually
+# painted — not just its container. This is the token the enumerator filters on.
+_DATE_TOKEN = re.compile(
+    r"\b\d{1,2}:\d{2}\s*(?:am|pm)\b"
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b",
+    re.IGNORECASE,
+)
 
-    Gmail is a heavy SPA: after switching account and hash-navigating to #inbox the
-    list can take a few seconds to (re)render. Reading before the rows exist yields
-    an empty element list and a FALSE 'nothing new today' — this wait is what makes
-    the read land on the actual inbox instead of a still-loading frame."""
+
+def _count_dated_rows(obs: dict) -> int:
+    """How many element labels carry a date/time token. Gmail paints a row's
+    CONTAINER before its text, so `_count_ax_rows` can be >0 while every label is
+    still blank — reading then gives a FALSE 'nothing'. A dated label means the row
+    text has actually rendered, which is what we must wait for."""
+    return sum(1 for e in (obs.get("elements") or [])
+               if _DATE_TOKEN.search(_label(e)))
+
+
+async def _await_inbox_ready(executor, app, halted, *, tries: int = 12,
+                             delay: float = 0.6, want=None) -> dict:
+    """Poll build_observation until Gmail's conversation list has rendered its ROW
+    TEXT (not just the row containers) into the accessibility tree, or we run out of
+    tries; returns the last observation regardless.
+
+    Gmail is a heavy SPA that paints row containers first and their sender/subject/
+    DATE text a beat later. The old check (containers present) let the read fire
+    while every label was still blank, so the enumerator saw no dates to match and
+    reported a FALSE 'nothing from yesterday' — which then 'worked on the 2nd try'
+    once the text had painted. Gate on visible text so we wait for what the filter
+    needs.
+
+    `want` (a compiled regex) waits for the SPECIFIC token we'll filter on — the
+    target day ("Jul 18") or a clock time (today). When it never appears the wait
+    burns its full budget and returns, which the caller reads as a genuine empty (no
+    pointless model retries). With no `want`, any date/time token counts as ready."""
     obs = await perception.build_observation(executor, app=app)
     for _ in range(tries):
-        if _count_ax_rows(obs) > 0 or (halted and halted()):
+        if halted and halted():
+            return obs
+        ready = (want.search(_labels_blob(obs)) if want is not None
+                 else _count_dated_rows(obs) >= 1)
+        if ready:
             return obs
         await asyncio.sleep(delay)
         obs = await perception.build_observation(executor, app=app)
@@ -636,13 +666,18 @@ def _note_body_from_structured(items: list, date_label: str, total: int,
     action item, and the one-line summary). `notes_access._body_to_html` turns the
     '- [ ]' lines into real Notes checkboxes and the blank lines into spacing. The
     whole body is run through `_strip_dashes` so no em dashes reach the note (user
-    preference) — including any the model put in a subject/task/summary."""
-    header = f"{total} email{'s' if total != 1 else ''} from {date_label}"
-    lines = [header, ""]
+    preference) — including any the model put in a subject/task/summary.
+
+    The note's <h1> title (added by notes_access) already carries the summary label
+    and day, so this body opens with just a short UPPERCASE count caption."""
+    caption = f"{total} EMAIL{'S' if total != 1 else ''}"
+    lines = [caption, ""]
     for it in items:
         subj = (it.get("subject") or "").strip() or "(no subject)"
         frm = (it.get("from") or "").strip()
-        lines.append(f"{frm}: {subj}" if frm else subj)
+        # Bold the per-email heading (**…**) so cards separate visually; the note
+        # was reading as one undifferentiated block. _body_to_html renders it <b>.
+        lines.append(f"**{frm}: {subj}**" if frm else f"**{subj}**")
         task = (it.get("task") or "").strip()
         if task:
             lines.append(f"- [ ] {task}")
@@ -846,23 +881,29 @@ async def run_digest(executor, ax_executor, client, *,
         # reading. Gmail's SPA re-render after the account switch + #inbox nav lags
         # a few seconds; the old fixed 1.2s sleep read a still-loading frame and
         # reported a false "nothing new today" even on an inbox full of mail.
-        obs = await _await_inbox_ready(executor, app, _halted)
-        await _stage()            # → "Reading …"
-
         when = today_str if is_today else _gmail_date_display(date_iso)
         mode = "today" if is_today else "date"
+        # The exact token the filter needs painted before we read: a clock time for
+        # today, the specific "Jul 18" for another day. Waiting for THIS (not just
+        # "any row exists") is the fix for the false "nothing from yesterday" that
+        # only worked on the 2nd/3rd try — the row containers had rendered but their
+        # date text hadn't. If the token never paints, the wait returns empty and we
+        # treat it as a real empty (no pointless retries).
+        want = (re.compile(r"\b\d{1,2}:\d{2}\s*(?:am|pm)\b", re.IGNORECASE) if is_today
+                else re.compile(re.escape(when), re.IGNORECASE))
+        obs = await _await_inbox_ready(executor, app, _halted, want=want)
+        await _stage()            # → "Reading …"
+
         enum = await _enumerate_rows(client, obs, cap, when, mode=mode)
-        # False-empty guard. An empty result on an inbox that HAS mail is the common
-        # flake ("randomly can't find my emails, works on the second try"): Gmail's
-        # SPA is still painting rows into the AX tree, or the enumerator under-
-        # returned on a heavy list. Retry a few times, each time RE-WAITING for rows
-        # to actually render (not just a fixed sleep), before concluding the day is
-        # empty. Bails immediately on the kill switch.
+        # Retry ONLY when the day is actually on screen but the model under-returned
+        # (a genuine miss). If `want` never painted, the wait above already spent its
+        # budget, so an empty result is a real empty — don't spin.
         _tries = 0
-        while not enum["rows"] and _tries < 3 and not _halted():
+        while (not enum["rows"] and _tries < 2 and not _halted()
+               and want.search(_labels_blob(obs))):
             _tries += 1
-            await asyncio.sleep(1.0)
-            obs = await _await_inbox_ready(executor, app, _halted, tries=5, delay=0.6)
+            await asyncio.sleep(0.7)
+            obs = await perception.build_observation(executor, app=app)
             enum = await _enumerate_rows(client, obs, cap, when, mode=mode)
         rows = enum["rows"]
         capped = enum["has_more"]
