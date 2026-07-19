@@ -7435,15 +7435,21 @@ async def _handle_screen(ws, voice_state: dict = None) -> None:
     await _speak(ws, desc)
 
 
-def _stash_summary(ws, text: str, source: str, title: str) -> None:
+def _stash_summary(ws, text: str, source: str, title: str,
+                   note_body: str = "") -> None:
     """Hold the most recent spoken summary on the session so a follow-up
-    'put that in a note' (issue #286) can save exactly this text on a later
-    turn. Replaced on each new summary; error-fallback text is ignored so a
-    failed read never becomes a saveable 'summary'."""
+    'put that in a note' (issue #286) can save it on a later turn. Replaced on
+    each new summary; error-fallback text is ignored so a failed read never
+    becomes a saveable 'summary'.
+
+    `note_body` (issue #310) is an optional STRUCTURED rendering to write to the
+    note instead of the spoken paragraph — per-email bullets for a Gmail digest.
+    Empty for screen/other summaries, which save the spoken text as before."""
     if not ws or not (text or "").strip():
         return
     ws.last_summary = {"text": text.strip(), "source": source,
-                       "title": title, "ts": time.time()}
+                       "title": title, "note_body": (note_body or "").strip(),
+                       "ts": time.time()}
 
 
 async def _handle_save_summary_note(ws, voice_state: dict = None) -> None:
@@ -7457,11 +7463,18 @@ async def _handle_save_summary_note(ws, voice_state: dict = None) -> None:
         await _speak(ws, "I don't have a recent summary to save, sir.")
         return
     title = summ.get("title") or "VALET summary"
+    # Write the structured per-email body when we have one (Gmail digest, #310);
+    # otherwise the spoken paragraph, as before (screen/other summaries).
+    body = (summ.get("note_body") or "").strip() or text
+    # No em/en dashes in saved notes (user preference) — belt-and-suspenders over
+    # the digest path, and the one place that also cleans screen-summary notes.
+    body = re.sub(r"\s+[—–]\s+", ", ", body)
+    body = re.sub(r"[—–]", "-", body)
     ok = False
     async with process_bus.task_context(f"Saving note · {title}") as task_id:
         await emit_step(task_id, "Creating the note…", status="active")
         try:
-            ok = await create_apple_note(title, text)
+            ok = await create_apple_note(title, body)
         except Exception as e:
             log.error(f"create note failed: {e}")
         if ok:
@@ -7623,7 +7636,10 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
                 if result.get("status") == "error":
                     await emit_error(st.task_id, "Inbox digest failed", detail=summary[:200])
             else:
-                got = bool((summary or "").strip())
+                # Only a real digest (status=done, actual emails) is worth stashing
+                # and offering to save. "empty" is a valid read with no content —
+                # speak it, but don't offer to save a "nothing found" note.
+                got = result.get("status") == "done" and bool((summary or "").strip())
         except Exception as e:
             log.error(f"summarize_inbox failed: {e}")
             await emit_error(st.task_id, "Inbox digest failed", detail=str(e)[:200])
@@ -7636,7 +7652,8 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
     if got:
         acct_bit = f"{account.strip().title()} " if account.strip() else ""
         title = f"{acct_bit}Gmail summary - {date_label}"
-        _stash_summary(ws, summary, source=f"gmail-{date_label}", title=title)
+        _stash_summary(ws, summary, source=f"gmail-{date_label}", title=title,
+                       note_body=(result.get("note_body") or ""))
         ws.pending_offer = {"kind": "save_summary_note"}
         await _speak(ws, summary + " Shall I save that to a note, sir?")
     else:
