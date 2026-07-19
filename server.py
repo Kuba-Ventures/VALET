@@ -8890,8 +8890,11 @@ async def voice_handler(ws: WebSocket):
                                         response_text = ""  # _handle_summarize shows the panel + speaks
                                     elif action_type == "summarize_inbox":
                                         # Batch read is slow — ack up front, then the
-                                        # handler speaks the digest when it's ready.
-                                        response_text = "Going through today's emails now, sir."
+                                        # handler speaks the digest when it's ready. Date-
+                                        # agnostic ("those", not "today's"): the request may
+                                        # scope to any day, and the handler speaks the real
+                                        # day back (issue #311).
+                                        response_text = "Going through those emails now, sir."
                                     elif action_type == "sports":
                                         response_text = ""  # _execute_sports emits the card + speaks
                                     elif action_type == "stats":
