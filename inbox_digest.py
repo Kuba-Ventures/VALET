@@ -34,7 +34,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import date, timedelta
+from datetime import date
 from typing import Awaitable, Callable, Optional
 
 import perception
@@ -214,19 +214,27 @@ def _account_base(url: str) -> str:
     return m.group(1) if m else "https://mail.google.com/mail/u/0/"
 
 
-async def _gmail_go_to_search(base: str, query: str) -> bool:
-    """Point Chrome's active tab at a Gmail search (#search/<query>) on the given
-    account base, so date-scoped requests show mail that isn't on the inbox's first
-    page. Read-only navigation of the tab already in front."""
-    import urllib.parse
-    target = base + "#search/" + urllib.parse.quote(query)
+async def _gmail_go_to_inbox(base: str) -> bool:
+    """Point Chrome's active tab at the account's #inbox, so we always read a clean
+    inbox list (not a stale open-message or search view). A hash change is an SPA
+    nav — no full reload. Read-only navigation of the tab already in front."""
     rc, out = await _osascript(
         'tell application "Google Chrome"\n'
         '  if (count of windows) = 0 then return "none"\n'
-        f'  set URL of active tab of front window to "{target}"\n'
+        f'  set URL of active tab of front window to "{base}#inbox"\n'
         '  return "ok"\n'
         'end tell')
     return rc == 0 and out == "ok"
+
+
+def _gmail_date_display(date_iso: str) -> str:
+    """How Gmail labels a row's date for `date_iso`: 'Jul 17' (this year) — the
+    token the enumerator matches against. Falls back to the ISO string."""
+    try:
+        d = date.fromisoformat(date_iso)
+        return f"{d.strftime('%b')} {d.day}"
+    except Exception:
+        return date_iso
 
 
 def _view_from_url(url: str) -> str:
@@ -370,8 +378,8 @@ async def _enumerate_rows(client, obs: dict, cap: int, when_str: str,
 
     mode="today": the inbox list — keep only rows whose date column is a CLOCK TIME
       (that's how Gmail renders same-day mail).
-    mode="dated": a search already scoped to one day (`when_str`) — every visible
-      row is that day, so keep them ALL.
+    mode="date": the inbox list — keep only rows whose date column matches
+      `when_str` (e.g. "Jul 17").
 
     Model-driven on purpose: Gmail's row labels vary (unread markers, categories,
     attachments), and the model reading the labels is far more robust than a rigid
@@ -389,10 +397,13 @@ async def _enumerate_rows(client, obs: dict, cap: int, when_str: str,
         if _lab:
             _lines.append(f"[{e.get('ref','')}] {e.get('role','')} — {_lab[:220]}")
     elements_txt = "\n".join(_lines)
-    if mode == "dated":
+    if mode == "date":
         which = (
-            f"These rows are a Gmail search already limited to {when_str}. Return "
-            "EVERY real message row shown, top to bottom — do not filter by date.\n")
+            f"Return the inbox rows dated {when_str}, top to bottom. In Gmail's "
+            "list each row's date column shows either a CLOCK TIME (that row is "
+            "today) or a DATE like 'Jul 17' / 'Nov 3'. Keep ONLY rows whose date "
+            f"column is {when_str} (it may also appear with a year). Skip rows with "
+            "a clock time and rows dated any other day.\n")
     else:
         which = (
             "Return the conversation-list rows RECEIVED TODAY, top to bottom.\n"
@@ -641,40 +652,36 @@ async def run_digest(executor, ax_executor, client, *,
                                "through today's mail."}
         is_today = (not date_iso) or (date_iso == today_iso)
 
-        # 2) Get the rows for the requested day. A just-activated tab may still be
-        #    building its accessibility tree, so if the first pass finds nothing,
-        #    wait a beat and re-observe once before concluding it's empty.
+        # 2) Read the INBOX list and filter rows to the requested day. We land on
+        #    #inbox first for a clean, consistent read (not a stale message/search
+        #    view). We deliberately do NOT use Gmail's search: its newer unified
+        #    "Search results" UI doesn't expose result rows to accessibility, so a
+        #    search reads as empty. The inbox rows carry each day's date label
+        #    ("Jul 17") or a clock time (today), which is all we need to filter.
+        await _gmail_go_to_inbox(_account_base(url))
+        await asyncio.sleep(1.2)
+        obs = await perception.build_observation(executor, app=app)
+
         if is_today:
-            # Read straight from the inbox list (today = clock-time rows).
-            view = _view_from_url(url) if url else (
-                "message" if _is_message_view(obs) else "list")
-            if view == "message":
-                await _go_back_to_inbox(executor, ax_executor, app)
-                obs = await perception.build_observation(executor, app=app)
             enum = await _enumerate_rows(client, obs, cap, today_str, mode="today")
-            if not enum["rows"]:
-                await asyncio.sleep(1.0)
-                obs = await perception.build_observation(executor, app=app)
-                enum = await _enumerate_rows(client, obs, cap, today_str, mode="today")
         else:
-            # A different day → scope with a Gmail date search so mail that isn't on
-            # the inbox's first page still shows.
-            query = _date_query(date_iso)
-            await _emit(f"Searching {date_label}…", status="active")
-            await _gmail_go_to_search(_account_base(url), query)
-            await asyncio.sleep(1.6)   # let the search results render
+            date_display = _gmail_date_display(date_iso)   # e.g. "Jul 17"
+            enum = await _enumerate_rows(client, obs, cap, date_display, mode="date")
+        if not enum["rows"]:
+            await asyncio.sleep(1.2)
             obs = await perception.build_observation(executor, app=app)
-            enum = await _enumerate_rows(client, obs, cap, date_label, mode="dated")
-            if not enum["rows"]:
-                await asyncio.sleep(1.2)
-                obs = await perception.build_observation(executor, app=app)
-                enum = await _enumerate_rows(client, obs, cap, date_label, mode="dated")
+            when = today_str if is_today else _gmail_date_display(date_iso)
+            enum = await _enumerate_rows(client, obs, cap, when,
+                                         mode="today" if is_today else "date")
         rows = enum["rows"]
         capped = enum["has_more"]
         if not rows:
-            when = "today" if is_today else date_label
-            msg = ("Nothing new in your inbox today, sir." if is_today
-                   else f"I don't see any emails from {when} in your inbox, sir.")
+            if is_today:
+                msg = "Nothing new in your inbox today, sir."
+            else:
+                # Recent days sit on the inbox's first page; older ones may not.
+                msg = (f"I don't see any emails from {date_label} on your inbox's "
+                       "front page, sir — it may be further back than what's shown.")
             return {"status": "empty", "count": 0, "capped": False, "summary": msg}
         total = len(rows)
 
@@ -705,13 +712,3 @@ async def run_digest(executor, ax_executor, client, *,
                 "summary": "Something went wrong reading your inbox, sir."}
 
 
-def _date_query(date_iso: str) -> str:
-    """Gmail search for a single calendar day: `in:inbox after:Y/M/D before:Y/M/D+1`
-    (after is inclusive, before exclusive). Falls back to a bare date on parse error."""
-    try:
-        d = date.fromisoformat(date_iso)
-        n = d + timedelta(days=1)
-        return (f"in:inbox after:{d.year}/{d.month}/{d.day} "
-                f"before:{n.year}/{n.month}/{n.day}")
-    except Exception:
-        return f"in:inbox {date_iso}"
