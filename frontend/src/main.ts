@@ -65,6 +65,7 @@ function showReply(text: string) {
   const trimmed = (text || "").trim();
   if (!trimmed) return;
   replyEl.textContent = trimmed;
+  replyEl.scrollTop = 0;
   replyEl.classList.add("visible");
 }
 replyEl.addEventListener("click", () => {
