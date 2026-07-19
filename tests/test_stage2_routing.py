@@ -240,6 +240,30 @@ def test_summarize_does_not_hijack_describe_or_research():
         assert a is None or a["action"] != "summarize_screen", (phrase, a)
 
 
+def test_goto_account_email_and_summarize_keeps_account():
+    # "Go to my work email and summarize today's emails" — the account word must
+    # survive to the digest (issue #285 follow-up: the LLM dropped it, so the
+    # digest read the wrong tab and said "nothing new"). Must NOT go to the LLM.
+    for phrase, acct, when in [
+        ("go to my work email and summarize today's emails", "work", "today"),
+        ("open my personal inbox and catch me up", "personal", ""),
+        ("go to my work email and summarize yesterday's emails", "work", "yesterday"),
+        ("switch to my business gmail and go through today's mail", "business", "today"),
+    ]:
+        a = server.detect_action_fast(phrase)
+        assert a and a["action"] == "summarize_inbox", (phrase, a)
+        assert a["account"] == acct and a["date"] == when, (phrase, a)
+
+
+def test_goto_account_digest_does_not_hijack_login_or_nav():
+    # Generic "go to gmail and …" (no account) stays the login-capable ui_task,
+    # and a bare "go to my work email" (no digest verb) is NOT a digest.
+    a = server.detect_action_fast("go to gmail and summarize today's emails")
+    assert a and a["action"] == "ui_task", a
+    b = server.detect_action_fast("go to my work email")
+    assert b is None or b["action"] != "summarize_inbox", b
+
+
 class _FakeWS:
     """Minimal stand-in carrying a held summary for the router."""
     def __init__(self, last_summary=None):
