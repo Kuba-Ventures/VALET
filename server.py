@@ -6093,13 +6093,24 @@ _SCROLL_FIND_RE = re.compile(
     r'(?:until|till|til|down\s+to|up\s+to)\s+'
     r'(?:you\s+|i\s+|we\s+)?(?:can\s+)?(?:find|see|reach|get\s+to|spot|hit)\s+'
     r'(?P<target>.+)$', re.IGNORECASE)
-# Plain "scroll down" / "page up" / "scroll to the bottom" / "scroll down a bit".
+# Plain "scroll down" / "page up" / "scroll to the bottom" / "scroll down a bit",
+# plus an optional window target: "scroll up on github", "scroll down in slack".
+#
+# `amt` is an explicit alternation, NOT a catch-all. An earlier version ended
+# with `(?P<amt>[^.?!]*)` which swallowed anything trailing — so "scroll up on
+# github" matched, the target was silently discarded, and VALET scrolled
+# whatever happened to be frontmost instead. Now an unrecognized tail fails the
+# match and falls through to the LLM, which is the honest outcome.
+_SCROLL_AMT = (r'all\s+the\s+way|to\s+the\s+bottom|to\s+the\s+top|to\s+the\s+end'
+               r'|a\s+bit|a\s+little|a\s+touch|a\s+smidge|slightly|some\s+more|more')
 _SCROLL_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:scroll|page|swipe)\s+'
     r'(?:the\s+(?:page|screen|window|list)\s+)?'
     r'(?P<dir>up|down|left|right|to\s+the\s+top|to\s+the\s+bottom|back\s+up)'
-    r'(?P<amt>[^.?!]*)[.?!]*$', re.IGNORECASE)
+    r'(?:\s+(?P<amt>' + _SCROLL_AMT + r'))?'
+    r'(?:\s+(?:on|in|over|inside)\s+(?P<target>.+?))?'
+    r'(?:\s+please)?\s*[.?!]*$', re.IGNORECASE)
 
 
 def _scroll_params(dir_word: str, amt_words: str) -> tuple[str, str]:
@@ -6655,8 +6666,9 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                 "max_steps": 14}
     _sc = _SCROLL_RE.match(t)
     if _sc:
-        _dir, _amt = _scroll_params(_sc.group("dir"), _sc.group("amt"))
-        return {"action": "scroll", "direction": _dir, "amount": _amt}
+        _dir, _amt = _scroll_params(_sc.group("dir"), _sc.group("amt") or "")
+        return {"action": "scroll", "direction": _dir, "amount": _amt,
+                "target": (_sc.group("target") or "").strip(" .?!")}
 
     # "Send this to Claude Code to fix" — read the screen, brief it, dispatch.
     # Before summarize/describe so "send this to Claude to fix" isn't read as a
@@ -8681,7 +8693,8 @@ async def voice_handler(ws: WebSocket):
                             response_text = ""
                             _track_uc(ws, _handle_scroll(
                                 action.get("direction", "down"),
-                                action.get("amount", "page"), ws))
+                                action.get("amount", "page"), ws,
+                                target=action.get("target", "")))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
@@ -10830,22 +10843,36 @@ async def _summarize_gmail_inbox(ws, goal: str = "") -> None:
     await _handle_summarize_inbox(ws, account=account, date=date)
 
 
-async def _handle_scroll(direction: str, amount: str, ws) -> None:
-    """Voice path for a one-shot scroll (issue #291). Scrolls the app the user is
-    LOOKING at — `app=None` resolves to the frontmost non-VALET window, so the orb
-    being focused while they talk doesn't send the scroll to Vee's own panel."""
-    async with process_bus.task_context(f"Scroll {direction}") as task_id:
-        await emit_step(task_id, f"Scrolling {direction}", status="active")
+async def _handle_scroll(direction: str, amount: str, ws, target: str = "") -> None:
+    """Voice path for a one-shot scroll (issue #291).
+
+    With no target, scrolls the app the user is LOOKING at — `app=None` resolves
+    to the frontmost non-VALET window, so the orb being focused while they talk
+    doesn't send the scroll to Vee's own panel.
+
+    With a target ("scroll up on github"), resolves it to a specific window by
+    app name, site host, or title and scrolls THAT — on whichever display it
+    lives, without raising it. An unresolvable target says so rather than
+    scrolling whatever is in front, which is the whole point: on a multi-monitor
+    desk, silently scrolling the wrong window is worse than doing nothing."""
+    label = f"Scroll {direction}" + (f" on {target}" if target else "")
+    async with process_bus.task_context(label) as task_id:
+        await emit_step(task_id, f"Scrolling {direction}",
+                        detail=f"on {target}" if target else "", status="active")
         try:
             result = await executor.scroll(direction=direction, amount=amount,
-                                           task_id=task_id)
+                                           target=target or None, task_id=task_id)
         except Exception as e:
             log.error(f"scroll error: {e}")
             await emit_step(task_id, "Scroll failed", detail=str(e), status="error")
             await _speak(ws, "I couldn't scroll that, sir.")
             return
         ok = bool(getattr(result, "ok", False))
-        await emit_step(task_id, f"Scrolled {direction}" if ok else "Scroll failed",
+        _where = (getattr(result, "meta", {}) or {}).get("app") or ""
+        await emit_step(task_id,
+                        (f"Scrolled {direction}" + (f" in {_where}" if _where else ""))
+                        if ok else "Scroll failed",
+                        detail=(getattr(result, "meta", {}) or {}).get("window", ""),
                         status="done" if ok else "error")
     # Deliberately silent on SUCCESS: the user is watching the page move, and a
     # spoken "scrolled down, sir" after every nudge of a long read is grating.

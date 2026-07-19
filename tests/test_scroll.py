@@ -194,6 +194,122 @@ def test_router_plain_scroll():
         assert server._scroll_params(m.group("dir"), m.group("amt")) == want, text
 
 
+# ── window targeting ("scroll up on github") ────────────────────────────────
+WINDOWS = [
+    {"pid": 1, "app": "Cursor", "title": "ab_testing.py — VALET", "url": "",
+     "frame": [6, 30, 1180, 900]},
+    {"pid": 2, "app": "Slack", "title": "ev-wine-internal (Channel) - Kuba Ventures",
+     "url": "", "frame": [1710, 30, 900, 1000]},
+    {"pid": 3, "app": "Google Chrome", "url": "https://github.com/Kuba-Ventures/VALET/pull/317",
+     "title": 'feat(control): scroll actions + "scroll until you find X" (#291) by kubatopia',
+     "frame": [-1915, 56, 1856, 802]},
+    {"pid": 3, "app": "Google Chrome", "url": "https://mail.google.com/mail/u/0/#inbox",
+     "title": "Inbox (3) - finley@qsbsrollover.com - QSBS Rollover Mail",
+     "frame": [-1916, 30, 1027, 819]},
+]
+
+
+def test_target_resolves_by_site_not_title():
+    """The whole reason URL matching exists: a GitHub PR window's title is
+    'feat(control): … · Pull Request #317 · …' — the word 'github' appears
+    nowhere in it. Title matching alone would miss the obvious case."""
+    from accessibility_executor import find_window
+    hit = find_window("github", WINDOWS)
+    assert hit and hit["url"].startswith("https://github.com")
+    assert "github" not in hit["title"].lower()   # the point of the test
+
+
+def test_target_resolves_app_and_padding_words():
+    from accessibility_executor import find_window
+    assert find_window("slack", WINDOWS)["app"] == "Slack"
+    # users pad targets: "the github page", "on the github tab"
+    assert find_window("the github page", WINDOWS)["pid"] == 3
+    assert find_window("gmail", WINDOWS)["url"].startswith("https://mail.google.com")
+
+
+def test_unknown_target_returns_none_not_a_guess():
+    """None means 'say so'. Falling back to the frontmost window is exactly the
+    silent-wrong-window failure this feature exists to prevent."""
+    from accessibility_executor import find_window
+    assert find_window("spotify", WINDOWS) is None
+    assert find_window("", WINDOWS) is None
+
+
+def test_multi_monitor_frames_are_global():
+    # Negative x = a display left of the main one. Nothing in the resolution
+    # path may assume a single screen.
+    from accessibility_executor import find_window
+    assert find_window("github", WINDOWS)["frame"][0] < 0
+
+
+def test_host_words_ignores_www_and_tld():
+    from accessibility_executor import _host_words
+    assert _host_words("https://www.github.com/x") == ["github"]
+    assert _host_words("https://mail.google.com/mail/u/0") == ["mail", "google"]
+    assert _host_words("not a url") == []
+
+
+def test_scroll_with_unknown_target_fails_loudly(monkeypatch):
+    """It must report the miss, not scroll something arbitrary."""
+    import accessibility_executor as ax
+    monkeypatch.setattr(ax, "_PYOBJC", True)
+    monkeypatch.setattr(ax, "is_trusted", lambda: True)
+    monkeypatch.setattr(ax, "find_window", lambda t, c=None: None)
+    moved = []
+    monkeypatch.setattr(ax, "_scroll_wheel", lambda *a, **k: moved.append(a))
+    res = run(ax.AccessibilityExecutor().scroll(direction="up", target="spotify"))
+    assert not res.ok and res.error == "no_such_window"
+    assert "spotify" in res.message.lower()
+    assert moved == []          # nothing was scrolled
+
+
+def test_named_target_does_not_steal_focus(monkeypatch):
+    """A named window is scrolled where it sits. Raising it would yank the user
+    off whatever they're doing on another display."""
+    import accessibility_executor as ax
+    monkeypatch.setattr(ax, "_PYOBJC", True)
+    monkeypatch.setattr(ax, "is_trusted", lambda: True)
+    monkeypatch.setattr(ax, "find_window", lambda t, c=None: WINDOWS[2])
+    activated, moved = [], []
+    monkeypatch.setattr(ax, "_activate_app", lambda a: activated.append(a))
+    monkeypatch.setattr(ax, "_scroll_wheel", lambda x, y, dy, dx=0, **k: moved.append((x, y, dy)))
+    monkeypatch.setattr(ax, "_cursor_location", lambda: (500.0, 500.0))
+    restored = []
+    monkeypatch.setattr(ax, "_post_mouse_moved", lambda x, y: restored.append((x, y)))
+    res = run(ax.AccessibilityExecutor().scroll(
+        direction="down", target="github", app="Google Chrome"))
+    assert res.ok
+    assert activated == []                       # never raised
+    assert restored == [(500.0, 500.0)]          # cursor put back
+    x, y, dy = moved[0]
+    assert x < 0 and dy < 0                      # left display, scrolled down
+
+
+# ── voice routing ───────────────────────────────────────────────────────────
+def test_router_extracts_the_window_target():
+    import server
+    for text, want_dir, want_target in [
+        ("scroll up on github", "up", "github"),
+        ("scroll down in slack", "down", "slack"),
+        ("scroll up on the github page", "up", "the github page"),
+        ("scroll down a bit on github", "down", "github"),
+        ("scroll down", "down", ""),
+    ]:
+        a = server.detect_action_fast(text)
+        assert a and a.get("action") == "scroll", text
+        assert a["direction"] == want_dir and a["target"] == want_target, text
+
+
+def test_unrecognized_tail_is_not_silently_swallowed():
+    """REGRESSION (the bug this change fixes): `amt` used to be a catch-all
+    `[^.?!]*`, so "scroll up on github" matched as a plain scroll, the target
+    was discarded, and VALET scrolled whatever was frontmost. An unparseable
+    tail must now fail the match and fall through, never silently drop words."""
+    import server
+    a = server.detect_action_fast("scroll down and then delete everything")
+    assert not (a or {}).get("action") == "scroll"
+
+
 def test_router_scroll_until_is_a_search():
     import server
     m = server._SCROLL_FIND_RE.match("scroll down until you find the pricing table")

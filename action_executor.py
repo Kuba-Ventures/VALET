@@ -234,7 +234,8 @@ class ActionExecutor(ABC):
     async def scroll(
         self, *, direction: str = "down", amount: str = "page",
         ref: Optional[str] = None, point: Optional[tuple] = None,
-        app: Optional[str] = None, task_id: Optional[str] = None,
+        app: Optional[str] = None, target: Optional[str] = None,
+        task_id: Optional[str] = None,
     ) -> ActionResult:
         """Scroll the viewport under `ref` / `point` (default: the focused
         window's centre). `direction` ∈ up|down|left|right, `amount` is

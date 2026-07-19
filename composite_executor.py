@@ -96,6 +96,8 @@ class CompositeExecutor(ActionExecutor):
 
     async def scroll(self, *, direction: str = "down", amount: str = "page",
                      ref: Optional[str] = None, point: Optional[tuple] = None,
-                     app: Optional[str] = None, task_id: Optional[str] = None) -> ActionResult:
+                     app: Optional[str] = None, target: Optional[str] = None,
+                     task_id: Optional[str] = None) -> ActionResult:
         return await self._with_fallback("scroll", direction=direction, amount=amount,
-                                         ref=ref, point=point, app=app, task_id=task_id)
+                                         ref=ref, point=point, app=app, target=target,
+                                         task_id=task_id)
