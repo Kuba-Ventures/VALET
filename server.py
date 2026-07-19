@@ -6258,6 +6258,25 @@ _INBOX_DIGEST_RE = re.compile(
     r'(?:\s+(?:for\s+|from\s+)?(?P<when>' + _WHEN + r'))?'
     r'(?:\s+in\s+my\s+inbox)?\s*[.?!]*$',
     re.IGNORECASE)
+# "Go to my WORK email and summarize today's emails" — the account-scoped digest
+# phrased as navigation ("go to / open my <acct> email|inbox … and <digest verb>").
+# _INBOX_DIGEST_RE misses it (it starts with the digest verb, not "go to"), and
+# left to the LLM the account word gets dropped, so the digest reads whichever tab
+# is active instead of the named account (issue #285 follow-up). Fires ONLY when
+# an explicit account word is present, so it can't swallow the generic "go to
+# gmail and …" login handshake (_GMAIL_TASK_RE), which owns the not-signed-in path.
+_INBOX_GOTO_ACCT_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+|now\s+|hey\s+valet[,\s]+)?'
+    r'(?:go\s+to|open(?:\s+up)?|pull\s+up|navigate\s+to|check(?:\s+on)?|head\s+to|'
+    r'switch\s+to|jump\s+to|take\s+me\s+to)\s+'
+    r'(?:my\s+|the\s+)?'
+    r'(?P<acct>work|personal|business|home|office)\s+'
+    r'(?:gmail|e-?mail|inbox|mail(?:box)?|account)\b'
+    r'.*\b(?:summari[sz]e|go(?:ing)?\s+through|catch\s+me\s+up|read|recap|digest|'
+    r'run\s+through)\b'
+    r'(?:.*?\b(?P<when>' + _WHEN + r'))?'
+    r'.*$',
+    re.IGNORECASE)
 # "Put that in a note" / "save that summary as a new apple note" (issue #286) —
 # the cross-turn handoff: take the summary VALET last spoke (held on
 # ws.last_summary, often from an EARLIER turn) and write it verbatim into a fresh
@@ -6562,6 +6581,17 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         if re.search(r'\bout\b', _gl) and re.search(r'\b(gmail|google)\b', _gl):
             return {"action": "google_signout", "gmail": "gmail" in _gl}
         return {"action": "ui_task", "goal": _goal}
+
+    # "Go to my WORK email and summarize today's emails" — account-scoped digest
+    # phrased as navigation. BEFORE _GMAIL_TASK_RE so the named account survives to
+    # the digest (the LLM otherwise drops it and reads the wrong tab). Requires an
+    # explicit account word, so the generic "go to gmail and …" still falls to the
+    # login-capable ui_task below (issue #285 follow-up).
+    _iga = _INBOX_GOTO_ACCT_RE.match(t)
+    if _iga:
+        return {"action": "summarize_inbox",
+                "account": (_iga.group("acct") or ""),
+                "date": (_iga.group("when") or "")}
 
     # Gmail multi-step task ("go to gmail.com and summarize today's emails") →
     # the supervised UI loop, which lands on Gmail, detects the sign-in wall, and
