@@ -43,6 +43,19 @@ export interface WakeWordController {
   cancelPushToTalk(): void;  // abort a held turn and DISCARD captured audio
 }
 
+/**
+ * A better recognizer for the push-to-talk turn only (see deepgramMic.ts).
+ * When present, its transcript is PREFERRED over the built-in recognizer's; if
+ * it yields nothing, the built-in segments are used instead, so a failure here
+ * degrades quality rather than losing the command.
+ */
+export interface PushToTalkTranscriber {
+  available(): boolean;
+  start(): Promise<unknown>;
+  stop(): Promise<string>;
+  cancel(): void;
+}
+
 export interface WakeWordHandlers {
   onWake: () => void;
   // `opts.fromPushToTalk` marks a deliberate push-to-talk dispatch so the caller
@@ -138,12 +151,15 @@ function normalizeName(raw: string): string {
 
 export function createWakeWord(
   initialName: string,
-  handlers: WakeWordHandlers
+  handlers: WakeWordHandlers,
+  pttTranscriber?: PushToTalkTranscriber
 ): WakeWordController {
   let assistantName = normalizeName(initialName);
   let wakeRegex = buildWakeRegex(assistantName);
   let softRegex = buildSoftRegex(assistantName);
   let active = false;
+  // True while a Deepgram turn is in flight for the current hold.
+  let dgActive = false;
   // Set when we wake on an INTERIM transcript; the matching FINAL then carries
   // the actual command (the tail after the wake phrase).
   let wokeThisUtterance = false;
@@ -160,11 +176,11 @@ export function createWakeWord(
   let pttSegments: string[] = [];
   let pttTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function dispatchPushToTalk() {
+  function dispatchPushToTalk(override?: string) {
     if (!pttFinalizing && !pttHeld) return;
     pttFinalizing = false;
     if (pttTimer !== undefined) { clearTimeout(pttTimer); pttTimer = undefined; }
-    const cmd = pttSegments.join(" ").replace(/\s+/g, " ").trim();
+    const cmd = (override || pttSegments.join(" ")).replace(/\s+/g, " ").trim();
     pttSegments = [];
     if (cmd) handlers.onCommand(cmd, { fromPushToTalk: true });
     handlers.onPushToTalkEnd?.();
@@ -276,6 +292,14 @@ export function createWakeWord(
       pttSegments = [];
       if (pttTimer !== undefined) { clearTimeout(pttTimer); pttTimer = undefined; }
       voiceInput.resume();   // ensure the mic is hot even if asleep/paused
+      // Run the better recognizer ALONGSIDE the built-in one for this turn. Both
+      // capture; whichever produces text wins at dispatch, so a Deepgram hiccup
+      // costs accuracy, not the command.
+      dgActive = false;
+      if (pttTranscriber?.available()) {
+        dgActive = true;
+        void pttTranscriber.start().catch(() => { dgActive = false; });
+      }
       handlers.onWake();     // visual cue: show we're listening (no change to `active`)
     },
     endPushToTalk() {
@@ -283,6 +307,15 @@ export function createWakeWord(
       pttHeld = false;
       pttFinalizing = true;
       voiceInput.finalize();  // flush buffered audio → a FINAL arrives, then dispatch
+      if (dgActive && pttTranscriber) {
+        dgActive = false;
+        // Prefer the better transcript, but never block on it: the timer below
+        // still fires if Deepgram is slow or silent.
+        void pttTranscriber.stop().then((text) => {
+          const t = (text || "").trim();
+          if (t && pttFinalizing) dispatchPushToTalk(t);
+        }).catch(() => { /* fall through to the built-in transcript */ });
+      }
       // Fallback: if no FINAL lands promptly, dispatch whatever we captured.
       if (pttTimer !== undefined) clearTimeout(pttTimer);
       pttTimer = setTimeout(() => { if (pttFinalizing) dispatchPushToTalk(); }, 1200);
@@ -295,6 +328,7 @@ export function createWakeWord(
       pttFinalizing = false;
       pttSegments = [];
       pttDiscarding = true;
+      if (dgActive) { dgActive = false; pttTranscriber?.cancel(); }
       if (pttTimer !== undefined) clearTimeout(pttTimer);
       // Flush the recognizer buffer (mic keeps listening — onend restarts it),
       // then swallow that trailing FINAL and re-open the normal wake path.
