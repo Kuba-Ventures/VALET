@@ -226,11 +226,14 @@ async def create_apple_note(title: str, body: str, folder: str = "Notes") -> boo
     escaped_title = title.replace('"', '\\"')
     escaped_body = html_body.replace('"', '\\"')
     escaped_folder = folder.replace('"', '\\"')
+    # activate + `show` front Notes and open the new note (see _create_note_html).
     script = f'''
 tell application "Notes"
+    activate
     tell folder "{escaped_folder}"
-        make new note with properties {{name:"{escaped_title}", body:"{escaped_body}"}}
+        set newNote to make new note with properties {{name:"{escaped_title}", body:"{escaped_body}"}}
     end tell
+    show newNote
     return "OK"
 end tell
 '''
@@ -264,11 +267,16 @@ def _title_header_html(title: str) -> str:
 async def _create_note_html(body_html: str, folder: str = "Notes") -> bool:
     """Create a note straight from ready HTML, WITHOUT a `name` (so the leading
     <h1> becomes the title). Used for the no-checklist summary path."""
+    # activate + `show` bring Notes to the front and open the just-created note,
+    # so a summary→note (e.g. "put that in a note") visibly lands in a fronted
+    # window rather than being written silently in the background.
     script = f'''
 tell application "Notes"
+    activate
     tell folder "{_as_str(folder)}"
-        make new note with properties {{body:"{_as_str(body_html)}"}}
+        set newNote to make new note with properties {{body:"{_as_str(body_html)}"}}
     end tell
+    show newNote
     return "OK"
 end tell
 '''
