@@ -370,6 +370,48 @@ def test_find_account_element_is_exact():
     assert agent_loop._find_account_element(obs, "mrfinleyunderwood@gmail.com")["ref"] == "e2"
 
 
+def test_resolve_acct_hint():
+    # A spoken account word maps onto the right chooser email so a named-account
+    # digest ("summarize my WORK mail") auto-picks without re-asking.
+    emails = ["finley@qsbsrollover.com", "mrfinleyunderwood@gmail.com"]
+    assert agent_loop._resolve_acct_hint("work", emails) == "finley@qsbsrollover.com"
+    assert agent_loop._resolve_acct_hint("business", emails) == "finley@qsbsrollover.com"
+    assert agent_loop._resolve_acct_hint("personal", emails) == "mrfinleyunderwood@gmail.com"
+    assert agent_loop._resolve_acct_hint("home", emails) == "mrfinleyunderwood@gmail.com"
+    # A domain-stem fragment resolves the custom-domain (work) account.
+    assert agent_loop._resolve_acct_hint("qsbs", emails) == "finley@qsbsrollover.com"
+    # Nothing confident → "" (loop falls back to asking).
+    assert agent_loop._resolve_acct_hint("", emails) == ""
+    assert agent_loop._resolve_acct_hint("work", []) == ""
+
+
+def test_gmail_acct_hint_auto_selects_without_asking(monkeypatch):
+    # With acct_hint the loop resolves the named account against the chooser and
+    # clicks it ITSELF — no "which account?" pause — then flips to the password
+    # page and asks approval. This is the signed-out digest handoff path: the user
+    # already named "work", so we don't ask again.
+    _no_capture(monkeypatch)
+
+    class FakeExecFlow(FakeExec):
+        def __init__(self):
+            super().__init__()
+            self.obs_n = 0
+        async def observe_ui(self, *, app=None, max_elements=250, task_id=None):
+            self.obs_n += 1
+            els = _GMAIL_CHOOSER_ELS if self.obs_n <= 1 else _GMAIL_PASSWORD_ELS
+            return ActionResult.success(Capability.OBSERVE_UI,
+                                        data={"app": "Google Chrome", "elements": els})
+
+    client = FakeClient(['{"action":"done","reason":"n/a"}'])
+    ex = FakeExecFlow()
+    res = run(agent_loop.run_loop(
+        ex, "go to my work gmail and summarize July 18", client, ax_executor=ex,
+        hands_off=True, acct_hint="work"))
+    assert any(a[0] == "click" for a in ex.actions)     # auto-clicked the work account
+    # Went straight to the password approval — never paused to ask which account.
+    assert res["status"] == "paused" and res.get("reason") == "approve_signin"
+
+
 def test_summary_goal_stops_at_inbox(monkeypatch):
     # With stop_at_gmail_inbox, reaching the inbox ends the loop (reason at_inbox)
     # so the caller can summarize — the generic click loop never runs.
