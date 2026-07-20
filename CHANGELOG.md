@@ -3,6 +3,29 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.44] — 2026-07-20
+
+### Added
+- **Summarize your Gmail by voice — even when you're signed out.** Say "go to
+  gmail.com and summarize the emails I received today" and VALET opens your
+  browser to Gmail. If you're signed out, it doesn't give up: it recognizes the
+  sign-in wall, picks the account you named ("my work Gmail"), asks before using
+  your saved password, and hands you the keyboard for anything only you can do
+  (a passkey or 2-step prompt) — then carries on to read the day's mail and speak
+  a single digest. VALET never types your password itself. (#326, #327)
+
+### Changed
+- **"Put that in a new Apple note" now opens Notes and shows the note.** The
+  summary used to be written silently in the background; it now brings the Notes
+  window forward with the new note open. (#328)
+
+### Fixed
+- **"Summarize the email" reads the email in front of you, not your whole inbox.**
+  A single focused message was being treated as an inbox digest and re-read
+  everything. "Summarize the email" / "this email" now summarize what's on
+  screen, while "my emails", "today's emails" and "go through my inbox" still
+  run the full digest. (#329)
+
 ## [0.2.43] — 2026-07-20
 
 ### Fixed
