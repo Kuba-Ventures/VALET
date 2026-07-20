@@ -3,6 +3,17 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.43] — 2026-07-20
+
+### Fixed
+- **"Go to GitHub" works even when it's heard as "get hub".** Speech recognition
+  turns GitHub into "get hub", "gethub" and "guitar hub"; those went looking for
+  a button by that name instead of opening the site. The correction now happens
+  to the transcript before anything is routed, so navigation, clicks and
+  scrolling all benefit. Gmail heard as "gee mail" is fixed the same way.
+  "Ghetto" is only corrected where it clearly means the site — ordinary speech
+  is left alone. (#291)
+
 ## [0.2.42] — 2026-07-20
 
 ### Added
