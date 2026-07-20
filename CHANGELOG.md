@@ -3,6 +3,39 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.42] — 2026-07-20
+
+### Added
+- **Scroll a window by name, on any screen.** "Scroll up on GitHub", "scroll
+  down in Slack" — VALET finds that window by app, site or title and scrolls it
+  where it sits, on whichever display it's on, without raising it or taking
+  focus from what you're doing. If it can't find what you named, it says so
+  rather than scrolling whatever happened to be in front. (#291)
+- **You don't have to say "scroll".** "Go to the top", "jump to the bottom",
+  "take me to the top of GitHub" and "scroll to bottom" all work now. Asking
+  "what's at the bottom of GitHub" scrolls there **and reads it back** — the
+  question is about the content, so answering it silently would answer the
+  wrong question. (#291)
+- **Better transcription while you hold ⌃⌥.** The push-to-talk turn now uses
+  Deepgram, which handles accents far better than the built-in recognizer.
+  Always-listening is unchanged, so nothing streams while VALET sits idle. With
+  no Deepgram key configured everything falls back to the previous recognizer.
+  (#291)
+
+### Fixed
+- **"Scroll all the way down" no longer reads out the Dow Jones.** The phrase
+  wasn't recognized as a scroll at all, so it fell through and was heard as a
+  question about markets. (#291)
+- **"All the way" now actually reaches the end.** Every scroll used to travel
+  the same short distance no matter what you asked for — a page, a bit, and all
+  the way were identical. Native apps now jump straight to the top or bottom;
+  browser pages scroll until they stop moving. (#291)
+- **Misheard window names still find the right window.** "GitHub" is often
+  transcribed as "ghetto"; that and its cousins now resolve, and anything
+  genuinely unrecognizable is reported instead of guessed. (#291)
+- **"Go to the top of GitHub" scrolls instead of hunting for a button.** It used
+  to be treated as a click and went looking for a control named "top". (#291)
+
 ## [0.2.41] — 2026-07-19
 
 ### Added
