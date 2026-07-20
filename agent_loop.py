@@ -266,6 +266,37 @@ def _account_emails(observation: dict) -> list:
     return seen
 
 
+def _resolve_acct_hint(hint: str, emails: list) -> str:
+    """Map a spoken account word ('work', 'personal', or an address fragment) onto
+    one of the chooser's emails, so a digest that already named the account
+    ('summarize my WORK mail') auto-picks it instead of re-asking. work/business/
+    office → the custom-domain address; personal/home → the gmail.com one; else a
+    substring match on the local part or a distinctive domain stem. '' when nothing
+    matches confidently (the loop then falls back to asking the user)."""
+    t = (hint or "").strip().lower()
+    if not t or not emails:
+        return ""
+
+    def _personal(e):
+        return e.lower().split("@", 1)[-1] in ("gmail.com", "googlemail.com")
+
+    if any(w in t for w in ("work", "business", "company", "corporate", "office")):
+        for e in emails:
+            if not _personal(e):
+                return e
+    if any(w in t for w in ("personal", "home", "private")):
+        for e in emails:
+            if _personal(e):
+                return e
+    for e in emails:
+        local = e.lower().split("@", 1)[0]
+        dom_stem = e.lower().split("@", 1)[-1].split(".", 1)[0]
+        if t in local or local in t or (
+                dom_stem not in ("gmail", "googlemail") and (t in dom_stem or dom_stem in t)):
+            return e
+    return ""
+
+
 def _is_password_page(observation: dict) -> bool:
     """True on the Google password-entry step (a secure field, or the 'Enter your
     password' heading)."""
@@ -611,6 +642,7 @@ async def run_loop(
     speak: Optional[Callable[[str], Awaitable[None]]] = None,
     login_choice: Optional[dict] = None,
     stop_at_gmail_inbox: bool = False,
+    acct_hint: str = "",
 ) -> dict:
     """Run the supervised observe→decide→act loop for `goal`.
 
@@ -752,6 +784,14 @@ async def run_loop(
             # (a) Account chooser — ask which account, then click it.
             if _is_account_chooser(observation):
                 emails = _account_emails(observation)
+                # The digest already named the account ("summarize my WORK mail") →
+                # resolve it against the shown emails and click it ourselves, no
+                # "which account?" question. Only when the hint doesn't resolve do we
+                # fall through and ask.
+                if acct_hint and not (login_choice and login_choice.get("email")):
+                    pre = _resolve_acct_hint(acct_hint, emails)
+                    if pre:
+                        login_choice = {"email": pre}
                 if login_choice and login_choice.get("email"):
                     tgt = login_choice["email"]
                     login_choice = None

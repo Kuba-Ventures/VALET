@@ -296,6 +296,28 @@ def _is_signin(obs: dict) -> bool:
     return agent_loop._is_gmail_signin(obs)
 
 
+async def _signed_out_gmail(executor, hint: str = "") -> bool:
+    """True if Chrome is sitting on Google's sign-in / 'Choose an account' page for
+    Gmail — the signal that a digest miss is really 'signed out' (recoverable by the
+    guided login, issue #284) rather than 'no inbox open'.
+
+    A signed-out Gmail tab's title carries no email, so it never matches an account
+    hint and the switch reports 'no_match' — indistinguishable from 'wrong account
+    open' until we look at the page. So we activate the best Gmail tab (or fall back
+    to Chrome's active tab, which may be the account chooser reached via a signout
+    redirect off mail.google.com) and check the page content itself."""
+    try:
+        tabs = await _gmail_tabs()
+        if tabs:
+            best = max(tabs, key=lambda x: _score_tab(x["title"], hint)) if hint else tabs[0]
+            await _activate_tab(best["w"], best["t"])
+            await asyncio.sleep(0.6)          # let the tuck-in/redirect settle
+        obs = await perception.build_observation(executor, app="Google Chrome")
+        return _is_signin(obs)
+    except Exception:
+        return False
+
+
 async def _current_view(app: Optional[str] = None) -> str:
     """Best available list/message/overlay classification from Chrome's active-tab
     URL, or '' (Chrome not scriptable / not on Gmail) so the caller falls back to
@@ -835,6 +857,15 @@ async def run_digest(executor, ax_executor, client, *,
         if must_switch:
             status, email = await _switch_to_gmail(account)
             if status == "no_match" and account:
+                # No open tab's title matches the named account. That's ALSO what a
+                # signed-out Gmail looks like (its title carries no email), so check
+                # the page before giving up: if it's Google's sign-in / chooser, hand
+                # back 'signed_out' and let the caller run the guided login instead of
+                # a dead-end "open that inbox" the user can't act on while logged out.
+                if await _signed_out_gmail(executor, account):
+                    return {"status": "signed_out", "count": 0, "capped": False,
+                            "account": account,
+                            "summary": f"You're signed out of your {account} Gmail, sir."}
                 return {"status": "no_inbox", "count": 0, "capped": False,
                         "summary": f"I don't see your {account} Gmail open in Chrome, "
                                    "sir — open that inbox and I'll go through it."}
@@ -851,6 +882,13 @@ async def run_digest(executor, ax_executor, client, *,
         on_gmail = active_is_gmail or (
             not url and _is_browser(app) and _strict_gmail(obs))
         if not on_gmail:
+            # A Google sign-in / chooser is on screen (e.g. reached via a signout
+            # redirect off mail.google.com) → signed_out, so the caller can recover
+            # it, rather than telling the user to "open your inbox".
+            if _is_signin(obs):
+                return {"status": "signed_out", "count": 0, "capped": False,
+                        "account": account,
+                        "summary": "You're signed out of Gmail, sir."}
             return {"status": "no_inbox", "count": 0, "capped": False,
                     "summary": "I don't see your Gmail open in Chrome, sir — open your "
                                "inbox and I'll go through today's mail."}
@@ -865,9 +903,9 @@ async def run_digest(executor, ax_executor, client, *,
             app = "Google Chrome"
         obs = await perception.build_observation(executor, app=app)
         if _is_signin(obs):
-            return {"status": "no_inbox", "count": 0, "capped": False,
-                    "summary": "You're signed out of Gmail, sir — sign in and I'll go "
-                               "through today's mail."}
+            return {"status": "signed_out", "count": 0, "capped": False,
+                    "account": account,
+                    "summary": "You're signed out of Gmail, sir."}
         is_today = (not date_iso) or (date_iso == today_iso)
 
         # 2) Read the INBOX list and filter rows to the requested day. We land on

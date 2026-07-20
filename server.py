@@ -7750,7 +7750,7 @@ def _resolve_digest_date(raw: str) -> tuple[str, str, str]:
 
 
 async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "",
-                                  date: str = "") -> None:
+                                  date: str = "", allow_login: bool = True) -> None:
     """'Go through today's emails' / 'summarize my emails from July 16' — read the
     OPEN Gmail inbox for a given day and speak ONE summary across all of them
     (issue #285). Summaries are built from each row's sender/subject/body-preview;
@@ -7768,6 +7768,7 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
     dispatch_time = time.time()
     summary = "I couldn't read your inbox, sir."
     got = False
+    signed_out = False
     date_iso, date_label, today_iso = _resolve_digest_date(date)
     stages = ["Finding your inbox", f"Reading {date_label}'s mail", "Summarizing"]
     async with staged_task(f"Inbox · {date_label}", stages) as st:
@@ -7781,9 +7782,14 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
                 today_str=today_str, account=account, date_iso=date_iso,
                 today_iso=today_iso, date_label=date_label, user_name=USER_NAME)
             summary = result.get("summary") or summary
-            # no_inbox / error / halted didn't complete the plan — mark it errored
-            # (empty is a real completion: we read, there was just nothing).
-            if result.get("status") in ("no_inbox", "error", "halted"):
+            # signed_out is recoverable (not a real miss): the inbox is there behind
+            # Google's sign-in wall. Flag it so we hand off to the guided login below
+            # instead of speaking a dead-end. allow_login=False on the post-login
+            # re-entry stops any loop.
+            signed_out = allow_login and result.get("status") == "signed_out"
+            # no_inbox / error / halted / signed_out didn't complete the plan — mark
+            # it errored (empty is a real completion: we read, there was just nothing).
+            if result.get("status") in ("no_inbox", "error", "halted", "signed_out"):
                 await st.finish(ok=False)
                 if result.get("status") == "error":
                     await emit_error(st.task_id, "Inbox digest failed", detail=summary[:200])
@@ -7796,6 +7802,23 @@ async def _handle_summarize_inbox(ws, voice_state: dict = None, account: str = "
             log.error(f"summarize_inbox failed: {e}")
             await emit_error(st.task_id, "Inbox digest failed", detail=str(e)[:200])
             await st.finish(ok=False)
+    # Signed out → don't dead-end. Route into the guided-login flow (issue #284),
+    # which lands on Gmail, auto-picks the named account, asks approval, clicks the
+    # saved password + Next, and on reaching the inbox re-runs THIS digest for the
+    # same account+date. The synthesized goal round-trips account+date through
+    # _gmail_goal_scope so the post-login summary keeps the day the user asked for;
+    # `date` is the raw spoken form ("July 18"/"yesterday"), which _WHEN re-matches.
+    if signed_out:
+        if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
+            return  # user moved on before we could offer the sign-in
+        acct = (account or "").strip()
+        when = (date or "").strip()
+        goal = ("go to my " + (acct + " " if acct else "") + "gmail and summarize"
+                + (" " + when if when else ""))
+        await _speak(ws, f"You're signed out of your {acct or 'Gmail'} inbox, sir — "
+                         "let me sign you back in.")
+        await _handle_ui_task(goal, ws, prenav=True, acct_hint=acct)
+        return
     # Speak the digest — unless the user already moved on (barge-in).
     if voice_state and voice_state.get("last_user_time", 0) > dispatch_time:
         return
@@ -10744,7 +10767,8 @@ async def api_latency_last():
 async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int = 8,
                        task_id: Optional[str] = None, ws=None,
                        login_choice: Optional[dict] = None,
-                       stop_at_gmail_inbox: bool = False) -> dict:
+                       stop_at_gmail_inbox: bool = False,
+                       acct_hint: str = "") -> dict:
     """UC4 — run the supervised observe→decide→act loop for `goal`, streaming each
     beat to the process panel. Each mutating step is gated (confirm card) and the
     kill switch is live throughout. When `ws` is given, mid-task prompts (the login
@@ -10789,7 +10813,7 @@ async def _run_ui_task(goal: str, *, app: Optional[str] = None, max_steps: int =
             executor, goal, anthropic_client, app=app, max_steps=max_steps,
             kill_switch=kill_switch, ax_executor=_ax_executor, emit=_emit,
             hands_off=True, speak=_speak_cb if ws else None, login_choice=login_choice,
-            stop_at_gmail_inbox=stop_at_gmail_inbox)
+            stop_at_gmail_inbox=stop_at_gmail_inbox, acct_hint=acct_hint)
         return result
     finally:
         if stage_loop:
@@ -11021,7 +11045,10 @@ async def _summarize_gmail_inbox(ws, goal: str = "") -> None:
     the 'today' scope — so 'go to my gmail and summarize today's emails' summarized
     everything on screen instead of just today's mail."""
     account, date = _gmail_goal_scope(goal)
-    await _handle_summarize_inbox(ws, account=account, date=date)
+    # allow_login=False: we only reach here AFTER the guided login landed on the
+    # inbox, so a lingering "signed_out" read must not bounce back into another
+    # login attempt — it would loop.
+    await _handle_summarize_inbox(ws, account=account, date=date, allow_login=False)
 
 
 _WINDOW_PICK_PROMPT = (
@@ -11143,7 +11170,7 @@ async def _handle_scroll(direction: str, amount: str, ws, target: str = "",
 
 async def _handle_ui_task(goal: str, ws, prenav: bool = True,
                           login_choice: Optional[dict] = None,
-                          max_steps: int = 8) -> None:
+                          max_steps: int = 8, acct_hint: str = "") -> None:
     """Voice path for UC4 — runs the loop on a background task (keeps the WS loop
     free for per-step confirm replies + STOP), then speaks the outcome.
 
@@ -11170,7 +11197,8 @@ async def _handle_ui_task(goal: str, ws, prenav: bool = True,
             result = await _run_ui_task(goal, task_id=task_id, ws=ws,
                                         max_steps=max_steps,
                                         login_choice=login_choice,
-                                        stop_at_gmail_inbox=is_summary)
+                                        stop_at_gmail_inbox=is_summary,
+                                        acct_hint=acct_hint)
     except Exception as e:
         log.error(f"ui_task error: {e}")
         await _speak(ws, "I ran into trouble with that, sir.")
