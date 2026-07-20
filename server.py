@@ -8080,6 +8080,89 @@ def _is_cancel_phrase(user_text: str) -> bool:
 
 
 
+def _deepgram_available() -> bool:
+    """True when Deepgram STT is configured AND importable."""
+    try:
+        import deepgram_stt
+        return deepgram_stt.available()
+    except Exception:
+        return False
+
+
+@app.websocket("/ws/stt")
+async def ws_stt(websocket: WebSocket):
+    """Speech-to-text relay: the frontend streams raw PCM up, transcripts come
+    back down as JSON.
+
+    The Deepgram socket is held HERE rather than in the page so the API key never
+    reaches the frontend. Audio contract is whatever `deepgram_stt` declares:
+    16 kHz mono signed 16-bit little-endian.
+
+    Every failure path ends the socket cleanly rather than hanging, because the
+    frontend treats a closed STT socket as "fall back to the built-in
+    recognizer" — going quiet would leave the user with no voice at all, which is
+    strictly worse than a worse recognizer.
+    """
+    await websocket.accept()
+    if not _deepgram_available():
+        await websocket.send_json({"type": "stt_unavailable", "reason": "no_key"})
+        await websocket.close()
+        return
+
+    import deepgram_stt
+
+    # Bias the recognizer toward what is actually on screen: if a GitHub window
+    # is open, "GitHub" is a far likelier word than "ghetto".
+    try:
+        import accessibility_executor as _ax
+        windows = await asyncio.to_thread(_ax.window_candidates)
+    except Exception:
+        windows = []
+    keyterms = deepgram_stt.keyterms_for_context(windows)
+
+    session = deepgram_stt.DeepgramSession(keyterms=keyterms)
+    try:
+        await session.__aenter__()
+    except Exception as e:
+        log.warning(f"deepgram connect failed: {e}")
+        await websocket.send_json({"type": "stt_unavailable", "reason": "connect_failed"})
+        await websocket.close()
+        return
+
+    await websocket.send_json({"type": "stt_ready", "keyterms": len(keyterms)})
+
+    async def pump_down():
+        """Deepgram → frontend."""
+        try:
+            async for t in session.transcripts():
+                await websocket.send_json({
+                    "type": "stt_transcript",
+                    "text": t["text"],
+                    "isFinal": t["is_final"],
+                })
+        except Exception as e:
+            log.info(f"stt downstream ended: {e}")
+
+    down = asyncio.create_task(pump_down())
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            data = msg.get("bytes")
+            if data:
+                await session.feed(data)
+            elif msg.get("text") == "stop":
+                await session.finish()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.info(f"stt upstream ended: {e}")
+    finally:
+        await session.close()
+        down.cancel()
+
+
 @app.websocket("/ws/voice")
 async def voice_handler(ws: WebSocket):
     """
@@ -9860,6 +9943,10 @@ async def api_get_config():
     telemetry = env_dict.get("VALET_TELEMETRY", "on").strip().lower() not in ("0", "off", "false", "no")
     return {
         "assistant_name": name,
+        # Which recognizer the frontend should drive. "deepgram" means stream mic
+        # audio to /ws/stt; "webkit" means keep using the built-in recognizer.
+        # A missing key degrades quality, never voice itself.
+        "stt": ("deepgram" if _deepgram_available() else "webkit"),
         "voice": "female" if voice == "female" else "male",
         "voice_female_available": bool(env_dict.get("VALET_VOICE_FEMALE_ID", "").strip()),
         "telemetry": telemetry,
