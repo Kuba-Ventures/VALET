@@ -482,3 +482,42 @@ def test_router_scroll_until_is_a_search():
     assert server._SCROLL_FIND_RE.match("keep scrolling until you see the footer")
     # …and a plain scroll must NOT be swallowed by the search pattern.
     assert not server._SCROLL_FIND_RE.match("scroll down")
+
+
+# ── product names the recognizer swaps for other words ──────────────────────
+def test_misheard_product_names_are_fixed_before_routing():
+    """REGRESSION: "go to get hub" reached the CLICK resolver hunting for a
+    control named "get hub", while "go to github" opened the site correctly.
+    Correcting the transcript fixes every path at once — nav, click and scroll —
+    rather than one feature's lookup table."""
+    import voice_text, server
+    for heard, want_action in [
+        ("go to get hub", "open_url"),
+        ("open get hub", "open_url"),
+        ("scroll down on get hub", "scroll"),
+        ("go to the bottom of the get hub page", "scroll"),
+    ]:
+        corrected = voice_text.apply_speech_corrections(heard)
+        assert "GitHub" in corrected, f"{heard!r} -> {corrected!r}"
+        a = server.detect_action_fast(corrected) or {}
+        assert a.get("action") == want_action, f"{heard!r} -> {a.get('action')!r}"
+
+
+def test_ghetto_is_only_corrected_where_it_means_github():
+    """"ghetto" is ordinary English. Correcting it everywhere would corrupt
+    normal speech, so it is only fixed after a preposition or before a
+    site-shaped noun."""
+    import voice_text
+    assert "GitHub" in voice_text.apply_speech_corrections("scroll down on ghetto")
+    assert "GitHub" in voice_text.apply_speech_corrections("go to the ghetto page")
+    # left alone in ordinary use
+    untouched = voice_text.apply_speech_corrections("the ghetto is a real word")
+    assert "GitHub" not in untouched and "ghetto" in untouched
+
+
+def test_ambiguous_words_are_not_globally_substituted():
+    """A wrong global substitution corrupts every downstream path at once, so
+    real words with real uses stay out of the transcript-level table."""
+    import voice_text
+    out = voice_text.apply_speech_corrections("upload it to the cloud and slap a label on it")
+    assert "slack" not in out.lower()      # "slap" is a real word
