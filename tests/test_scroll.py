@@ -206,6 +206,8 @@ WINDOWS = [
     {"pid": 3, "app": "Google Chrome", "url": "https://mail.google.com/mail/u/0/#inbox",
      "title": "Inbox (3) - finley@qsbsrollover.com - QSBS Rollover Mail",
      "frame": [-1916, 30, 1027, 819]},
+    {"pid": 5, "app": "Messages", "title": "Pastor Faith", "url": "",
+     "frame": [1710, 30, 800, 900]},
 ]
 
 
@@ -389,6 +391,41 @@ def test_page_and_half_scale_with_the_ask(monkeypatch):
         return len(w)
 
     assert count("half") < count("page") < ax._MAX_BURSTS
+
+
+# ── speech-recognition slips on window names ────────────────────────────────
+def test_fuzzy_target_survives_mishearings():
+    """The recognizer garbles names constantly. Exact-only matching turned every
+    slip into "I can't see a <garbage> window, sir"."""
+    from accessibility_executor import find_window
+    for heard, want_app in [
+        ("sleck", "Slack"), ("slock", "Slack"), ("zlack", "Slack"),
+        ("kursor", "Cursor"), ("curser", "Cursor"),
+        ("messeges", "Messages"),
+    ]:
+        hit = find_window(heard, WINDOWS)
+        assert hit and hit["app"] == want_app, f"{heard!r} -> {hit and hit['app']}"
+
+
+def test_known_substitutions_are_mapped():
+    """"ghetto" is not a near-miss of "github" — it scores 0.33 on a string
+    ratio, because the recognizer swapped in a different real word. Fuzzy can't
+    reach it, so observed substitutions get an explicit table."""
+    import difflib
+    from accessibility_executor import find_window, _HEARD_AS
+    assert difflib.SequenceMatcher(None, "ghetto", "github").ratio() < 0.5
+    for heard in ("ghetto", "get hub", "gethub"):
+        hit = find_window(heard, WINDOWS)
+        assert hit and "github" in hit["url"], f"{heard!r} did not reach GitHub"
+    assert _HEARD_AS["ghetto"] == "github"
+
+
+def test_fuzzy_still_refuses_a_bad_guess():
+    """A wrong window is worse than an honest miss — the cutoff must hold."""
+    from accessibility_executor import find_window
+    assert find_window("spotify", WINDOWS) is None
+    assert find_window("xyzzy", WINDOWS) is None
+    assert find_window("photoshop", WINDOWS) is None
 
 
 # ── reaching an end without saying "scroll" ─────────────────────────────────

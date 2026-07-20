@@ -10897,6 +10897,62 @@ async def _summarize_gmail_inbox(ws, goal: str = "") -> None:
     await _handle_summarize_inbox(ws, account=account, date=date)
 
 
+_WINDOW_PICK_PROMPT = (
+    "A user asked to scroll a window and named it by voice. Speech recognition "
+    "mangles names constantly — it heard \"ghetto\" for GitHub. Here are the "
+    "windows actually open:\n{windows}\n\n"
+    "They said: \"{spoken}\"\n\n"
+    "Which window did they mean? Reply with ONLY the number, or NONE if none of "
+    "them plausibly matches what they said. Judge by SOUND as well as spelling — "
+    "the user may have a strong accent. Prefer NONE over a guess you don't "
+    "believe: scrolling the wrong window is worse than saying you can't find it."
+)
+
+
+async def _llm_pick_window(spoken: str):
+    """Last-resort window resolution: let a model map a mangled spoken name onto
+    the (short) list of open windows.
+
+    Runs ONLY after exact, alias and fuzzy matching have all missed, so it costs
+    nothing on the common path. It exists because the recognizer substitutes
+    whole English words — "ghetto" for GitHub scores 0.33 on a string ratio and
+    no phonetic algorithm bridges it, but a model reading the window list gets it
+    immediately. A hit is cached for the session so the second time is instant."""
+    if not (anthropic_client and spoken):
+        return None
+    try:
+        import accessibility_executor as _ax
+        cands = await asyncio.to_thread(_ax.window_candidates)
+        if not cands:
+            return None
+        listing = "\n".join(
+            f"{i+1}. app={c['app']!r} site={'.'.join(_ax._host_words(c.get('url') or '')) or '-'} "
+            f"title={(c.get('title') or '')[:70]!r}"
+            for i, c in enumerate(cands))
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=8,
+            messages=[{"role": "user", "content": _WINDOW_PICK_PROMPT.format(
+                windows=listing, spoken=spoken)}])
+        raw = "".join(getattr(b, "text", "") for b in (resp.content or [])).strip()
+        m = re.search(r'\d+', raw)
+        if not m:
+            return None
+        idx = int(m.group()) - 1
+        if not (0 <= idx < len(cands)):
+            return None
+        hit = cands[idx]
+        # Remember it: the same speaker mishears the same word the same way.
+        key = _ax._norm_target(spoken)
+        learned = (_ax._host_words(hit.get("url") or "") or [hit["app"].lower()])[0]
+        if key and learned:
+            _ax._HEARD_AS[key] = learned
+            log.info(f"learned mishearing: {key!r} -> {learned!r}")
+        return hit
+    except Exception as e:
+        log.warning(f"llm window pick failed: {e}")
+        return None
+
+
 async def _handle_scroll(direction: str, amount: str, ws, target: str = "",
                          then: str = "", voice_state=None) -> None:
     """Voice path for a one-shot scroll (issue #291).
@@ -10917,6 +10973,22 @@ async def _handle_scroll(direction: str, amount: str, ws, target: str = "",
         try:
             result = await executor.scroll(direction=direction, amount=amount,
                                            target=target or None, task_id=task_id)
+            # Named a window we couldn't resolve? Before giving up, let a model
+            # map the mangled name onto the windows that ARE open — this is the
+            # "ghetto" -> GitHub case, which no string or phonetic match bridges.
+            if target and not getattr(result, "ok", False) \
+                    and getattr(result, "error", "") == "no_such_window":
+                await emit_step(task_id, f"Looking for a window like {target!r}",
+                                status="active")
+                hit = await _llm_pick_window(target)
+                if hit:
+                    fr = hit["frame"]
+                    await emit_step(task_id, f"Matched {hit['app']}",
+                                    detail=(hit.get("title") or "")[:60], status="done")
+                    result = await executor.scroll(
+                        direction=direction, amount=amount,
+                        point=(fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0),
+                        task_id=task_id)
         except Exception as e:
             log.error(f"scroll error: {e}")
             await emit_step(task_id, "Scroll failed", detail=str(e), status="error")

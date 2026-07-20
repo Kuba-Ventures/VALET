@@ -27,6 +27,7 @@ calls fail cleanly and the methods return a failure that names the permission.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import re
 import time
@@ -442,18 +443,64 @@ def window_candidates() -> list:
     return out
 
 
+# Spoken targets the recognizer reliably mangles into a DIFFERENT real word.
+# These are not near-misses — "ghetto" scores 0.33 against "github" on a string
+# ratio, and no phonetic algorithm bridges them either, because the recognizer
+# substituted a common English word rather than garbling the sounds. An explicit
+# table is the only deterministic fix; the LLM fallback in server.py catches the
+# long tail. Grow this from real observed mishearings, not guesses.
+_HEARD_AS: dict = {
+    "ghetto": "github",
+    "get hub": "github",
+    "git up": "github",
+    "gethub": "github",
+    "jit hub": "github",
+    "g mail": "gmail",
+    "gee mail": "gmail",
+    "slap": "slack",
+    "slac": "slack",
+    "curser": "cursor",
+    "kursor": "cursor",
+    "cloud": "claude",
+    "clode": "claude",
+    "notion": "notion",
+}
+
+# How close a spoken target must be to a window's name before we accept it.
+# 0.72 takes "sleck"->slack and "kursor"->cursor while refusing to guess between
+# genuinely different windows — a wrong window is worse than an honest miss.
+_FUZZY_CUTOFF = 0.72
+
+
+def _window_names(c: dict) -> list:
+    """Every string a user might use to name this window: the app, the site, and
+    the distinctive words of the title."""
+    names = [(c.get("app") or "").lower()]
+    names += _host_words(c.get("url") or "")
+    title = (c.get("title") or "").lower()
+    # Title words worth matching on — skip the boilerplate every window carries.
+    names += [w for w in re.split(r'[^a-z0-9]+', title)
+              if len(w) > 3 and w not in ("google", "chrome", "safari", "the",
+                                          "and", "for", "with", "window")]
+    return [n for n in names if n]
+
+
 def find_window(target: str, candidates: Optional[list] = None) -> Optional[dict]:
     """Resolve a spoken target ("github", "slack", "the QSBS dashboard") to one
     window. Returns the best candidate, or None when nothing plausibly matches —
     None means SAY SO, never fall back to scrolling whatever happens to be front.
 
     Match order is deliberate: an app name is the most specific thing a user can
-    say, then the site (by host), then the window title."""
+    say, then the site (by host), then the window title. A fuzzy pass runs last,
+    because speech recognition mangles names constantly — "sleck" for Slack,
+    "kursor" for Cursor — and an exact-only match turns every slip into a miss."""
     t = _norm_target(target)
     if not t:
         return None
+    t = _HEARD_AS.get(t, t)          # known mishearing → the word actually meant
     best, best_score = None, 0
-    for c in (window_candidates() if candidates is None else candidates):
+    cands = window_candidates() if candidates is None else candidates
+    for c in cands:
         app = (c.get("app") or "").lower()
         title = (c.get("title") or "").lower()
         hosts = _host_words(c.get("url") or "")
@@ -477,7 +524,21 @@ def find_window(target: str, candidates: Optional[list] = None) -> Optional[dict
         if score > best_score or (score == best_score and best
                                   and area > best["frame"][2] * best["frame"][3]):
             best, best_score = c, score
-    return best
+    if best is not None:
+        return best
+
+    # Nothing matched literally. Try FUZZY — the recognizer garbles names far
+    # more often than users get them wrong. Scored per window so the closest
+    # name wins outright rather than the first one over the line.
+    fuzzy_best, fuzzy_score = None, 0.0
+    for c in cands:
+        for name in _window_names(c):
+            r = difflib.SequenceMatcher(None, t, name).ratio()
+            if r > fuzzy_score:
+                fuzzy_best, fuzzy_score = c, r
+    if fuzzy_score >= _FUZZY_CUTOFF:
+        return fuzzy_best
+    return None
 
 
 def _scroll_pixels(amount, span: float) -> int:
@@ -999,7 +1060,10 @@ class AccessibilityExecutor(ActionExecutor):
             if app and not target:
                 _activate_app(app)
                 time.sleep(0.12)
-            here = _cursor_location() if target else None
+            # Restore the pointer whenever we aimed it somewhere specific
+            # (a named window OR an explicit point) rather than at the
+            # focused window under the user's own cursor.
+            here = _cursor_location() if (target or point is not None) else None
 
             pid = (hit or {}).get("pid")
             if pid is None:
