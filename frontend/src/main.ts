@@ -9,6 +9,7 @@ import { createOrb, type OrbState } from "./orb";
 import { createAudioPlayer } from "./voice";
 import { createWorkingHum } from "./hum";
 import { createWakeWord } from "./wakeWord";
+import { createDeepgramMic } from "./deepgramMic";
 import { isPushToTalkEnabled, isEditableTarget } from "./pushToTalk";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
@@ -313,6 +314,10 @@ function transition(newState: State) {
 // Wake-word-gated voice input
 // ---------------------------------------------------------------------------
 
+// Better recognizer for the ⌃⌥ hold only — always-listening stays on the
+// built-in one so no per-minute meter runs while the app sits idle.
+const deepgramMic = createDeepgramMic();
+
 const wake = createWakeWord(
   "vee", // casual wake word; overwritten once /api/config resolves below
   {
@@ -355,7 +360,8 @@ const wake = createWakeWord(
     onError: (msg: string) => {
       showError(msg);
     },
-  }
+  },
+  deepgramMic
 );
 
 const valetLabelEl = document.getElementById("valet-label")!;
