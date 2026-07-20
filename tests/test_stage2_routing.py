@@ -86,6 +86,21 @@ def test_open_gmail_goes_to_web_not_mail_app():
     assert s and s["action"] == "open_app", s
 
 
+def test_gmail_goal_scope_extracts_named_account():
+    # The guided login auto-picks the account whenever the goal names one, so the
+    # user isn't asked "which account?" for something they already said (they had to
+    # re-answer 3x before this). _gmail_goal_scope must pull "work" out of every
+    # phrasing that reaches the login — whether the account word sits right after
+    # "go to" or later, after "summarize".
+    for g in ("go to my work gmail and summarize July 18",
+              "go to gmail and summarize my work email from july 18",
+              "sign into my work gmail"):
+        assert server._gmail_goal_scope(g)[0] == "work", g
+    assert server._gmail_goal_scope("sign into my personal gmail")[0] == "personal"
+    # No account named → "" so the login still asks rather than guessing.
+    assert server._gmail_goal_scope("go to gmail and summarize today's emails")[0] == ""
+
+
 def test_is_browser_app():
     assert server._is_browser_app("Google Chrome")
     assert server._is_browser_app("Safari")
