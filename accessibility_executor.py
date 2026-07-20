@@ -27,7 +27,9 @@ calls fail cleanly and the methods return a failure that names the permission.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
+import re
 import time
 from typing import Optional
 
@@ -380,6 +382,165 @@ def _mouse_click(x: float, y: float) -> None:
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
 
+_WINDOW_NOISE = re.compile(
+    r'\b(the|page|window|tab|screen|browser|app|my|on|in)\b', re.IGNORECASE)
+
+
+def _norm_target(t: str) -> str:
+    """'the GitHub page' -> 'github'. Strips the words users pad a target with."""
+    return " ".join(_WINDOW_NOISE.sub(" ", (t or "")).split()).strip().lower()
+
+
+def _host_words(url: str) -> list:
+    """'https://github.com/Kuba-Ventures/VALET/pull/317' -> ['github', 'com'].
+
+    The host is how a user names a site — they say "GitHub", never the page
+    title, which for a PR is 'feat(control): … · Pull Request #317 · …' and
+    contains no 'github' anywhere."""
+    m = re.match(r'^[a-z]+://([^/]+)', (url or "").strip(), re.IGNORECASE)
+    if not m:
+        return []
+    host = m.group(1).lower().split(":")[0]
+    parts = [p for p in host.split(".") if p not in ("www", "com", "org", "net", "io", "co")]
+    return parts or [host]
+
+
+def window_candidates() -> list:
+    """Every reasonably-sized window of every non-VALET app, with the three
+    things a spoken target can match on: the app name, the window title, and —
+    for browsers — the page URL. Frames are GLOBAL screen points, so windows on
+    a second or third display need no special handling."""
+    out = []
+    try:
+        ws = NSWorkspace.sharedWorkspace()
+        running = list(ws.runningApplications())
+    except Exception:
+        return out
+    for a in running:
+        try:
+            if a.activationPolicy() != 0:      # background/agent apps have no windows
+                continue
+            name = a.localizedName() or ""
+            if _is_valet(name):
+                continue
+            pid = int(a.processIdentifier())
+        except Exception:
+            continue
+        app_el = _AX.AXUIElementCreateApplication(pid)
+        for w in (_copy_attr(app_el, _kWindows) or [])[:20]:
+            frame = _frame_of(w)
+            # Skip palettes, inspectors and collapsed windows — a spoken target
+            # means a real window someone is looking at.
+            if not frame or frame[2] < 200 or frame[3] < 150:
+                continue
+            out.append({
+                "pid": pid,
+                "app": name,
+                "title": _str_attr(w, _kTitle),
+                "url": _str_attr(w, "AXDocument"),
+                "frame": frame,
+            })
+    return out
+
+
+# Spoken targets the recognizer reliably mangles into a DIFFERENT real word.
+# These are not near-misses — "ghetto" scores 0.33 against "github" on a string
+# ratio, and no phonetic algorithm bridges them either, because the recognizer
+# substituted a common English word rather than garbling the sounds. An explicit
+# table is the only deterministic fix; the LLM fallback in server.py catches the
+# long tail. Grow this from real observed mishearings, not guesses.
+_HEARD_AS: dict = {
+    "ghetto": "github",
+    "get hub": "github",
+    "git up": "github",
+    "gethub": "github",
+    "jit hub": "github",
+    "g mail": "gmail",
+    "gee mail": "gmail",
+    "slap": "slack",
+    "slac": "slack",
+    "curser": "cursor",
+    "kursor": "cursor",
+    "cloud": "claude",
+    "clode": "claude",
+    "notion": "notion",
+}
+
+# How close a spoken target must be to a window's name before we accept it.
+# 0.72 takes "sleck"->slack and "kursor"->cursor while refusing to guess between
+# genuinely different windows — a wrong window is worse than an honest miss.
+_FUZZY_CUTOFF = 0.72
+
+
+def _window_names(c: dict) -> list:
+    """Every string a user might use to name this window: the app, the site, and
+    the distinctive words of the title."""
+    names = [(c.get("app") or "").lower()]
+    names += _host_words(c.get("url") or "")
+    title = (c.get("title") or "").lower()
+    # Title words worth matching on — skip the boilerplate every window carries.
+    names += [w for w in re.split(r'[^a-z0-9]+', title)
+              if len(w) > 3 and w not in ("google", "chrome", "safari", "the",
+                                          "and", "for", "with", "window")]
+    return [n for n in names if n]
+
+
+def find_window(target: str, candidates: Optional[list] = None) -> Optional[dict]:
+    """Resolve a spoken target ("github", "slack", "the QSBS dashboard") to one
+    window. Returns the best candidate, or None when nothing plausibly matches —
+    None means SAY SO, never fall back to scrolling whatever happens to be front.
+
+    Match order is deliberate: an app name is the most specific thing a user can
+    say, then the site (by host), then the window title. A fuzzy pass runs last,
+    because speech recognition mangles names constantly — "sleck" for Slack,
+    "kursor" for Cursor — and an exact-only match turns every slip into a miss."""
+    t = _norm_target(target)
+    if not t:
+        return None
+    t = _HEARD_AS.get(t, t)          # known mishearing → the word actually meant
+    best, best_score = None, 0
+    cands = window_candidates() if candidates is None else candidates
+    for c in cands:
+        app = (c.get("app") or "").lower()
+        title = (c.get("title") or "").lower()
+        hosts = _host_words(c.get("url") or "")
+        if app == t:
+            score = 100
+        elif t in app or (len(app) > 3 and app in t):
+            score = 85
+        elif any(t == h for h in hosts):
+            score = 90
+        elif any(t in h or h in t for h in hosts if len(h) > 2):
+            score = 80
+        elif t in title:
+            score = 70
+        elif len(t) > 4 and all(w in title for w in t.split()):
+            score = 65
+        else:
+            continue
+        # Tie-break on area: the big window is the one being read, not a
+        # leftover popup with the same title.
+        area = c["frame"][2] * c["frame"][3]
+        if score > best_score or (score == best_score and best
+                                  and area > best["frame"][2] * best["frame"][3]):
+            best, best_score = c, score
+    if best is not None:
+        return best
+
+    # Nothing matched literally. Try FUZZY — the recognizer garbles names far
+    # more often than users get them wrong. Scored per window so the closest
+    # name wins outright rather than the first one over the line.
+    fuzzy_best, fuzzy_score = None, 0.0
+    for c in cands:
+        for name in _window_names(c):
+            r = difflib.SequenceMatcher(None, t, name).ratio()
+            if r > fuzzy_score:
+                fuzzy_best, fuzzy_score = c, r
+    if fuzzy_score >= _FUZZY_CUTOFF:
+        return fuzzy_best
+    return None
+
+
 def _scroll_pixels(amount, span: float) -> int:
     """How far one scroll step travels, in pixels.
 
@@ -399,7 +560,58 @@ def _scroll_pixels(amount, span: float) -> int:
     return max(200, int(span * 0.85))
 
 
-def _scroll_wheel(x: float, y: float, dy: int, dx: int = 0, *, steps: int = 6) -> None:
+_BURST_EVENTS = 8      # wheel events per burst
+_BURST_PIXELS = 40     # requested pixels per event
+# "all the way" is expressed as an absurd pixel count by the router; treat
+# anything at or above this as "keep going until the view stops moving".
+_TO_THE_END = 10000
+_MAX_BURSTS = 45       # bounded worst case for "scroll all the way down"
+_PAGE_BURST_CAP = 12   # a page/half can't need more than this
+_BURST_GAP = 0.003     # 60 bursts at 20ms/event would be ~11s
+
+
+def _vertical_scrollbar(win):
+    """The window's vertical AXScrollBar, or None.
+
+    Where it exists it is the exact scroll position (0.0 top, 1.0 bottom) AND
+    it is settable — so "all the way down" becomes one precise jump instead of
+    spraying wheel events and hoping. Chrome's web content does not expose one;
+    native apps generally do."""
+    found = []
+
+    def walk(el, d=0):
+        if d > 9 or found:
+            return
+        if (_str_attr(el, _kRole) == "AXScrollBar"
+                and "Vertical" in _str_attr(el, "AXOrientation")):
+            found.append(el)
+            return
+        for c in (_copy_attr(el, _kChildren) or [])[:25]:
+            walk(c, d + 1)
+
+    walk(win)
+    return found[0] if found else None
+
+
+def _jump_scrollbar(pid: int, frame: list, to_end: bool) -> bool:
+    """Jump to the top/bottom via the scrollbar. True if it worked."""
+    app_el = _AX.AXUIElementCreateApplication(pid)
+    for w in (_copy_attr(app_el, _kWindows) or []):
+        if _frame_of(w) != frame:
+            continue
+        bar = _vertical_scrollbar(w)
+        if bar is None:
+            return False
+        try:
+            err = _AX.AXUIElementSetAttributeValue(bar, _kValue, 1.0 if to_end else 0.0)
+            return err == 0
+        except Exception:
+            return False
+    return False
+
+
+def _scroll_wheel(x: float, y: float, dy: int, dx: int = 0, *, steps: int = 6,
+                  gap: float = 0.02) -> None:
     """Synthetic scroll wheel at a global screen point.
 
     A scroll event is delivered to whatever is UNDER THE CURSOR, not to the
@@ -427,7 +639,7 @@ def _scroll_wheel(x: float, y: float, dy: int, dx: int = 0, *, steps: int = 6) -
         # keeps it correct if the user nudges the mouse mid-scroll.
         Quartz.CGEventSetLocation(ev, pt)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
-        time.sleep(0.02)
+        time.sleep(gap)
 
 
 # --------------------------------------------------------------------------- #
@@ -796,7 +1008,7 @@ class AccessibilityExecutor(ActionExecutor):
     # --- scroll (Tier 0 — moves the view, mutates nothing) ----------------
     async def scroll(self, *, direction: str = "down", amount: str = "page",
                      ref: Optional[str] = None, point: Optional[tuple] = None,
-                     app: Optional[str] = None,
+                     app: Optional[str] = None, target: Optional[str] = None,
                      task_id: Optional[str] = None) -> ActionResult:
         if not _PYOBJC:
             return self._unavailable(Capability.SCROLL)
@@ -808,47 +1020,100 @@ class AccessibilityExecutor(ActionExecutor):
                                         message=f"I don't know which way {direction} is, sir.")
 
         def _do():
-            # Where to scroll: an explicit point, the resolved element's centre,
-            # or — the common case, "scroll down" with nothing named — the centre
-            # of the focused window, which is inside its main scroll area.
+            # Where to scroll: an explicit point, a NAMED window ("on github"),
+            # the resolved element's centre, or — the common case, "scroll down"
+            # with nothing named — the centre of the focused window.
             frame = None
+            hit = None
             if point is not None:
                 x, y = float(point[0]), float(point[1])
+            elif target:
+                hit = find_window(target)
+                if hit is None:
+                    return None, "no_such_window", None
+                frame = hit["frame"]
+                x, y = frame[0] + frame[2] / 2.0, frame[1] + frame[3] / 2.0
             else:
                 el = self._ref_map.get(ref) if ref else None
                 if el is None:
                     pid = _pid_for_app(app)
                     if pid is None:
-                        return None, "no_target_app"
+                        return None, "no_target_app", None
                     el = _focused_window(_AX.AXUIElementCreateApplication(pid))
                     if el is None:
-                        return None, "no_window"
+                        return None, "no_window", None
                 frame = _frame_of(el)
                 if not frame:
-                    return None, "no_frame"
+                    return None, "no_frame", None
                 x, y = frame[0] + frame[2] / 2.0, frame[1] + frame[3] / 2.0
             span = frame[3] if frame else 700.0
-            px = _scroll_pixels(amount, span)
+            want = _scroll_pixels(amount, span)
+            to_end = want >= _TO_THE_END
             # Positive wheel deltas scroll the content DOWN the screen, i.e. they
             # move the viewport UP the document. Down/right are the negatives.
-            dy = px if d == "up" else -px if d == "down" else 0
-            dx = px if d == "left" else -px if d == "right" else 0
-            if app:
+            sign = 1 if d in ("up", "left") else -1
+            horiz = d in ("left", "right")
+            # A NAMED window is deliberately NOT raised or activated: macOS
+            # delivers a scroll to whatever sits under the pointer, focused or
+            # not, so "scroll up on github" can move a page on another display
+            # without stealing focus from what the user is actually doing.
+            if app and not target:
                 _activate_app(app)
                 time.sleep(0.12)
-            _scroll_wheel(x, y, dy, dx)
-            return px, None
+            # Restore the pointer whenever we aimed it somewhere specific
+            # (a named window OR an explicit point) rather than at the
+            # focused window under the user's own cursor.
+            here = _cursor_location() if (target or point is not None) else None
 
-        px, err = await asyncio.to_thread(_do)
+            pid = (hit or {}).get("pid")
+            if pid is None:
+                pid = _pid_for_app(app)
+
+            # "All the way": prefer the scrollbar, which is exact and instant.
+            # Native apps expose one; Chrome's web content does not, so that
+            # falls through to the wheel below.
+            if to_end and pid and not horiz and _jump_scrollbar(pid, frame, d == "down"):
+                if here:
+                    _post_mouse_moved(here[0], here[1])
+                return want, None, hit
+
+            # Otherwise: repeated bursts. Deliberately open-loop. Measuring how
+            # far a view moved by watching element geometry does NOT generalise —
+            # in a text view or list the content scrolls INSIDE a fixed-frame
+            # element, so nothing moves, every scroll reads as "end of document"
+            # and every amount collapses to the same small nudge. Repetition is
+            # dumber and works everywhere; overshooting at the end of a document
+            # is harmless because the extra events simply do nothing.
+            per_burst = _BURST_EVENTS * _BURST_PIXELS * 0.5   # measured delivery
+            if to_end:
+                bursts = _MAX_BURSTS
+            else:
+                bursts = max(1, min(_PAGE_BURST_CAP, round(want / per_burst)))
+            burst = _BURST_EVENTS * _BURST_PIXELS * sign
+            for _ in range(bursts):
+                _scroll_wheel(x, y, 0 if horiz else burst,
+                              burst if horiz else 0, steps=_BURST_EVENTS,
+                              gap=_BURST_GAP)
+            moved = want
+            # Put the pointer back where it was, so a scroll on a second display
+            # doesn't strand the cursor over there.
+            if here:
+                _post_mouse_moved(here[0], here[1])
+            return (int(moved) or want), None, hit
+
+        px, err, hit = await asyncio.to_thread(_do)
         if err:
             msg = {
                 "no_target_app": "I can't see that app, sir.",
                 "no_window": "There's no window to scroll, sir.",
                 "no_frame": "I can't tell where that is on screen, sir.",
+                "no_such_window": f"I can't see a {target} window, sir.",
             }.get(err, "I couldn't scroll that, sir.")
             return ActionResult.failure(Capability.SCROLL, error=err, message=msg)
+        where = (hit or {}).get("app") or ""
         return ActionResult.success(Capability.SCROLL, message="Scrolled, sir.",
-                                    backend=self.name, direction=d, pixels=px)
+                                    backend=self.name, direction=d, pixels=px,
+                                    window=(hit or {}).get("title", "")[:80], app=where)
 
     # --- focus (UC3 helper) ----------------------------------------------
     async def focus_element(self, ref: str) -> bool:

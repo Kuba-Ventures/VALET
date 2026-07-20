@@ -48,6 +48,10 @@ hiddenimports = [
     "contacts_access", "Quartz", "AppKit", "EventKit", "Contacts", "Speech",
     # UC1: AX tree + AXIsProcessTrusted (ApplicationServices, which pulls CoreText).
     "ApplicationServices", "CoreText",
+    # Deepgram streaming STT. `websockets` is imported lazily inside the module,
+    # so PyInstaller can't see it from the import graph and the frozen build
+    # would fail at connect time rather than at startup.
+    "deepgram_stt", "websockets",
     "observability", "sentry_sdk", "anthropic", "httpx", "uvicorn", "uvicorn.lifespan.on",
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",

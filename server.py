@@ -6093,13 +6093,58 @@ _SCROLL_FIND_RE = re.compile(
     r'(?:until|till|til|down\s+to|up\s+to)\s+'
     r'(?:you\s+|i\s+|we\s+)?(?:can\s+)?(?:find|see|reach|get\s+to|spot|hit)\s+'
     r'(?P<target>.+)$', re.IGNORECASE)
-# Plain "scroll down" / "page up" / "scroll to the bottom" / "scroll down a bit".
+# Plain "scroll down" / "page up" / "scroll to the bottom" / "scroll down a bit",
+# plus an optional window target: "scroll up on github", "scroll down in slack".
+#
+# `amt` is an explicit alternation, NOT a catch-all. An earlier version ended
+# with `(?P<amt>[^.?!]*)` which swallowed anything trailing — so "scroll up on
+# github" matched, the target was silently discarded, and VALET scrolled
+# whatever happened to be frontmost instead. Now an unrecognized tail fails the
+# match and falls through to the LLM, which is the honest outcome.
+_SCROLL_AMT = (r'all\s+the\s+way|to\s+the\s+bottom|to\s+the\s+top|to\s+the\s+end'
+               r'|a\s+bit|a\s+little|a\s+touch|a\s+smidge|slightly|some\s+more|more'
+               r'|way|far')
+# The amount can sit on EITHER side of the direction — people say both "scroll
+# all the way down" and "scroll down all the way", and the first phrasing is the
+# more natural one. An earlier version only accepted it AFTER the direction, so
+# "scroll all the way down on GitHub" failed the match entirely and fell through
+# to the LLM, which heard "down ... Jones" and read out the Dow.
+_SCROLL_DIR = r'up|down|left|right|to\s+the\s+top|to\s+the\s+bottom|back\s+up'
 _SCROLL_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:scroll|page|swipe)\s+'
     r'(?:the\s+(?:page|screen|window|list)\s+)?'
-    r'(?P<dir>up|down|left|right|to\s+the\s+top|to\s+the\s+bottom|back\s+up)'
-    r'(?P<amt>[^.?!]*)[.?!]*$', re.IGNORECASE)
+    r'(?:(?P<amt_pre>' + _SCROLL_AMT + r')\s+)?'
+    r'(?P<dir>' + _SCROLL_DIR + r')'
+    r'(?:\s+(?P<amt>' + _SCROLL_AMT + r'))?'
+    r'(?:\s+(?:on|in|over|inside|of)\s+(?:the\s+)?(?P<target>.+?))?'
+    r'(?:\s+please)?\s*[.?!]*$', re.IGNORECASE)
+
+# Reaching an end without saying "scroll". "Go to the top" / "jump to the
+# bottom" / "take me to the top of GitHub" are how people actually ask, and
+# every one of them used to fall through to the CLICK resolver — which tried to
+# click a control literally named "top" ("CLICK TOP OF GITHUB") and missed.
+# Must be tried BEFORE _UI_NAV_RE, which owns the generic "go to <thing>".
+_SCROLL_END_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:(?:go|jump|skip|head|move|take\s+me|get\s+me|scroll|bring\s+me)\s+)?'
+    r'(?:(?:back\s+)?(?:to|up\s+to|down\s+to)\s+)?'
+    r'(?:the\s+)?(?:very\s+)?(?P<end>top|bottom)'
+    r'(?:\s+of\s+(?:the\s+)?(?:page|screen|window)?)?'
+    r'(?:\s+(?:of|on|in)\s+(?:the\s+)?(?P<target>.+?))?'
+    r'(?:\s+please)?\s*[.?!]*$', re.IGNORECASE)
+
+# "See what's at the bottom" — scroll there AND report, since the ask is about
+# the content, not the movement.
+_SCROLL_LOOK_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    # Either a verb ("show me the bottom") or a bare question ("what's at the
+    # bottom of GitHub") — at least one of the two must be present.
+    r'(?:(?:see|show|look\s+at|read|check|tell)\s+(?:me\s+)?(?:what(?:\'|’)?s|what\s+is|whats)?'
+    r'|(?:what(?:\'|’)?s|what\s+is|whats))\s*'
+    r'(?:at\s+|on\s+|in\s+)?(?:the\s+)?(?:very\s+)?(?P<end>top|bottom)'
+    r'(?:\s+(?:of|on|in)\s+(?:the\s+)?(?P<target>.+?))?'
+    r'(?:\s+please)?\s*[.?!]*$', re.IGNORECASE)
 
 
 def _scroll_params(dir_word: str, amt_words: str) -> tuple[str, str]:
@@ -6111,7 +6156,8 @@ def _scroll_params(dir_word: str, amt_words: str) -> tuple[str, str]:
         return "up", "20000"
     if "bottom" in d:
         return "down", "20000"
-    if any(w in a for w in ("all the way", "to the bottom", "to the end")):
+    if any(w in a for w in ("all the way", "to the bottom", "to the top",
+                            "to the end", "way", "far")):
         return d, "20000"
     if any(w in a for w in ("a bit", "a little", "slightly", "a touch", "a smidge")):
         return d, "half"
@@ -6653,10 +6699,28 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         return {"action": "ui_task",
                 "goal": f"scroll until {_tgt} is visible on screen",
                 "max_steps": 14}
+    # "see what's at the bottom" — go there, then say what's there.
+    _sl = _SCROLL_LOOK_RE.match(t)
+    if _sl:
+        return {"action": "scroll", "direction": ("up" if _sl.group("end").lower() == "top"
+                                                  else "down"),
+                "amount": "20000", "target": (_sl.group("target") or "").strip(" .?!"),
+                "then": "summarize"}
+
+    # "go to the top" / "jump to the bottom of github" — no "scroll" verb.
+    _se = _SCROLL_END_RE.match(t)
+    if _se:
+        return {"action": "scroll", "direction": ("up" if _se.group("end").lower() == "top"
+                                                  else "down"),
+                "amount": "20000", "target": (_se.group("target") or "").strip(" .?!")}
+
     _sc = _SCROLL_RE.match(t)
     if _sc:
-        _dir, _amt = _scroll_params(_sc.group("dir"), _sc.group("amt"))
-        return {"action": "scroll", "direction": _dir, "amount": _amt}
+        _dir, _amt = _scroll_params(
+            _sc.group("dir"),
+            (_sc.group("amt") or _sc.group("amt_pre") or ""))
+        return {"action": "scroll", "direction": _dir, "amount": _amt,
+                "target": (_sc.group("target") or "").strip(" .?!")}
 
     # "Send this to Claude Code to fix" — read the screen, brief it, dispatch.
     # Before summarize/describe so "send this to Claude to fix" isn't read as a
@@ -8016,6 +8080,89 @@ def _is_cancel_phrase(user_text: str) -> bool:
 
 
 
+def _deepgram_available() -> bool:
+    """True when Deepgram STT is configured AND importable."""
+    try:
+        import deepgram_stt
+        return deepgram_stt.available()
+    except Exception:
+        return False
+
+
+@app.websocket("/ws/stt")
+async def ws_stt(websocket: WebSocket):
+    """Speech-to-text relay: the frontend streams raw PCM up, transcripts come
+    back down as JSON.
+
+    The Deepgram socket is held HERE rather than in the page so the API key never
+    reaches the frontend. Audio contract is whatever `deepgram_stt` declares:
+    16 kHz mono signed 16-bit little-endian.
+
+    Every failure path ends the socket cleanly rather than hanging, because the
+    frontend treats a closed STT socket as "fall back to the built-in
+    recognizer" — going quiet would leave the user with no voice at all, which is
+    strictly worse than a worse recognizer.
+    """
+    await websocket.accept()
+    if not _deepgram_available():
+        await websocket.send_json({"type": "stt_unavailable", "reason": "no_key"})
+        await websocket.close()
+        return
+
+    import deepgram_stt
+
+    # Bias the recognizer toward what is actually on screen: if a GitHub window
+    # is open, "GitHub" is a far likelier word than "ghetto".
+    try:
+        import accessibility_executor as _ax
+        windows = await asyncio.to_thread(_ax.window_candidates)
+    except Exception:
+        windows = []
+    keyterms = deepgram_stt.keyterms_for_context(windows)
+
+    session = deepgram_stt.DeepgramSession(keyterms=keyterms)
+    try:
+        await session.__aenter__()
+    except Exception as e:
+        log.warning(f"deepgram connect failed: {e}")
+        await websocket.send_json({"type": "stt_unavailable", "reason": "connect_failed"})
+        await websocket.close()
+        return
+
+    await websocket.send_json({"type": "stt_ready", "keyterms": len(keyterms)})
+
+    async def pump_down():
+        """Deepgram → frontend."""
+        try:
+            async for t in session.transcripts():
+                await websocket.send_json({
+                    "type": "stt_transcript",
+                    "text": t["text"],
+                    "isFinal": t["is_final"],
+                })
+        except Exception as e:
+            log.info(f"stt downstream ended: {e}")
+
+    down = asyncio.create_task(pump_down())
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            data = msg.get("bytes")
+            if data:
+                await session.feed(data)
+            elif msg.get("text") == "stop":
+                await session.finish()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.info(f"stt upstream ended: {e}")
+    finally:
+        await session.close()
+        down.cancel()
+
+
 @app.websocket("/ws/voice")
 async def voice_handler(ws: WebSocket):
     """
@@ -8681,7 +8828,10 @@ async def voice_handler(ws: WebSocket):
                             response_text = ""
                             _track_uc(ws, _handle_scroll(
                                 action.get("direction", "down"),
-                                action.get("amount", "page"), ws))
+                                action.get("amount", "page"), ws,
+                                target=action.get("target", ""),
+                                then=action.get("then", ""),
+                                voice_state=voice_state))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
@@ -9793,6 +9943,10 @@ async def api_get_config():
     telemetry = env_dict.get("VALET_TELEMETRY", "on").strip().lower() not in ("0", "off", "false", "no")
     return {
         "assistant_name": name,
+        # Which recognizer the frontend should drive. "deepgram" means stream mic
+        # audio to /ws/stt; "webkit" means keep using the built-in recognizer.
+        # A missing key degrades quality, never voice itself.
+        "stt": ("deepgram" if _deepgram_available() else "webkit"),
         "voice": "female" if voice == "female" else "male",
         "voice_female_available": bool(env_dict.get("VALET_VOICE_FEMALE_ID", "").strip()),
         "telemetry": telemetry,
@@ -10830,28 +10984,121 @@ async def _summarize_gmail_inbox(ws, goal: str = "") -> None:
     await _handle_summarize_inbox(ws, account=account, date=date)
 
 
-async def _handle_scroll(direction: str, amount: str, ws) -> None:
-    """Voice path for a one-shot scroll (issue #291). Scrolls the app the user is
-    LOOKING at — `app=None` resolves to the frontmost non-VALET window, so the orb
-    being focused while they talk doesn't send the scroll to Vee's own panel."""
-    async with process_bus.task_context(f"Scroll {direction}") as task_id:
-        await emit_step(task_id, f"Scrolling {direction}", status="active")
+_WINDOW_PICK_PROMPT = (
+    "A user asked to scroll a window and named it by voice. Speech recognition "
+    "mangles names constantly — it heard \"ghetto\" for GitHub. Here are the "
+    "windows actually open:\n{windows}\n\n"
+    "They said: \"{spoken}\"\n\n"
+    "Which window did they mean? Reply with ONLY the number, or NONE if none of "
+    "them plausibly matches what they said. Judge by SOUND as well as spelling — "
+    "the user may have a strong accent. Prefer NONE over a guess you don't "
+    "believe: scrolling the wrong window is worse than saying you can't find it."
+)
+
+
+async def _llm_pick_window(spoken: str):
+    """Last-resort window resolution: let a model map a mangled spoken name onto
+    the (short) list of open windows.
+
+    Runs ONLY after exact, alias and fuzzy matching have all missed, so it costs
+    nothing on the common path. It exists because the recognizer substitutes
+    whole English words — "ghetto" for GitHub scores 0.33 on a string ratio and
+    no phonetic algorithm bridges it, but a model reading the window list gets it
+    immediately. A hit is cached for the session so the second time is instant."""
+    if not (anthropic_client and spoken):
+        return None
+    try:
+        import accessibility_executor as _ax
+        cands = await asyncio.to_thread(_ax.window_candidates)
+        if not cands:
+            return None
+        listing = "\n".join(
+            f"{i+1}. app={c['app']!r} site={'.'.join(_ax._host_words(c.get('url') or '')) or '-'} "
+            f"title={(c.get('title') or '')[:70]!r}"
+            for i, c in enumerate(cands))
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=8,
+            messages=[{"role": "user", "content": _WINDOW_PICK_PROMPT.format(
+                windows=listing, spoken=spoken)}])
+        raw = "".join(getattr(b, "text", "") for b in (resp.content or [])).strip()
+        m = re.search(r'\d+', raw)
+        if not m:
+            return None
+        idx = int(m.group()) - 1
+        if not (0 <= idx < len(cands)):
+            return None
+        hit = cands[idx]
+        # Remember it: the same speaker mishears the same word the same way.
+        key = _ax._norm_target(spoken)
+        learned = (_ax._host_words(hit.get("url") or "") or [hit["app"].lower()])[0]
+        if key and learned:
+            _ax._HEARD_AS[key] = learned
+            log.info(f"learned mishearing: {key!r} -> {learned!r}")
+        return hit
+    except Exception as e:
+        log.warning(f"llm window pick failed: {e}")
+        return None
+
+
+async def _handle_scroll(direction: str, amount: str, ws, target: str = "",
+                         then: str = "", voice_state=None) -> None:
+    """Voice path for a one-shot scroll (issue #291).
+
+    With no target, scrolls the app the user is LOOKING at — `app=None` resolves
+    to the frontmost non-VALET window, so the orb being focused while they talk
+    doesn't send the scroll to Vee's own panel.
+
+    With a target ("scroll up on github"), resolves it to a specific window by
+    app name, site host, or title and scrolls THAT — on whichever display it
+    lives, without raising it. An unresolvable target says so rather than
+    scrolling whatever is in front, which is the whole point: on a multi-monitor
+    desk, silently scrolling the wrong window is worse than doing nothing."""
+    label = f"Scroll {direction}" + (f" on {target}" if target else "")
+    async with process_bus.task_context(label) as task_id:
+        await emit_step(task_id, f"Scrolling {direction}",
+                        detail=f"on {target}" if target else "", status="active")
         try:
             result = await executor.scroll(direction=direction, amount=amount,
-                                           task_id=task_id)
+                                           target=target or None, task_id=task_id)
+            # Named a window we couldn't resolve? Before giving up, let a model
+            # map the mangled name onto the windows that ARE open — this is the
+            # "ghetto" -> GitHub case, which no string or phonetic match bridges.
+            if target and not getattr(result, "ok", False) \
+                    and getattr(result, "error", "") == "no_such_window":
+                await emit_step(task_id, f"Looking for a window like {target!r}",
+                                status="active")
+                hit = await _llm_pick_window(target)
+                if hit:
+                    fr = hit["frame"]
+                    await emit_step(task_id, f"Matched {hit['app']}",
+                                    detail=(hit.get("title") or "")[:60], status="done")
+                    result = await executor.scroll(
+                        direction=direction, amount=amount,
+                        point=(fr[0] + fr[2] / 2.0, fr[1] + fr[3] / 2.0),
+                        task_id=task_id)
         except Exception as e:
             log.error(f"scroll error: {e}")
             await emit_step(task_id, "Scroll failed", detail=str(e), status="error")
             await _speak(ws, "I couldn't scroll that, sir.")
             return
         ok = bool(getattr(result, "ok", False))
-        await emit_step(task_id, f"Scrolled {direction}" if ok else "Scroll failed",
+        _where = (getattr(result, "meta", {}) or {}).get("app") or ""
+        await emit_step(task_id,
+                        (f"Scrolled {direction}" + (f" in {_where}" if _where else ""))
+                        if ok else "Scroll failed",
+                        detail=(getattr(result, "meta", {}) or {}).get("window", ""),
                         status="done" if ok else "error")
     # Deliberately silent on SUCCESS: the user is watching the page move, and a
     # spoken "scrolled down, sir" after every nudge of a long read is grating.
     # A failure still speaks — silence there is the bug this issue was filed for.
     if not ok:
         await _speak(ws, getattr(result, "message", "") or "I couldn't scroll that, sir.")
+        return
+    # "See what's at the bottom" asks about the CONTENT, not the movement — so
+    # once we're there, read the screen back.
+    if then == "summarize":
+        await asyncio.sleep(0.6)          # let the view settle before reading it
+        await _handle_summarize(ws, voice_state)
 
 
 async def _handle_ui_task(goal: str, ws, prenav: bool = True,
