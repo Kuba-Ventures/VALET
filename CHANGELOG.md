@@ -3,6 +3,21 @@
 All notable changes to VALET are documented here. Versions are the app version
 (`src-tauri/tauri.conf.json`) shipped as the signed, notarized macOS build.
 
+## [0.2.41] — 2026-07-19
+
+### Added
+- **VALET can scroll.** Asking it to "scroll up" used to get you "on it, sir"
+  and a page that didn't move — there was no scroll primitive anywhere, so the
+  UI loop could only pick a click or key chord that quietly did nothing. Now
+  "scroll up", "scroll down", "page down", "scroll to the bottom" and "scroll
+  down a bit" all move the view immediately, with no model round-trip, in both
+  native apps and browser pages. Success is silent on purpose: you're watching
+  the page move. (#291)
+- **"Scroll until you find the pricing table."** Goal-directed scrolling: VALET
+  scrolls a page, re-reads the screen, and stops when what you asked for is
+  visible. If it reaches the end of the page without finding it, it says so
+  rather than scrolling in place. (#291)
+
 ## [0.2.40] — 2026-07-17
 
 ### Added
