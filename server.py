@@ -11192,6 +11192,13 @@ async def _handle_ui_task(goal: str, ws, prenav: bool = True,
         except Exception as e:
             log.warning(f"gmail pre-nav failed: {e}")
     is_summary = _is_gmail_summarize_goal(goal)
+    # Auto-pick the account whenever the goal itself names one ("sign into my WORK
+    # gmail", "…summarize my WORK email"), so the guided login doesn't ask "which
+    # account?" for something the user already said — they had to re-answer 3x
+    # without this. Only fills a hint the caller didn't already pass (the signed-out
+    # escalation passes it explicitly); "" (no account named) still asks.
+    if not acct_hint:
+        acct_hint = _gmail_goal_scope(goal)[0]
     try:
         async with process_bus.task_context(f"Task: {goal[:60]}") as task_id:
             result = await _run_ui_task(goal, task_id=task_id, ws=ws,
