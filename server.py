@@ -6102,12 +6102,20 @@ _SCROLL_FIND_RE = re.compile(
 # whatever happened to be frontmost instead. Now an unrecognized tail fails the
 # match and falls through to the LLM, which is the honest outcome.
 _SCROLL_AMT = (r'all\s+the\s+way|to\s+the\s+bottom|to\s+the\s+top|to\s+the\s+end'
-               r'|a\s+bit|a\s+little|a\s+touch|a\s+smidge|slightly|some\s+more|more')
+               r'|a\s+bit|a\s+little|a\s+touch|a\s+smidge|slightly|some\s+more|more'
+               r'|way|far')
+# The amount can sit on EITHER side of the direction — people say both "scroll
+# all the way down" and "scroll down all the way", and the first phrasing is the
+# more natural one. An earlier version only accepted it AFTER the direction, so
+# "scroll all the way down on GitHub" failed the match entirely and fell through
+# to the LLM, which heard "down ... Jones" and read out the Dow.
+_SCROLL_DIR = r'up|down|left|right|to\s+the\s+top|to\s+the\s+bottom|back\s+up'
 _SCROLL_RE = re.compile(
     r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
     r'(?:scroll|page|swipe)\s+'
     r'(?:the\s+(?:page|screen|window|list)\s+)?'
-    r'(?P<dir>up|down|left|right|to\s+the\s+top|to\s+the\s+bottom|back\s+up)'
+    r'(?:(?P<amt_pre>' + _SCROLL_AMT + r')\s+)?'
+    r'(?P<dir>' + _SCROLL_DIR + r')'
     r'(?:\s+(?P<amt>' + _SCROLL_AMT + r'))?'
     r'(?:\s+(?:on|in|over|inside)\s+(?P<target>.+?))?'
     r'(?:\s+please)?\s*[.?!]*$', re.IGNORECASE)
@@ -6122,7 +6130,8 @@ def _scroll_params(dir_word: str, amt_words: str) -> tuple[str, str]:
         return "up", "20000"
     if "bottom" in d:
         return "down", "20000"
-    if any(w in a for w in ("all the way", "to the bottom", "to the end")):
+    if any(w in a for w in ("all the way", "to the bottom", "to the top",
+                            "to the end", "way", "far")):
         return d, "20000"
     if any(w in a for w in ("a bit", "a little", "slightly", "a touch", "a smidge")):
         return d, "half"
@@ -6666,7 +6675,9 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
                 "max_steps": 14}
     _sc = _SCROLL_RE.match(t)
     if _sc:
-        _dir, _amt = _scroll_params(_sc.group("dir"), _sc.group("amt") or "")
+        _dir, _amt = _scroll_params(
+            _sc.group("dir"),
+            (_sc.group("amt") or _sc.group("amt_pre") or ""))
         return {"action": "scroll", "direction": _dir, "amount": _amt,
                 "target": (_sc.group("target") or "").strip(" .?!")}
 

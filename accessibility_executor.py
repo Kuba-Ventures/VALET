@@ -499,7 +499,58 @@ def _scroll_pixels(amount, span: float) -> int:
     return max(200, int(span * 0.85))
 
 
-def _scroll_wheel(x: float, y: float, dy: int, dx: int = 0, *, steps: int = 6) -> None:
+_BURST_EVENTS = 8      # wheel events per burst
+_BURST_PIXELS = 40     # requested pixels per event
+# "all the way" is expressed as an absurd pixel count by the router; treat
+# anything at or above this as "keep going until the view stops moving".
+_TO_THE_END = 10000
+_MAX_BURSTS = 45       # bounded worst case for "scroll all the way down"
+_PAGE_BURST_CAP = 12   # a page/half can't need more than this
+_BURST_GAP = 0.003     # 60 bursts at 20ms/event would be ~11s
+
+
+def _vertical_scrollbar(win):
+    """The window's vertical AXScrollBar, or None.
+
+    Where it exists it is the exact scroll position (0.0 top, 1.0 bottom) AND
+    it is settable — so "all the way down" becomes one precise jump instead of
+    spraying wheel events and hoping. Chrome's web content does not expose one;
+    native apps generally do."""
+    found = []
+
+    def walk(el, d=0):
+        if d > 9 or found:
+            return
+        if (_str_attr(el, _kRole) == "AXScrollBar"
+                and "Vertical" in _str_attr(el, "AXOrientation")):
+            found.append(el)
+            return
+        for c in (_copy_attr(el, _kChildren) or [])[:25]:
+            walk(c, d + 1)
+
+    walk(win)
+    return found[0] if found else None
+
+
+def _jump_scrollbar(pid: int, frame: list, to_end: bool) -> bool:
+    """Jump to the top/bottom via the scrollbar. True if it worked."""
+    app_el = _AX.AXUIElementCreateApplication(pid)
+    for w in (_copy_attr(app_el, _kWindows) or []):
+        if _frame_of(w) != frame:
+            continue
+        bar = _vertical_scrollbar(w)
+        if bar is None:
+            return False
+        try:
+            err = _AX.AXUIElementSetAttributeValue(bar, _kValue, 1.0 if to_end else 0.0)
+            return err == 0
+        except Exception:
+            return False
+    return False
+
+
+def _scroll_wheel(x: float, y: float, dy: int, dx: int = 0, *, steps: int = 6,
+                  gap: float = 0.02) -> None:
     """Synthetic scroll wheel at a global screen point.
 
     A scroll event is delivered to whatever is UNDER THE CURSOR, not to the
@@ -527,7 +578,7 @@ def _scroll_wheel(x: float, y: float, dy: int, dx: int = 0, *, steps: int = 6) -
         # keeps it correct if the user nudges the mouse mid-scroll.
         Quartz.CGEventSetLocation(ev, pt)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
-        time.sleep(0.02)
+        time.sleep(gap)
 
 
 # --------------------------------------------------------------------------- #
@@ -935,11 +986,12 @@ class AccessibilityExecutor(ActionExecutor):
                     return None, "no_frame", None
                 x, y = frame[0] + frame[2] / 2.0, frame[1] + frame[3] / 2.0
             span = frame[3] if frame else 700.0
-            px = _scroll_pixels(amount, span)
+            want = _scroll_pixels(amount, span)
+            to_end = want >= _TO_THE_END
             # Positive wheel deltas scroll the content DOWN the screen, i.e. they
             # move the viewport UP the document. Down/right are the negatives.
-            dy = px if d == "up" else -px if d == "down" else 0
-            dx = px if d == "left" else -px if d == "right" else 0
+            sign = 1 if d in ("up", "left") else -1
+            horiz = d in ("left", "right")
             # A NAMED window is deliberately NOT raised or activated: macOS
             # delivers a scroll to whatever sits under the pointer, focused or
             # not, so "scroll up on github" can move a page on another display
@@ -948,12 +1000,42 @@ class AccessibilityExecutor(ActionExecutor):
                 _activate_app(app)
                 time.sleep(0.12)
             here = _cursor_location() if target else None
-            _scroll_wheel(x, y, dy, dx)
+
+            pid = (hit or {}).get("pid")
+            if pid is None:
+                pid = _pid_for_app(app)
+
+            # "All the way": prefer the scrollbar, which is exact and instant.
+            # Native apps expose one; Chrome's web content does not, so that
+            # falls through to the wheel below.
+            if to_end and pid and not horiz and _jump_scrollbar(pid, frame, d == "down"):
+                if here:
+                    _post_mouse_moved(here[0], here[1])
+                return want, None, hit
+
+            # Otherwise: repeated bursts. Deliberately open-loop. Measuring how
+            # far a view moved by watching element geometry does NOT generalise —
+            # in a text view or list the content scrolls INSIDE a fixed-frame
+            # element, so nothing moves, every scroll reads as "end of document"
+            # and every amount collapses to the same small nudge. Repetition is
+            # dumber and works everywhere; overshooting at the end of a document
+            # is harmless because the extra events simply do nothing.
+            per_burst = _BURST_EVENTS * _BURST_PIXELS * 0.5   # measured delivery
+            if to_end:
+                bursts = _MAX_BURSTS
+            else:
+                bursts = max(1, min(_PAGE_BURST_CAP, round(want / per_burst)))
+            burst = _BURST_EVENTS * _BURST_PIXELS * sign
+            for _ in range(bursts):
+                _scroll_wheel(x, y, 0 if horiz else burst,
+                              burst if horiz else 0, steps=_BURST_EVENTS,
+                              gap=_BURST_GAP)
+            moved = want
             # Put the pointer back where it was, so a scroll on a second display
             # doesn't strand the cursor over there.
             if here:
                 _post_mouse_moved(here[0], here[1])
-            return px, None, hit
+            return (int(moved) or want), None, hit
 
         px, err, hit = await asyncio.to_thread(_do)
         if err:

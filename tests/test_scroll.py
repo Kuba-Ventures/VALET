@@ -310,6 +310,87 @@ def test_unrecognized_tail_is_not_silently_swallowed():
     assert not (a or {}).get("action") == "scroll"
 
 
+# ── amount before OR after the direction ────────────────────────────────────
+def test_amount_can_precede_the_direction():
+    """REGRESSION: "scroll all the way down" puts the amount BEFORE the
+    direction. The pattern only accepted it after, so the whole match failed,
+    the phrase fell through to the LLM, and VALET read out the Dow Jones."""
+    import server
+    for text in ("scroll all the way down", "scroll all the way down on github",
+                 "scroll all the way up", "scroll way down"):
+        a = server.detect_action_fast(text)
+        assert a.get("action") == "scroll", f"{text!r} routed to {a.get('action')!r}"
+        assert a["amount"] == "20000", text
+    # and the post-direction phrasing still works
+    assert server.detect_action_fast("scroll down all the way")["amount"] == "20000"
+
+
+def test_to_the_end_amount_is_recognised_as_such():
+    from accessibility_executor import _scroll_pixels, _TO_THE_END
+    assert _scroll_pixels("20000", 800) >= _TO_THE_END      # triggers the end-jump
+    assert _scroll_pixels("page", 800) < _TO_THE_END
+    assert _scroll_pixels("half", 800) < _scroll_pixels("page", 800)
+
+
+def test_all_the_way_prefers_the_scrollbar(monkeypatch):
+    """A settable AXScrollBar is exact and instant. Spraying wheel events to
+    reach the end of a long document is the slow fallback, not the plan."""
+    import accessibility_executor as ax
+    monkeypatch.setattr(ax, "_PYOBJC", True)
+    monkeypatch.setattr(ax, "is_trusted", lambda: True)
+    monkeypatch.setattr(ax, "find_window", lambda t, c=None: WINDOWS[0])
+    jumped, wheeled = [], []
+    monkeypatch.setattr(ax, "_jump_scrollbar",
+                        lambda pid, frame, to_end: jumped.append(to_end) or True)
+    monkeypatch.setattr(ax, "_scroll_wheel", lambda *a, **k: wheeled.append(a))
+    monkeypatch.setattr(ax, "_cursor_location", lambda: (0.0, 0.0))
+    monkeypatch.setattr(ax, "_post_mouse_moved", lambda x, y: None)
+    res = run(ax.AccessibilityExecutor().scroll(
+        direction="down", amount="20000", target="cursor"))
+    assert res.ok and jumped == [True] and wheeled == []
+
+
+def test_all_the_way_falls_back_to_bursts_without_a_scrollbar(monkeypatch):
+    """Chrome's web content exposes no scrollbar, so the end must still be
+    reachable by repetition."""
+    import accessibility_executor as ax
+    monkeypatch.setattr(ax, "_PYOBJC", True)
+    monkeypatch.setattr(ax, "is_trusted", lambda: True)
+    monkeypatch.setattr(ax, "find_window", lambda t, c=None: WINDOWS[2])
+    monkeypatch.setattr(ax, "_jump_scrollbar", lambda *a, **k: False)
+    wheeled = []
+    monkeypatch.setattr(ax, "_scroll_wheel", lambda *a, **k: wheeled.append(a))
+    monkeypatch.setattr(ax, "_cursor_location", lambda: (0.0, 0.0))
+    monkeypatch.setattr(ax, "_post_mouse_moved", lambda x, y: None)
+    res = run(ax.AccessibilityExecutor().scroll(
+        direction="down", amount="20000", target="github"))
+    assert res.ok
+    assert len(wheeled) == ax._MAX_BURSTS      # keeps going, doesn't nudge once
+    assert all(w[2] < 0 for w in wheeled)      # every burst scrolls DOWN
+
+
+def test_page_and_half_scale_with_the_ask(monkeypatch):
+    """A page must be more travel than a bit. They collapsed to the same fixed
+    nudge when scroll distance was decided by a measurement that couldn't see
+    text views move."""
+    import accessibility_executor as ax
+    monkeypatch.setattr(ax, "_PYOBJC", True)
+    monkeypatch.setattr(ax, "is_trusted", lambda: True)
+    monkeypatch.setattr(ax, "find_window", lambda t, c=None: WINDOWS[2])
+    monkeypatch.setattr(ax, "_jump_scrollbar", lambda *a, **k: False)
+    monkeypatch.setattr(ax, "_cursor_location", lambda: (0.0, 0.0))
+    monkeypatch.setattr(ax, "_post_mouse_moved", lambda x, y: None)
+
+    def count(amount):
+        w = []
+        monkeypatch.setattr(ax, "_scroll_wheel", lambda *a, **k: w.append(a))
+        run(ax.AccessibilityExecutor().scroll(
+            direction="down", amount=amount, target="github"))
+        return len(w)
+
+    assert count("half") < count("page") < ax._MAX_BURSTS
+
+
 def test_router_scroll_until_is_a_search():
     import server
     m = server._SCROLL_FIND_RE.match("scroll down until you find the pricing table")
