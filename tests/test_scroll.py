@@ -291,7 +291,7 @@ def test_router_extracts_the_window_target():
     for text, want_dir, want_target in [
         ("scroll up on github", "up", "github"),
         ("scroll down in slack", "down", "slack"),
-        ("scroll up on the github page", "up", "the github page"),
+        ("scroll up on the github page", "up", "github page"),   # leading "the" stripped
         ("scroll down a bit on github", "down", "github"),
         ("scroll down", "down", ""),
     ]:
@@ -389,6 +389,53 @@ def test_page_and_half_scale_with_the_ask(monkeypatch):
         return len(w)
 
     assert count("half") < count("page") < ax._MAX_BURSTS
+
+
+# ── reaching an end without saying "scroll" ─────────────────────────────────
+def test_go_to_the_top_is_a_scroll_not_a_click():
+    """REGRESSION: "go to the top of GitHub" fell through to the click resolver,
+    which tried to click a control literally named "top" — the process panel
+    showed "CLICK TOP OF GITHUB" and nothing happened."""
+    import server
+    for text, want_dir, want_target in [
+        ("go to the top", "up", ""),
+        ("go to the bottom", "down", ""),
+        ("go to the top of github", "up", "github"),
+        ("jump to the bottom", "down", ""),
+        ("take me to the top of github", "up", "github"),
+        ("scroll to bottom", "down", ""),          # no "the"
+        ("scroll to the bottom of github", "down", "github"),   # "of", not "on"
+    ]:
+        a = server.detect_action_fast(text) or {}
+        assert a.get("action") == "scroll", f"{text!r} routed to {a.get('action')!r}"
+        assert a["direction"] == want_dir and a["target"] == want_target, text
+        assert a["amount"] == "20000", text       # an end, not a page
+
+
+def test_asking_whats_there_scrolls_and_reports():
+    """"See what's at the bottom" is about the CONTENT — go there, then read it
+    back. Scrolling silently would answer the wrong question."""
+    import server
+    for text in ("see whats at the bottom", "what's at the bottom of github",
+                 "show me the top of github", "what is at the top"):
+        a = server.detect_action_fast(text) or {}
+        assert a.get("action") == "scroll", f"{text!r} routed to {a.get('action')!r}"
+        assert a.get("then") == "summarize", text
+
+
+def test_end_phrasings_do_not_swallow_neighbouring_routes():
+    """These patterns sit in front of the generic nav/click rules, so they must
+    stay narrow — "go to <somewhere>" is still navigation."""
+    import server
+    for text, not_scroll in [
+        ("go to my inbox", "ui_act"),
+        ("go to github", "open_url"),
+        ("click the top button", "ui_act"),
+        ("whats on my screen", "describe_screen"),
+        ("summarize this", "summarize_screen"),
+    ]:
+        a = server.detect_action_fast(text) or {}
+        assert a.get("action") == not_scroll, f"{text!r} became {a.get('action')!r}"
 
 
 def test_router_scroll_until_is_a_search():

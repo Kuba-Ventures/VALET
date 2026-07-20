@@ -6117,7 +6117,33 @@ _SCROLL_RE = re.compile(
     r'(?:(?P<amt_pre>' + _SCROLL_AMT + r')\s+)?'
     r'(?P<dir>' + _SCROLL_DIR + r')'
     r'(?:\s+(?P<amt>' + _SCROLL_AMT + r'))?'
-    r'(?:\s+(?:on|in|over|inside)\s+(?P<target>.+?))?'
+    r'(?:\s+(?:on|in|over|inside|of)\s+(?:the\s+)?(?P<target>.+?))?'
+    r'(?:\s+please)?\s*[.?!]*$', re.IGNORECASE)
+
+# Reaching an end without saying "scroll". "Go to the top" / "jump to the
+# bottom" / "take me to the top of GitHub" are how people actually ask, and
+# every one of them used to fall through to the CLICK resolver — which tried to
+# click a control literally named "top" ("CLICK TOP OF GITHUB") and missed.
+# Must be tried BEFORE _UI_NAV_RE, which owns the generic "go to <thing>".
+_SCROLL_END_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    r'(?:(?:go|jump|skip|head|move|take\s+me|get\s+me|scroll|bring\s+me)\s+)?'
+    r'(?:(?:back\s+)?(?:to|up\s+to|down\s+to)\s+)?'
+    r'(?:the\s+)?(?:very\s+)?(?P<end>top|bottom)'
+    r'(?:\s+of\s+(?:the\s+)?(?:page|screen|window)?)?'
+    r'(?:\s+(?:of|on|in)\s+(?:the\s+)?(?P<target>.+?))?'
+    r'(?:\s+please)?\s*[.?!]*$', re.IGNORECASE)
+
+# "See what's at the bottom" — scroll there AND report, since the ask is about
+# the content, not the movement.
+_SCROLL_LOOK_RE = re.compile(
+    r'^(?:can\s+you\s+|could\s+you\s+|please\s+)?'
+    # Either a verb ("show me the bottom") or a bare question ("what's at the
+    # bottom of GitHub") — at least one of the two must be present.
+    r'(?:(?:see|show|look\s+at|read|check|tell)\s+(?:me\s+)?(?:what(?:\'|’)?s|what\s+is|whats)?'
+    r'|(?:what(?:\'|’)?s|what\s+is|whats))\s*'
+    r'(?:at\s+|on\s+|in\s+)?(?:the\s+)?(?:very\s+)?(?P<end>top|bottom)'
+    r'(?:\s+(?:of|on|in)\s+(?:the\s+)?(?P<target>.+?))?'
     r'(?:\s+please)?\s*[.?!]*$', re.IGNORECASE)
 
 
@@ -6673,6 +6699,21 @@ def detect_action_fast(text: str, ws=None) -> dict | None:
         return {"action": "ui_task",
                 "goal": f"scroll until {_tgt} is visible on screen",
                 "max_steps": 14}
+    # "see what's at the bottom" — go there, then say what's there.
+    _sl = _SCROLL_LOOK_RE.match(t)
+    if _sl:
+        return {"action": "scroll", "direction": ("up" if _sl.group("end").lower() == "top"
+                                                  else "down"),
+                "amount": "20000", "target": (_sl.group("target") or "").strip(" .?!"),
+                "then": "summarize"}
+
+    # "go to the top" / "jump to the bottom of github" — no "scroll" verb.
+    _se = _SCROLL_END_RE.match(t)
+    if _se:
+        return {"action": "scroll", "direction": ("up" if _se.group("end").lower() == "top"
+                                                  else "down"),
+                "amount": "20000", "target": (_se.group("target") or "").strip(" .?!")}
+
     _sc = _SCROLL_RE.match(t)
     if _sc:
         _dir, _amt = _scroll_params(
@@ -8705,7 +8746,9 @@ async def voice_handler(ws: WebSocket):
                             _track_uc(ws, _handle_scroll(
                                 action.get("direction", "down"),
                                 action.get("amount", "page"), ws,
-                                target=action.get("target", "")))
+                                target=action.get("target", ""),
+                                then=action.get("then", ""),
+                                voice_state=voice_state))
                         elif action["action"] == "ui_task":
                             # Multi-step UI flow (log out/in, etc.) via the
                             # supervised, hands-off observe→act loop.
@@ -10854,7 +10897,8 @@ async def _summarize_gmail_inbox(ws, goal: str = "") -> None:
     await _handle_summarize_inbox(ws, account=account, date=date)
 
 
-async def _handle_scroll(direction: str, amount: str, ws, target: str = "") -> None:
+async def _handle_scroll(direction: str, amount: str, ws, target: str = "",
+                         then: str = "", voice_state=None) -> None:
     """Voice path for a one-shot scroll (issue #291).
 
     With no target, scrolls the app the user is LOOKING at — `app=None` resolves
@@ -10890,6 +10934,12 @@ async def _handle_scroll(direction: str, amount: str, ws, target: str = "") -> N
     # A failure still speaks — silence there is the bug this issue was filed for.
     if not ok:
         await _speak(ws, getattr(result, "message", "") or "I couldn't scroll that, sir.")
+        return
+    # "See what's at the bottom" asks about the CONTENT, not the movement — so
+    # once we're there, read the screen back.
+    if then == "summarize":
+        await asyncio.sleep(0.6)          # let the view settle before reading it
+        await _handle_summarize(ws, voice_state)
 
 
 async def _handle_ui_task(goal: str, ws, prenav: bool = True,
