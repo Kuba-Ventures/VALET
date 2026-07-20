@@ -39,6 +39,28 @@ STT_CORRECTIONS = {
     r"usps(?=\s*rollover)": "qsbs",                 # uspsrollover → qsbsrollover (domain, lowercase)
     r"\bu\.?\s?s\.?\s?p\.?\s?s\.?\b": "QSBS",        # standalone USPS / U.S.P.S.
     r"\b(?:cue|queue|q)\s+s\s*b\s*s\b": "QSBS",
+    # "GitHub" is heard as "get hub" / "gethub" / "guitar hub". Correcting the
+    # TRANSCRIPT rather than one feature's lookup matters because a mishearing
+    # breaks every path at once: "go to get hub" was reaching the click resolver
+    # hunting for a control named "get hub", while "go to github" opened the site
+    # correctly. None of these are ordinary English in a command to a computer.
+    r"\bget\s+hub\b": "GitHub",
+    r"\bgit\s+hub\b": "GitHub",
+    r"\bgethub\b": "GitHub",
+    r"\bjit\s+hub\b": "GitHub",
+    r"\bguitar\s+hub\b": "GitHub",
+    # "ghetto" IS ordinary English, so it is corrected ONLY where a site name is
+    # unambiguous — after a preposition or before page/window/tab. A bare
+    # "ghetto" elsewhere is left alone; accessibility_executor._HEARD_AS still
+    # resolves it when the open windows disambiguate.
+    r"(?<=\bon\s)ghetto\b": "GitHub",
+    r"(?<=\bto\s)ghetto\b": "GitHub",
+    r"(?<=\bin\s)ghetto\b": "GitHub",
+    r"(?<=\bof\s)ghetto\b": "GitHub",
+    r"\bghetto(?=\s+(?:page|window|tab|repo|dot\s+com))": "GitHub",
+    # Gmail, same shape.
+    r"\bgee\s*mail\b": "Gmail",
+    r"\bg\s+mail\b": "Gmail",
 }
 
 
