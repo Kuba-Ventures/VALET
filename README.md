@@ -185,9 +185,3 @@ Please open an issue before submitting large PRs so we can discuss the approach.
 ## License
 
 Free for personal, non-commercial use. Commercial use requires a license — visit [ethanplus.ai](https://ethanplus.ai) for inquiries. See [LICENSE](LICENSE) for details.
-
-## Credits
-
-Built by [Ethan](https://ethanplus.ai).
-
-Powered by [Anthropic Claude](https://anthropic.com) and [Fish Audio](https://fish.audio).
