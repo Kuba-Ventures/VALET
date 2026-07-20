@@ -10,6 +10,7 @@ import { createAudioPlayer } from "./voice";
 import { createWorkingHum } from "./hum";
 import { createWakeWord } from "./wakeWord";
 import { createDeepgramMic } from "./deepgramMic";
+import { createSttCompare } from "./sttCompare";
 import { isPushToTalkEnabled, isEditableTarget } from "./pushToTalk";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
@@ -318,6 +319,14 @@ function transition(newState: State) {
 // built-in one so no per-minute meter runs while the app sits idle.
 const deepgramMic = createDeepgramMic();
 
+// A/B capture for #321: is Deepgram actually better than the built-in
+// recognizer for this user's accented speech? Both already run on the same
+// audio for every hold, so this records the pair instead of discarding the
+// loser. Observation only — it cannot change which transcript is dispatched.
+const sttCompare = createSttCompare((pair) => {
+  try { socket.send({ type: "stt_ab", ...pair }); } catch { /* never break voice */ }
+});
+
 const wake = createWakeWord(
   "vee", // casual wake word; overwritten once /api/config resolves below
   {
@@ -361,7 +370,8 @@ const wake = createWakeWord(
       showError(msg);
     },
   },
-  deepgramMic
+  deepgramMic,
+  sttCompare
 );
 
 const valetLabelEl = document.getElementById("valet-label")!;
