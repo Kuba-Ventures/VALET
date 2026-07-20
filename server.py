@@ -6370,7 +6370,12 @@ _INBOX_DIGEST_RE = re.compile(
     r'(?:the\s+|my\s+|all\s+(?:of\s+)?(?:my\s+)?)?'
     r'(?P<acct>work|personal|business|home|office)?\s*'
     r'(?:today\'?s?\s+)?'
-    r'(?:inbox|e-?mails?|mail|messages?)'
+    # Inbox-scoped nouns always claim (inbox / mass "mail" / PLURAL emails|messages).
+    # A SINGULAR "email"/"message" only counts as the inbox when it ISN'T bare
+    # "the …": "summarize the email" / "summarize this email" are the ONE focused
+    # message → summarize_screen, while "summarize my email" (collective) stays a
+    # digest. The fixed-width (?<!the\s) guard blocks only "the <singular>".
+    r'(?:inbox|mail|e-?mails|messages|(?<!the\s)(?:e-?mail|message))'
     r'(?:\s+(?:for\s+|from\s+)?(?P<when>' + _WHEN + r'))?'
     r'(?:\s+in\s+my\s+inbox)?\s*[.?!]*$',
     re.IGNORECASE)
