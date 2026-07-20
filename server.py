@@ -4921,6 +4921,36 @@ def _append_usage_entry(input_tokens: int, output_tokens: int, call_type: str = 
         pass
 
 
+#: Deepgram-vs-WebKit transcript pairs (#321). Not usage metering — this exists
+#: only to answer "is Deepgram actually better for accented speech?" before we
+#: invest in the proxy-gating build. Delete the file once that's settled.
+_STT_AB_FILE = Path(__file__).parent / "data" / "stt_ab.jsonl"
+
+
+def _record_stt_ab(msg: dict) -> None:
+    """Append one push-to-talk A/B sample.
+
+    Deliberately dumb: no dedup, no analysis, no correctness judgement. Which
+    transcript was RIGHT is not knowable here — only the person who spoke can
+    say — so this stores the raw pair and leaves the verdict to the offline
+    review tool. Never raises: a logging failure must not cost the user a turn."""
+    try:
+        _STT_AB_FILE.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        entry = {
+            "ts": time.time(),
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "held_ms": int(msg.get("held_ms") or 0),
+            "webkit": (msg.get("webkit") or "")[:2000],
+            "deepgram": (msg.get("deepgram") or "")[:2000],
+            "deepgram_ran": bool(msg.get("deepgram_ran")),
+        }
+        with open(_STT_AB_FILE, "a") as f:
+            f.write(_json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
 def _get_usage_for_period(seconds: float | None = None) -> dict:
     """Sum usage from the log file for a time period. None = all time."""
     import json as _json
@@ -8295,6 +8325,16 @@ async def voice_handler(ws: WebSocket):
             # ── Onboarding finale: a short guided cursor-control demo ──
             if msg.get("type") == "onboarding_demo":
                 asyncio.create_task(_handle_onboarding_demo(ws))
+                continue
+
+            # ── STT A/B sample (#321): what each recognizer heard ──
+            # Deepgram and the built-in WebKit recognizer already run on the
+            # same audio for every push-to-talk hold; the frontend now reports
+            # both instead of discarding the loser. Appended raw — adjudication
+            # happens offline in tools/stt_ab_review.py, because knowing the
+            # two differ says nothing about which one was RIGHT.
+            if msg.get("type") == "stt_ab":
+                _record_stt_ab(msg)
                 continue
 
             # ── Risk-tier confirmation response (Stage D) ──

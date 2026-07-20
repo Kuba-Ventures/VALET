@@ -23,6 +23,7 @@
  */
 
 import { createVoiceInput, type VoiceInput } from "./voice";
+import type { SttCompare } from "./sttCompare";
 
 export interface WakeWordController {
   start(): void;
@@ -152,7 +153,8 @@ function normalizeName(raw: string): string {
 export function createWakeWord(
   initialName: string,
   handlers: WakeWordHandlers,
-  pttTranscriber?: PushToTalkTranscriber
+  pttTranscriber?: PushToTalkTranscriber,
+  compare?: SttCompare
 ): WakeWordController {
   let assistantName = normalizeName(initialName);
   let wakeRegex = buildWakeRegex(assistantName);
@@ -204,6 +206,16 @@ export function createWakeWord(
       // A cancelled ⌃⌥ turn: drop the trailing buffered audio so a ⌃⌥-letter
       // shortcut never leaks into a dispatched command or the wake path.
       if (pttDiscarding) return;
+
+      // A/B capture (#321), observation only. This sits ABOVE the push-to-talk
+      // branch deliberately: when Deepgram wins it dispatches early, which
+      // clears `pttFinalizing`, so WebKit's FINAL for the same audio arrives
+      // here as an ordinary transcript. Capturing inside the branch below would
+      // therefore record an empty WebKit side for exactly the turns Deepgram
+      // won — the one bias that would make the comparison useless. The compare
+      // window is only open across a hold plus its settle delay, so nothing
+      // outside a push-to-talk turn is collected.
+      if (isFinal) compare?.webkitFinal(trimmed);
 
       // Push-to-talk owns the transcript stream while held or finalizing —
       // wake-word matching is skipped entirely. Accumulate FINAL segments;
@@ -300,6 +312,9 @@ export function createWakeWord(
         dgActive = true;
         void pttTranscriber.start().catch(() => { dgActive = false; });
       }
+      // Observation only (#321): record which recognizer heard what. Both are
+      // already running on the same audio; this just stops discarding the loser.
+      compare?.begin(dgActive);
       handlers.onWake();     // visual cue: show we're listening (no change to `active`)
     },
     endPushToTalk() {
@@ -313,9 +328,14 @@ export function createWakeWord(
         // still fires if Deepgram is slow or silent.
         void pttTranscriber.stop().then((text) => {
           const t = (text || "").trim();
+          compare?.deepgramFinal(t);
           if (t && pttFinalizing) dispatchPushToTalk(t);
-        }).catch(() => { /* fall through to the built-in transcript */ });
+        }).catch(() => {
+          compare?.deepgramFinal("");   // a Deepgram failure counts as a miss
+          /* fall through to the built-in transcript */
+        });
       }
+      compare?.end();
       // Fallback: if no FINAL lands promptly, dispatch whatever we captured.
       if (pttTimer !== undefined) clearTimeout(pttTimer);
       pttTimer = setTimeout(() => { if (pttFinalizing) dispatchPushToTalk(); }, 1200);
@@ -328,6 +348,7 @@ export function createWakeWord(
       pttFinalizing = false;
       pttSegments = [];
       pttDiscarding = true;
+      compare?.cancel();   // a ⌃⌥-shortcut is not speech — no A/B sample here
       if (dgActive) { dgActive = false; pttTranscriber?.cancel(); }
       if (pttTimer !== undefined) clearTimeout(pttTimer);
       // Flush the recognizer buffer (mic keeps listening — onend restarts it),
