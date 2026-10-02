@@ -1,10 +1,12 @@
 # VALET Roadmap: fast, intuitive voice control of the Mac, shipped as a signed, license-gated download
 
-*Owner: Finley · Started: 2026-10-02 · Status: shipping v0.2.44, no product code merged since 2026-07-20 · last verified against the code 2026-10-02*
+*Owner: Finley · Started: 2026-10-02 · Status: superseded by Telly; v0.2.44 is the last public build; no product code merged since 2026-07-20; in wind-down · last verified against the code 2026-10-02*
+
+> **Note (2026-10-02): VALET is superseded.** This summer the voice-agent work switched to **Telly**, which lives in [`Twin-Peaks-Labs/voice-agent`](https://github.com/Twin-Peaks-Labs/voice-agent) and is live (v0.7.12, shipping via Sparkle). VALET is no longer actively developed. Stages 0 to 2 below are kept as history; the only forward work here is the Wind-down stage.
 
 ## What this is
 
-VALET is a voice-first macOS menu-bar assistant (British-butler persona "Vee") that hears a held ⌃⌥ push-to-talk chord, answers out loud, and drives the Mac: apps, files, settings, Calendar, Mail (read-only), Notes, the browser, and Claude Code. It is sold as a license-gated, signed and notarized DMG for Mac builders who want hands-free orchestration. Stack: Python/FastAPI backend (`server.py` and siblings) bundled with PyInstaller, a Vite + TypeScript + Three.js frontend (`frontend/`), a Tauri 2 shell (`src-tauri/`), and a Next.js + Supabase + Stripe license/AI proxy on Vercel (`product-site/`). Public builds are published on `Kuba-Ventures/valet-downloads`.
+VALET was a voice-first macOS menu-bar assistant (British-butler persona "Vee") that hears a held ⌃⌥ push-to-talk chord, answers out loud, and drives the Mac: apps, files, settings, Calendar, Mail (read-only), Notes, the browser, and Claude Code. It is still sold as a license-gated, signed and notarized DMG for Mac builders who want hands-free orchestration. Stack: Python/FastAPI backend (`server.py` and siblings) bundled with PyInstaller, a Vite + TypeScript + Three.js frontend (`frontend/`), a Tauri 2 shell (`src-tauri/`), and a Next.js + Supabase + Stripe license/AI proxy on Vercel (`product-site/`). Public builds are published on `Kuba-Ventures/valet-downloads`.
 
 ### Status legend
 
@@ -42,43 +44,30 @@ VALET is a voice-first macOS menu-bar assistant (British-butler persona "Vee") t
 - [x] **(build)** Deepgram STT for the push-to-talk turn only, with fallback to the built-in recognizer (Kuba-Ventures/VALET#320, #325; `deepgram_stt.py`).
 - [x] **(build)** Misheard product names corrected before routing (Kuba-Ventures/VALET#323).
 - [x] **(build)** Signed-out Gmail recovers through guided login; VALET never types the password (Kuba-Ventures/VALET#326, #327, #329).
-- [x] **(build)** v0.2.44 released: `src-tauri/tauri.conf.json` is `0.2.44`, and `Kuba-Ventures/valet-downloads` tag `v0.2.44` is marked Latest (2026-07-20). Note: `PROJECT.md` still says the last public download is 0.2.26, which is stale.
+- [x] **(build)** v0.2.44 released: `src-tauri/tauri.conf.json` is `0.2.44`, and `Kuba-Ventures/valet-downloads` tag `v0.2.44` is marked Latest (2026-07-20). `PROJECT.md` now records 0.2.44 as the public download (#345).
 
-## Stage 3: Ship-blockers and cleanup on the current product (next)
+- [x] **(build)** Code-quality audit and removal plan merged as docs only (Kuba-Ventures/VALET#334, merged 2026-10-02; `docs/code-quality-audit.md` is on `main`). It deletes no code; its fix-or-delete items are deferred with the rest of the backlog.
 
-- [ ] ⚠️ **(compliance)** Gate Deepgram STT behind the license proxy with a per-user spend cap. Today the key lives only in one machine's `~/Library/Application Support/VALET/.env`; there is no Deepgram route in `product-site/` (Kuba-Ventures/VALET#321).
-- [ ] **(build)** Synthetic-input target-focus hardening and the owed live in-app passes (UC4 confirm/STOP, UC5 barge-in echo tuning) before UC4/UC5/UC6-terminal ship in a signed build (`PROJECT.md`, What's left items 6 and 7; `tests/test_uc4_loop.py`).
-- [~] **(build)** Code-quality audit and removal plan, docs only so far (Kuba-Ventures/VALET#334, open). It flags `qa.py`/`suggestions.py` as broken in production by a swallowed import error, which is a fix-or-delete decision.
-- [ ] **(design)** Cursor follower dot is still blue (`#2a86ff` in `src-tauri/loading/overlay.html`); bring it in line with the violet brand.
-- [ ] **(build)** Web navigation on complex tasks: accessibility API for cross-app navigation, pixel-based clicking for complex web elements (Kuba-Ventures/VALET#258, #259, #260).
-- [ ] **(compliance)** Rotate the exposed AssemblyAI eval key and confirm (`PROJECT.md`, What's left item 4).
+## Stage 3: Wind-down (current)
 
-## Stage 4: Twin Peaks organization and product direction (blocked / not started)
+Nothing is decided yet. Do not archive or shut anything off until Finley decides.
 
-- [ ] ⚠️ **(compliance)** Submit the DUNS request for the Twin Peaks organization (Kuba-Ventures/VALET#336). Owner per issue: Patrick Sanders.
-- [ ] ⚠️ **(compliance)** Set up the official Twin Peaks Apple Developer account so DMGs sign under the org identity; blocked on #336 (Kuba-Ventures/VALET#341). Current builds sign as `JAMES FINLEY UNDERWOOD (QZX7VBLDZT)` (`CLAUDE.md`), and changing the signing identity resets users' TCC grants.
-- [ ] **(build)** Incorporate Jacques's changes from `Twin-Peaks-Labs/voice-agent` into the app; flagged blocked on @jarnoux (Kuba-Ventures/VALET#335).
-- [ ] **(growth)** Evaluate the "Hey Clicky" competitor for functional gaps and email findings (Kuba-Ventures/VALET#337).
-- [ ] **(growth)** Observability with PostHog, chosen over LangFuse (Kuba-Ventures/VALET#338). VALET today traces through Langfuse in the proxy (`product-site/lib/proxy/langfuse.ts`).
-- [ ] **(growth)** Marketing site with a lead-gen download gate (industry, use case) (Kuba-Ventures/VALET#339). The current `product-site/` gates downloads on a license, not a lead form.
-- [ ] **(compliance)** Per-user usage limits, soft cap around $100/month (Kuba-Ventures/VALET#340). See the fair-use flip in Stage 5, which is the existing mechanism.
+- [ ] ⚠️ **(build)** Decide archive vs keep for `Kuba-Ventures/VALET`.
+- [ ] ⚠️ **(compliance)** Decide what happens to existing VALET users, licenses and Stripe subscriptions (honor, migrate to Telly, or wind down).
+- [ ] **(growth)** Decide the fate of the `Kuba-Ventures/valet-downloads` release page (v0.2.44): keep, point it at Telly, or remove it.
+- [ ] **(compliance)** Decide whether to shut off VALET's Vercel project (`valet-voice`), Stripe products and env secrets.
+- [ ] **(build)** Close or redirect the Twin Peaks org issues filed here (Kuba-Ventures/VALET#335 to #341). They belong to Telly; DUNS (#336) and the Apple Developer account (#341) are tracked as Twin-Peaks-Labs/voice-agent#20 and #25.
+- [ ] **(compliance)** Only if VALET stays downloadable: confirm Vercel `DOWNLOAD_URL` points at the v0.2.44 release, and confirm `migration_dedupe_licenses.sql` ran in production Supabase. While it stays up, fair-use enforcement (`FAIR_USE_MODE` defaults to `warn`) and the AssemblyAI key rotation still matter.
 
-## Stage 5: Billing and admin (later, deliberately deprioritized per the sponsor mandate)
+### Not planned while superseded
 
-- [ ] **(compliance)** Turn on fair-use enforcement: code defaults `FAIR_USE_MODE` to `warn` (`product-site/lib/proxy/usage.ts`); set `throttle` or `block` and the per-plan envs in Vercel (mechanism from Kuba-Ventures/VALET#59).
-- [ ] **(build)** Confirm account-login PR A (`product-site/app/api/account/app-login`) is deployed so in-app account login works end to end (Kuba-Ventures/VALET#97).
-- [ ] **(build)** Device settings Phase 4: conflict resolution (web wins) and poll cadence.
-- [ ] **(build)** Raycast console v3: calculator, snippets, clipboard history, window management.
-- [ ] **(growth)** `/admin` usage analytics dashboard; needs the "VALET usage, not OS surveillance" privacy decision and a telemetry pipeline first (`coding-plans/backlog.md`).
-- [ ] **(compliance)** Stripe payouts paused until a bank account is added (client action).
+The former Stages 3 to 5 are dropped as forward work: Deepgram proxy gate (#321), UC4/UC5 passes, the `docs/code-quality-audit.md` cleanup, cursor dot recolor, web navigation (#258 to #260), the Twin Peaks product items (#335, #337 to #340, now Telly's), and billing/admin (fair-use flip, #97 login check, device-settings Phase 4, Raycast v3, `/admin` analytics, Stripe payouts). `PROJECT.md` keeps the detail.
 
 ## Open questions
 
-- Is VALET still the product under active development, or has the work moved to Telly (`Twin-Peaks-Labs/voice-agent`)? No product code has merged here since 2026-07-20, while Telly has shipped continuously through 2026-10-01 and already has PostHog, a lead-gated site and proxy rate limiting, which overlap #338, #339 and #340.
-- #336 and #341 are duplicated as Twin-Peaks-Labs/voice-agent#20 and #25. Which repo is the tracker of record?
-- Does Vercel `DOWNLOAD_URL` point at the v0.2.44 release? Not checkable from the repo.
-- Has `migration_dedupe_licenses.sql` been run in production Supabase?
-- What is `FAIR_USE_MODE` actually set to in Vercel?
-- Has the AssemblyAI eval key been rotated?
-- Should the "open email" intent also launch Mail, as "what's on my calendar" now opens Calendar (`PROJECT.md`, What's left item 12)?
-- Stale remote branches (`fix/inbox-summarize-from-rows`, `fix/sports-national-teams`, `chore/release-0.2.44`): merge, close or delete?
+- Archive the repo, or keep it read-only and downloadable?
+- What do existing license holders get: continued service, a move to Telly, or a refund or sunset date?
+- Should the valet-voice.com site and proxy stay up, and for how long?
+- Does Vercel `DOWNLOAD_URL` point at the v0.2.44 release? Only matters if VALET stays downloadable.
+- Has `migration_dedupe_licenses.sql` been run in production Supabase? Only matters if VALET stays downloadable.
+- Stale remote branches (`fix/inbox-summarize-from-rows`, `fix/sports-national-teams`, `chore/release-0.2.44`): close or delete as part of the wind-down?

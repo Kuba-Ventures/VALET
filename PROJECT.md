@@ -1,13 +1,15 @@
 # VALET
-*Voice-first macOS menu-bar assistant, sold as a signed, license-gated download.*
+*Superseded voice-first macOS menu-bar assistant; replaced by Telly.*
 
-*Last updated: 2026-10-02 12:09 ET by kuba-vault*
+*Last updated: 2026-10-02 12:18 ET by kuba-vault*
 
 ---
 
 ## TL;DR  [rewrite]
 
-VALET (persona "Vee", a British butler) is a voice-first macOS menu-bar assistant: hold ⌃⌥ from any app, talk, and it answers out loud and drives the Mac. The full commercial loop is live: buy, sign in at valet-voice.com, download a signed and notarized DMG, run. The public download is **VALET 0.2.44** (Latest on `Kuba-Ventures/valet-downloads`, 2026-07-20), which carries the Gmail voice MVP; the repo is also at 0.2.44, so nothing on `main` is unreleased. No product code has merged since 2026-07-20. The work is blocked on Twin Peaks org setup (DUNS #336, then the org Apple Developer account #341), and Telly (`Twin-Peaks-Labs/voice-agent`) has kept shipping features that overlap VALET's #338 to #340, so the open question is where product work happens next. The staged plan lives in [`ROADMAP.md`](ROADMAP.md).
+> **VALET is superseded and no longer actively developed.** This summer the voice-agent work moved to **Telly**, which lives in [`Twin-Peaks-Labs/voice-agent`](https://github.com/Twin-Peaks-Labs/voice-agent) and is live (v0.7.12, shipping via Sparkle). New product work happens there, not here.
+
+VALET (persona "Vee", a British butler) was the original voice-first macOS menu-bar assistant: hold ⌃⌥ from any app, talk, and it answers out loud and drives the Mac. Its commercial loop is still up: buy, sign in at valet-voice.com, download a signed DMG. The last public build is **VALET 0.2.44** (Latest on `Kuba-Ventures/valet-downloads`, 2026-07-20), and no product code has merged since. The Twin Peaks org items (#335 to #341) belong to Telly. What remains here is a wind-down: decide archive vs keep, and what happens to existing users, licenses, the download page and the hosted resources. The wind-down list lives in [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
@@ -22,33 +24,33 @@ VALET (persona "Vee", a British butler) is a voice-first macOS menu-bar assistan
 
 ## Status  [rewrite]
 
-- **Phase:** live. v0.2.44 is the public download; no product code merged since 2026-07-20.
-- **Engagement manager:** Jacques Arnoux (Twin Peaks). Sponsor mandate: native, fast, intuitive Mac control; billing and admin deprioritized.
-- **Lead:** Finley. Patrick Sanders owns the Twin Peaks org items (#335, #336, #341).
-- **Cadence:** weekly sponsor sync (Twin Peaks), plus per-PR through the supervised factory.
-- **Next milestone:** TBD. Waiting on DUNS (#336) and the Twin Peaks Apple Developer account (#341), and on a call about VALET vs Telly.
-- **Flags:** blocked
+- **Phase:** paused. Superseded by Telly (`Twin-Peaks-Labs/voice-agent`); v0.2.44 stays the last public download.
+- **Engagement manager:** Jacques Arnoux (Twin Peaks). Twin Peaks work now runs through Telly.
+- **Lead:** Finley.
+- **Cadence:** none for VALET. Sponsor syncs cover Telly.
+- **Next milestone:** decide archive vs keep for VALET. No date set.
+- **Flags:** paused (superseded). None of shipping, on-track, blocked or ghosted applies; VALET is not blocked, it is replaced.
 
 ---
 
 ## Where we are right now  [rewrite]
 
-VALET 0.2.44 shipped on 2026-07-20 and is the Latest release on `Kuba-Ventures/valet-downloads`. It includes the Gmail voice MVP: from a signed-out browser, "go to gmail.com and summarize the emails I received today" runs a guided login (VALET never types the password), speaks a day digest, and saves it to an Apple note (#326 to #329). Since then only docs and process changes have merged: the shared CLAUDE.md standard (#342), the no-em-dash rule (#343), `ROADMAP.md` (#344) and the code-quality audit (#334). The code-quality audit (`docs/code-quality-audit.md`, #334) merged on 2026-10-02; it is a plan only and deletes no code. Seven Twin Peaks org issues (#335 to #341) are open; DUNS (#336) and the org Apple Developer account (#341) are the critical path, and both are duplicated in `Twin-Peaks-Labs/voice-agent` as #20 and #25. Telly shipped continuously through 2026-10-02 and already has PostHog, a lead-gated site and proxy rate limiting, which overlap VALET #338, #339 and #340. Next concrete step: decide whether VALET or Telly is the product of record and which repo tracks the org issues.
+On 2026-10-02 Finley confirmed VALET is stale. The voice-agent work switched to Telly this summer, and Telly is live in `Twin-Peaks-Labs/voice-agent` at v0.7.12, shipping through Sparkle. VALET's last product merge was 2026-07-20 (v0.2.44, the Gmail voice MVP, #326 to #329). Since then only docs and process changes have landed here (#334, #342 to #345). The Twin Peaks org issues #335 to #341 were filed in this repo but belong to Telly; DUNS (#336) and the Apple Developer account (#341) are tracked there as voice-agent #20 and #25. Next concrete step: close or redirect VALET's copies of #335 to #341, then make the archive vs keep call. Nothing has been archived or shut off.
 
 ---
 
-## What's left to pick up  [rewrite, read this first]
+## Wind-down  [rewrite, read this first]
 
-Ordered. The full staged plan is in [`ROADMAP.md`](ROADMAP.md); this list is the short version.
+Nothing is decided yet. Nothing is archived or shut off.
 
-1. **Decide VALET vs Telly.** Is VALET still under active development, or has the work moved to `Twin-Peaks-Labs/voice-agent`? Also decide which repo tracks #336/#341 (duplicated as voice-agent #20/#25).
-2. **Unblock org signing.** DUNS (#336), then the Twin Peaks Apple Developer account (#341). Switching the signing identity off `JAMES FINLEY UNDERWOOD (QZX7VBLDZT)` resets every user's TCC grants, so plan the migration.
-3. **Act on the code-quality audit** (`docs/code-quality-audit.md`, #334). It flags `qa.py`/`suggestions.py` as broken in production by a swallowed import error (fix or delete), and `google_calendar.py` missing from `valet.spec` hiddenimports.
-4. **Gate Deepgram STT behind the proxy with a spend cap.** The key lives only in one machine's `.env`; `product-site/` has no Deepgram route (#321).
-5. **Recolor the cursor-follower dot to violet.** Still blue (`#2a86ff` in `src-tauri/loading/overlay.html`).
-6. **UC4 focus hardening and live in-app passes.** Synthetic input follows keyboard focus; UC4 confirm/STOP and UC5 echo tuning passes are owed. Keep STOP visible during the UC4 loop.
-7. **Rotate the exposed AssemblyAI eval key** and confirm.
-8. **Billing and admin, deliberately last:** turn on fair-use enforcement (`FAIR_USE_MODE` defaults to `warn`), confirm account-login PR A (#97) is deployed, device-settings Phase 4, add a Stripe bank account to resume payouts.
+1. **Decide archive vs keep** for `Kuba-Ventures/VALET`. Owner: Finley.
+2. **Existing users and licenses.** Decide what happens to active VALET licenses and subscriptions (honor, migrate to Telly, or wind down). Owner: Finley.
+3. **The `valet-downloads` release page (v0.2.44).** Keep it up, add a pointer to Telly, or take it down. Owner: Finley.
+4. **Hosted resources.** Decide whether the VALET Vercel project (`valet-voice`), Stripe products and env secrets should be shut off. Owner: Finley.
+5. **Redirect the Twin Peaks org issues.** Close or point #335 to #341 at Telly; DUNS and Apple Developer are voice-agent #20 and #25. Owner: Finley.
+6. **Production-only checks, only if VALET stays downloadable:** confirm Vercel `DOWNLOAD_URL` points at v0.2.44, and confirm `migration_dedupe_licenses.sql` ran in production Supabase. Owner: Finley.
+
+The old forward-looking backlog (Deepgram proxy, code-quality cleanup, UC4/UC5 passes, billing and admin) is not planned work while VALET is superseded. It stays recorded in the Roadmap / Deferred section below and in `docs/code-quality-audit.md`.
 
 ---
 
@@ -137,6 +139,7 @@ Everything below is on `main` and in the public v0.2.44 build unless noted. Per-
 
 ## Decisions log  [append-only, never rewrite or delete]
 
+- **2026-10-02, VALET is superseded by Telly**. Finley confirmed the voice-agent work moved this summer to Telly in `Twin-Peaks-Labs/voice-agent` (live, v0.7.12 via Sparkle). VALET stops active development; the Twin Peaks org items move to Telly's tracker (voice-agent #20, #25). Archive vs keep is still open, and nothing is archived yet.
 - **2026-10-02, Twin Peaks picks PostHog over Langfuse for observability (#338)**. Recorded from the Twin Peaks issue; VALET still traces through Langfuse (`product-site/lib/proxy/langfuse.ts`) and nothing has been built yet.
 - **2026-07-20 — The Gmail day-digest summarizes from inbox-row previews; it does NOT open each email (declined non-goal)** — The digest reads each inbox row's ~100-char sender/subject/snippet and summarizes across the day's mail; clicking into individual messages to read full bodies was **explicitly declined by Finley on 2026-07-20** ("I do not want this capability right now"). Rationale: coordinate-clicking each message proved fragile — window resize/duplication, wrong-account drift, and address-bar hits — while the row previews already carry enough signal for a useful spoken digest. Recorded as a deliberate scope boundary so it isn't re-opened as a TODO.
 - **2026-07-20 — A signed-out Gmail inbox is recovered via guided login, not dead-ended; VALET never types the password (#326/#327)** — An account-scoped digest used to say "I don't see your inbox" when signed out — an instruction the user can't act on while logged out. Now `inbox_digest` distinguishes signed-out (Chrome is on Google's sign-in / chooser) from "no inbox open" by inspecting the page, returns a `signed_out` status, and `_handle_summarize_inbox` hands off to the #284 guided login, then re-runs the digest at the inbox (`allow_login=False` guards a login loop). The guided login **auto-picks the account named in the goal** (`acct_hint` from `_gmail_goal_scope`, so the user isn't asked "which account?" three times), asks approval, and clicks the saved-password chip + Next — but **VALET never types the password itself**; passkey/2FA hand off to the human. Rationale: recover the flow the user actually asked for while keeping the credential boundary strict. Backend Python → escalate-tier, human-reviewed PRs.
@@ -240,42 +243,31 @@ Everything below is on `main` and in the public v0.2.44 build unless noted. Per-
 
 ## Open loops  [rewrite]
 
-- [ ] Decide whether VALET or Telly (`Twin-Peaks-Labs/voice-agent`) is the product of record. Owner: Finley, Jacques Arnoux
-- [ ] Pick the tracker of record for the org issues duplicated as voice-agent #20 (DUNS) and #25 (Apple Developer). Waiting on: Twin Peaks
-- [ ] Submit the DUNS request for Twin Peaks (#336). Owner: Patrick Sanders
-- [ ] Set up the Twin Peaks Apple Developer account (#341), blocked on #336. Owner: Patrick Sanders
-- [ ] Incorporate Jacques's changes from `Twin-Peaks-Labs/voice-agent` (#335). Waiting on: @jarnoux
-- [ ] Evaluate "Hey Clicky" for functional gaps and email findings (#337). Owner: unassigned
-- [ ] PostHog observability (#338), lead-gen download gate (#339), per-user usage limits around $100/mo (#340). Telly already has versions of all three. Owner: unassigned
-- [ ] Decide fix-or-delete for `qa.py`/`suggestions.py`, then work the tiered removal plan in `docs/code-quality-audit.md`. Owner: Finley
-- [ ] Add `google_calendar.py` to `valet.spec` hiddenimports (flagged in #334). Owner: Finley
-- [ ] Gate Deepgram STT behind the proxy with a per-user spend cap (#321). Owner: Finley
-- [ ] Recolor the cursor-follower dot from blue (`#2a86ff`) to violet. Owner: Finley
-- [ ] Synthetic-input target-focus hardening, live UC4/UC5 passes, keep STOP visible during the UC4 loop. Owner: Finley
-- [ ] Web navigation on complex tasks (#258, #259, #260). Owner: Finley
-- [ ] Rotate the exposed AssemblyAI eval key and confirm. Owner: Finley
+Wind-down:
+
+- [ ] Decide archive vs keep for `Kuba-Ventures/VALET`. Owner: Finley
+- [ ] Decide what happens to existing VALET users, licenses and subscriptions. Owner: Finley
+- [ ] Decide the fate of the `valet-downloads` v0.2.44 release page (keep, point to Telly, or remove). Owner: Finley
+- [ ] Decide whether to shut off the VALET Vercel project (`valet-voice`), Stripe products and env secrets. Owner: Finley
+- [ ] Close or redirect VALET #336 (DUNS) and #341 (Apple Developer) to Telly, tracked as voice-agent #20 and #25. Owner: Finley
+- [ ] Close or redirect the other Twin Peaks items (#335, #337, #338, #339, #340) to Telly. Owner: Finley
+
+Only if VALET stays downloadable:
+
 - [ ] Confirm Vercel `DOWNLOAD_URL` points at the v0.2.44 release. Owner: Finley
 - [ ] Confirm `migration_dedupe_licenses.sql` ran in production Supabase. Owner: Finley
-- [ ] Turn on fair-use enforcement: set `FAIR_USE_MODE=throttle` plus `FAIR_USE_USD_PRO`/`FAIR_USE_USD_ULTRA` in Vercel. Owner: Finley
-- [ ] Confirm account-login PR A (#97) is deployed. Owner: Finley
-- [ ] Device-settings Phase 4: conflict resolution (web wins) and poll cadence. Owner: Finley
-- [ ] Fix mic permission detection: `/api/permissions/status` returns null for Microphone. Owner: Finley
-- [ ] Decide whether "open email" also launches Mail, as "what's on my calendar" opens Calendar. Owner: Finley
-- [ ] Calendar cancel/delete on the Google path. Owner: Finley
-- [ ] Add a TTS fallback so a Fish Audio outage doesn't kill voice. Owner: Finley
-- [ ] Relocate `restart_self` out of `self_mod` so packaged restart works. Owner: Finley
-- [ ] Web contacts editor on `/account`. Owner: Finley
-- [ ] Raycast console v3 (calculator, snippets, clipboard history, window management). Owner: Finley
-- [ ] `/admin` usage analytics dashboard; needs a privacy decision and a telemetry pipeline first. Owner: Finley
-- [ ] Decide whether to turn on `FACTORY_AUTOMERGE`. Owner: Finley
-- [ ] Merge, close or delete stale remote branches `fix/inbox-summarize-from-rows`, `fix/sports-national-teams`, `chore/release-0.2.44`. Owner: Finley
+- [ ] Turn on fair-use enforcement (`FAIR_USE_MODE` defaults to `warn`), since shared-key spend stays uncapped while the app is out. Owner: Finley
+- [ ] Rotate the exposed AssemblyAI eval key and confirm. Owner: Finley
 - [ ] Add a bank account in Stripe to resume payouts. Owner: client
+
+Deferred while superseded (no plan to build): Deepgram proxy gate (#321), code-quality cleanup (`docs/code-quality-audit.md`), UC4/UC5 passes, web navigation (#258 to #260), cursor dot recolor, device-settings Phase 4, Raycast v3, `/admin` analytics, and the stale remote branches `fix/inbox-summarize-from-rows`, `fix/sports-national-teams`, `chore/release-0.2.44`.
 
 ---
 
 ## Risks & known issues  [rewrite]
 
-- **No product momentum since 2026-07-20.** Telly is shipping overlapping features in another org repo. VALET issues #338 to #340 risk getting built twice.
+- **VALET is superseded but still live.** The site, proxy and v0.2.44 download are still up, so users can still buy and run it with no one developing it. Hosted costs keep running until the wind-down decisions land.
+- **Duplicate trackers.** #335 to #341 still sit open here while Telly tracks the same work; until they are closed or redirected, work can get split across two repos.
 - **Org signing is a TCC reset.** Moving DMGs from the personal Developer ID to a Twin Peaks identity changes code identity, so every user loses Accessibility, Input Monitoring and Screen Recording grants on upgrade.
 - **Deepgram is unmetered.** The key is not behind the license proxy and has no spend cap (#321).
 - **Shared-key spend is uncapped.** Fair-use mode defaults to `warn`, so any license can drive unbounded Anthropic and Fish spend until enforcement is on.
@@ -343,12 +335,13 @@ Everything below is on `main` and in the public v0.2.44 build unless noted. Per-
 - **Staging:** Vercel preview deploys per PR
 - **Client Drive folder:** n/a
 - **Slack channel:** n/a
-- **Related repos:** `Kuba-Ventures/valet-downloads` (public DMG releases); `Twin-Peaks-Labs/voice-agent` (Telly, overlapping product)
+- **Related repos:** `Kuba-Ventures/valet-downloads` (public DMG releases); `Twin-Peaks-Labs/voice-agent` (Telly, the successor product: https://github.com/Twin-Peaks-Labs/voice-agent)
 
 ---
 
 ## Changelog  [append-only, never rewrite or delete]
 
+- **2026-10-02:** kuba-vault: marked VALET superseded by Telly (`Twin-Peaks-Labs/voice-agent`, v0.7.12), set phase and flag to paused, replaced "What's left" with a wind-down list, redirected the Twin Peaks org items to voice-agent #20/#25, and added the supersession decision.
 - **2026-10-02:** kuba-vault refresh: corrected the public download to v0.2.44 (was 0.2.26), closed two done items (duplicate-license fix on `main`, strict branch protection), flagged blocked on Twin Peaks org setup (#335 to #341), noted Telly overlap, cross-referenced `ROADMAP.md` (#344) and the merged code-quality audit (#334), and condensed the rewrite sections to current state without em dashes.
 - **2026-07-20:** kuba-vault refresh — **built the end-to-end Gmail voice MVP and Finley demoed it working; all backend Python, merged to `main` (#326–#329), NOT yet in a public build.** The flow, from a signed-out browser: "go to gmail.com and summarize the emails I received today" → VALET opens the browser, detects the sign-in wall, hands off to the #284 guided login (auto-picks the named account, asks approval, clicks the saved-password chip + Next — **never types the password**; passkey/2FA hand off to the human), reads the inbox, speaks a digest of the day's mail, and on "put that summary in a new apple note" creates the note and fronts Notes with it open. **#326** (`9b123bb`) `inbox_digest` new `signed_out` status (inspects the page to tell signed-out from no-inbox) → `_handle_summarize_inbox` routes into the guided login and re-runs the digest at the inbox (`allow_login=False` guards a loop); `agent_loop.run_loop` gains `acct_hint` + `_resolve_acct_hint` to auto-pick the named account. **#327** (`c1465d9`) `_handle_ui_task` derives `acct_hint` from the goal via `_gmail_goal_scope` so any Gmail login goal that names an account auto-selects it (was asking 3x). **#328** (`1d15edf`) `notes_access._create_note_html` + `create_apple_note` now `activate` Notes + `show` the new note so the summary→note flow visibly opens Notes. **#329** (`efad1b0`) `_INBOX_DIGEST_RE` split so bare "summarize the email"/"the message" → `summarize_screen` (the focused message) while inbox / mass / plural / "my email" stay the digest (fixed-width `(?<!the\s)` guard; 40/40 routing tests pass). **Design decision recorded (deliberate non-goal, not a TODO):** the digest reads from inbox-row previews (~100-char sender/subject/snippet) and does NOT click into each email — per-email opening was explicitly declined by Finley on 2026-07-20 (coordinate-clicking each message proved fragile: window resize/duplication, wrong-account drift, address-bar hits). Release status corrected in the doc: last public download is **v0.2.26**, repo VERSION is **0.2.43**, and the accumulated 0.2.27→0.2.43 work (incl. this MVP) is on `main` and unreleased — do not claim it's shipped to end users. Doc updates: TL;DR / Status / Where-we-are rewritten around the Gmail MVP; new "What's built → Gmail voice MVP" subsection; tech-stack row (`inbox_digest.py` + `agent_loop.py` + `notes_access.py`) + Google integration row updated; 3 dated decisions (inbox-row-preview non-goal, signed-out guided-login/never-type-password, "the email"→focused-message routing); open loop added to cut a public DMG; Links download bumped to reflect v0.2.26 public / 0.2.43 repo. Verified against the merged diffs. Committed PROJECT.md only.
 - **2026-07-15:** kuba-vault refresh — **built VALET a live-information layer and shipped it: the public download is now VALET 0.2.22** (signed + notarized `VALET_0.2.22_aarch64.dmg` on `Kuba-Ventures/valet-downloads`, production `DOWNLOAD_URL` repointed to v0.2.22 and verified live). All merged to `main` (#230–#244) and in the 0.2.22 build. **The theme: VALET now answers real-world questions itself, fast, from keyless public data — instead of punting or always falling back to slow web research.** Each source follows one pattern (keyless module → `[ACTION:X]` → self-speaking `_execute_X` handler → `result.X` card → gated fast-path detection), with web research as the universal fallback. Shipped: **mic recovery (0.2.10, `voice.ts`)** — rebuild the wedged WKWebView `SpeechRecognition` object on escalating spaced backoff after a quit→relaunch audio-session churn (sibling of #218); **temporal grounding (0.2.11)** — inject today's date, default to the current instance of a season/event; **universal live sports (0.2.12–0.2.14, `sports.py`, `[ACTION:SPORTS]`)** — dynamic ESPN resolution for any team/league/school, team-schedule for offseason "next game"/records, World Cup nations via fifa.world, individual sports (golf/tennis/F1/UFC), final-vs-3rd-place labels, `result.sports` card; **fast answering + lookup (0.2.15–0.2.16, refined 0.2.18–0.2.19)** — settled facts answered directly (no web), `[ACTION:LOOKUP]` = ~2s DuckDuckGo Lite + Haiku for volatile facts, never punt, current role-holders always LOOKUP; **live markets (0.2.19, `markets.py`, `[ACTION:MARKETS]`)** — keyless Yahoo Finance quotes + alias/symbol search, `result.markets` card; **news (0.2.20, `news.py`, `[ACTION:NEWS]`)** — keyless Google News RSS headlines + topic search, `result.news` card; **cite/open/summarize (0.2.21–0.2.22)** — `_last_shown` RECENTLY SHOWN context so "tell me more about the second one" → `[ACTION:READ_ARTICLE]` opens the real article in Chrome + speaks a summary (or `[ACTION:BROWSE]` just opens it). All four new sources are keyless (ESPN, Yahoo Finance, Google News RSS, DuckDuckGo Lite) — no API keys, no new costs; `sports.py`/`markets.py`/`news.py` bundled via `packaging/valet.spec` hiddenimports. Verified against the code (`sports.py`/`markets.py`/`news.py` present; `tauri.conf.json` version `0.2.22`; spec hiddenimports include the three; `server.py` carries `ACTION:SPORTS/MARKETS/NEWS/LOOKUP/READ_ARTICLE`, `_last_shown`, and the RECENTLY SHOWN block). Doc updates: TL;DR / Status / Where-we-are rewritten around the information layer (v0.2.2 snapshot folded into a collapsed details block for continuity); new "What's built → Live information layer" subsection; tech-stack + integrations rows for ESPN / Yahoo Finance / Google News RSS / DuckDuckGo Lite; 6 dated decisions (keyless one-pattern architecture, prefer keyless sources, answer-direct-vs-lookup-never-punt, temporal grounding, cite-what-was-shown, recognizer-rebuild recovery); open loops dropped now-shipped items (cut-next-DMG, Stage 4, Input-Monitoring wiring) and added a watch-the-keyless-endpoints monitor loop; Links download bumped to v0.2.22. The duplicate-license fix (`fix/vip-duplicate-licenses`, cfbeffc) is still NOT on main. Committed PROJECT.md only.
